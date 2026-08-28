@@ -485,16 +485,17 @@ class DesignSystem:
         widget.setFont(font)
         
         # Set palette
+        from PySide6.QtGui import QPalette
         palette = widget.palette()
-        palette.setColor(palette.Window, Colors.background)
-        palette.setColor(palette.WindowText, Colors.text)
-        palette.setColor(palette.Base, Colors.surface)
-        palette.setColor(palette.AlternateBase, Colors.paper)
-        palette.setColor(palette.Text, Colors.text)
-        palette.setColor(palette.Button, Colors.surface)
-        palette.setColor(palette.ButtonText, Colors.text)
-        palette.setColor(palette.Highlight, Colors.brand_blue)
-        palette.setColor(palette.HighlightedText, Colors.surface)
+        palette.setColor(QPalette.Window, Colors.background)
+        palette.setColor(QPalette.WindowText, Colors.text)
+        palette.setColor(QPalette.Base, Colors.surface)
+        palette.setColor(QPalette.AlternateBase, Colors.paper)
+        palette.setColor(QPalette.Text, Colors.text)
+        palette.setColor(QPalette.Button, Colors.surface)
+        palette.setColor(QPalette.ButtonText, Colors.text)
+        palette.setColor(QPalette.Highlight, Colors.brand_blue)
+        palette.setColor(QPalette.HighlightedText, Colors.surface)
         widget.setPalette(palette)
 
 

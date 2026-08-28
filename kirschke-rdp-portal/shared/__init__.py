@@ -4,7 +4,14 @@ This package contains common schemas, enums, validation logic, and utilities
 used by both the portal application and the workstation agent.
 """
 
-from shared.enums import AgentStatus, ManualFlagType, SessionState, EventType, CommandType
+from shared.enums import (
+    AgentStatus,
+    CommandType,
+    ConnectionTargetMode,
+    EventType,
+    ManualFlagType,
+    SessionState,
+)
 from shared.schemas import (
     WorkstationSchema,
     SessionEventSchema,
@@ -21,6 +28,7 @@ __all__ = [
     "SessionState",
     "EventType",
     "CommandType",
+    "ConnectionTargetMode",
     # Schemas
     "WorkstationSchema",
     "SessionEventSchema",

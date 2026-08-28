@@ -3,8 +3,7 @@
 from datetime import datetime, timedelta
 from typing import Optional
 from dataclasses import dataclass, field
-from enum import Enum
-from shared.enums import AgentStatus, SessionState, ManualFlagType
+from shared.enums import AgentStatus, ConnectionTargetMode, SessionState, ManualFlagType
 from shared.schemas import WorkstationSchema, RDPProfileSchema, ManualFlagSchema
 from shared.validation import generate_test_entra_id, generate_test_upn
 
@@ -21,6 +20,11 @@ class Workstation:
     display_name: str
     hostname: str
     fqdn: Optional[str] = None
+    ip_address: Optional[str] = None
+    subnet_mask: Optional[str] = None
+    default_gateway: Optional[str] = None
+    dns_server: Optional[str] = None
+    connection_target_mode: ConnectionTargetMode = ConnectionTargetMode.AUTO
     site: Optional[str] = None
     description: Optional[str] = None
     enabled: bool = True
@@ -28,6 +32,7 @@ class Workstation:
     # RDP Profile
     username_hint: Optional[str] = None
     entra_sso_enabled: bool = False
+    trust_unverified_server: bool = False
     gateway_hostname: Optional[str] = None
     use_all_monitors: bool = False
     redirect_clipboard: bool = True
@@ -73,6 +78,8 @@ class Workstation:
             self.agent_status = AgentStatus(self.agent_status)
         if isinstance(self.current_session_state, str):
             self.current_session_state = SessionState(self.current_session_state)
+        if isinstance(self.connection_target_mode, str):
+            self.connection_target_mode = ConnectionTargetMode(self.connection_target_mode)
     
     def to_schema(self) -> WorkstationSchema:
         """Convert to Pydantic schema."""
@@ -81,12 +88,18 @@ class Workstation:
             display_name=self.display_name,
             hostname=self.hostname,
             fqdn=self.fqdn,
+            ip_address=self.ip_address,
+            subnet_mask=self.subnet_mask,
+            default_gateway=self.default_gateway,
+            dns_server=self.dns_server,
+            connection_target_mode=self.connection_target_mode,
             site=self.site,
             description=self.description,
             enabled=self.enabled,
             allowed_entra_group_ids=self.allowed_entra_group_ids,
             username_hint=self.username_hint,
             entra_sso_enabled=self.entra_sso_enabled,
+            trust_unverified_server=self.trust_unverified_server,
             gateway_hostname=self.gateway_hostname,
             use_all_monitors=self.use_all_monitors,
             redirect_clipboard=self.redirect_clipboard,
@@ -122,12 +135,18 @@ class Workstation:
             display_name=schema.display_name,
             hostname=schema.hostname,
             fqdn=schema.fqdn,
+            ip_address=schema.ip_address,
+            subnet_mask=schema.subnet_mask,
+            default_gateway=schema.default_gateway,
+            dns_server=schema.dns_server,
+            connection_target_mode=schema.connection_target_mode,
             site=schema.site,
             description=schema.description,
             enabled=schema.enabled,
             allowed_entra_group_ids=schema.allowed_entra_group_ids,
             username_hint=schema.username_hint,
             entra_sso_enabled=schema.entra_sso_enabled,
+            trust_unverified_server=schema.trust_unverified_server,
             gateway_hostname=schema.gateway_hostname,
             use_all_monitors=schema.use_all_monitors,
             redirect_clipboard=schema.redirect_clipboard,
@@ -153,16 +172,19 @@ class Workstation:
             etag=schema.etag,
         )
     
-    def get_rdp_profile(self) -> RDPProfileSchema:
+    def get_rdp_profile(self, default_username: Optional[str] = None) -> RDPProfileSchema:
         """Get the RDP profile for this workstation."""
         return RDPProfileSchema(
             hostname=self.hostname,
             fqdn=self.fqdn,
+            ip_address=self.ip_address,
+            connection_target_mode=self.connection_target_mode,
             display_name=self.display_name,
             site=self.site,
             description=self.description,
-            username_hint=self.username_hint,
+            username_hint=self.username_hint or default_username,
             entra_sso_enabled=self.entra_sso_enabled,
+            trust_unverified_server=self.trust_unverified_server,
             gateway_hostname=self.gateway_hostname,
             use_all_monitors=self.use_all_monitors,
             redirect_clipboard=self.redirect_clipboard,
@@ -174,6 +196,23 @@ class Workstation:
             enabled=self.enabled,
             allowed_entra_group_ids=self.allowed_entra_group_ids,
         )
+
+    def get_connection_target(self) -> tuple[str, ConnectionTargetMode]:
+        """Return the concrete target and the address source used by RDP."""
+        return self.get_rdp_profile().resolve_connection_target()
+
+    def get_connection_target_display(self) -> str:
+        labels = {
+            ConnectionTargetMode.IP_ADDRESS: "IP-Adresse",
+            ConnectionTargetMode.HOSTNAME: "Hostname",
+            ConnectionTargetMode.FQDN: "FQDN",
+        }
+        try:
+            target, mode = self.get_connection_target()
+            configured = "Automatisch → " if self.connection_target_mode == ConnectionTargetMode.AUTO else ""
+            return f"{configured}{labels[mode]} · {target}"
+        except ValueError:
+            return "Kein gültiges Ziel"
     
     def is_blocked(self) -> bool:
         """Check if workstation is blocked by a manual flag."""
@@ -187,7 +226,11 @@ class Workstation:
         """Check if connection is allowed."""
         if not self.enabled:
             return False
-        return not self.is_blocked()
+        return not self.is_blocked() and not self.has_active_session()
+
+    def has_active_session(self) -> bool:
+        """Treat connected and disconnected Windows sessions as occupied."""
+        return self.current_session_state not in [SessionState.NONE, SessionState.LOGGED_OFF]
     
     def can_disconnect(self) -> bool:
         """Check if disconnect is allowed (always for calculation_running)."""
@@ -303,6 +346,10 @@ def create_mock_workstations(count: int = 10) -> list[Workstation]:
             display_name=f"Workstation {i:03d}",
             hostname=f"ws{i:03d}.kirschke.local",
             fqdn=f"ws{i:03d}.buero.prof-kirschke.de",
+            ip_address=f"192.168.{10 + ((i - 1) // 50)}.{20 + i}",
+            subnet_mask="255.255.255.0",
+            default_gateway=f"192.168.{10 + ((i - 1) // 50)}.1",
+            dns_server="192.168.10.10",
             site=site,
             description=descriptions[(i - 1) % len(descriptions)],
             enabled=True,
@@ -332,9 +379,50 @@ def create_mock_workstations(count: int = 10) -> list[Workstation]:
     return workstations
 
 
+def create_initial_workstations() -> list[Workstation]:
+    """Create the two meaningful default machines for a fresh local portal."""
+    return [
+        Workstation(
+            workstation_id="WS-001",
+            display_name="Arbeitsplatz München",
+            hostname="pc-muc-01",
+            fqdn="pc-muc-01.kirschke.local",
+            ip_address="192.168.10.21",
+            subnet_mask="255.255.255.0",
+            default_gateway="192.168.10.1",
+            dns_server="192.168.10.10",
+            site="München",
+            description="Standard-Arbeitsplatz",
+            enabled=True,
+            agent_status=AgentStatus.ONLINE,
+            agent_last_seen_utc=datetime.now(),
+        ),
+        Workstation(
+            workstation_id="WS-002",
+            display_name="Arbeitsplatz Ettlingen",
+            hostname="pc-ett-01",
+            fqdn="pc-ett-01.kirschke.local",
+            ip_address="192.168.20.21",
+            subnet_mask="255.255.255.0",
+            default_gateway="192.168.20.1",
+            dns_server="192.168.20.10",
+            site="Ettlingen",
+            description="Standard-Arbeitsplatz",
+            enabled=True,
+            agent_status=AgentStatus.ONLINE,
+            agent_last_seen_utc=datetime.now(),
+        ),
+    ]
+
+
 def create_test_workstation() -> Workstation:
     """Create a single test workstation."""
     return create_mock_workstations(1)[0]
 
 
-__all__ = ["Workstation", "create_mock_workstations", "create_test_workstation"]
+__all__ = [
+    "Workstation",
+    "create_initial_workstations",
+    "create_mock_workstations",
+    "create_test_workstation",
+]

@@ -28,6 +28,15 @@ class SessionState(str, Enum):
     LOGGED_OFF: Final = "logged_off"
 
 
+class ConnectionTargetMode(str, Enum):
+    """Address source used for the RDP connection."""
+
+    AUTO: Final = "auto"
+    IP_ADDRESS: Final = "ip_address"
+    HOSTNAME: Final = "hostname"
+    FQDN: Final = "fqdn"
+
+
 class ManualFlagType(str, Enum):
     """Manual flag types that can be set by users or administrators."""
     
@@ -113,6 +122,7 @@ class UserRole(str, Enum):
 __all__ = [
     "AgentStatus",
     "SessionState",
+    "ConnectionTargetMode",
     "ManualFlagType",
     "EventType",
     "CommandType",

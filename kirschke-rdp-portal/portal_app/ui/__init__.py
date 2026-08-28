@@ -9,6 +9,7 @@ from portal_app.ui.widgets import (
     StatusBadgeWidget,
     FlagDialog,
     ConnectButton,
+    WorkstationCardsWidget,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "StatusBadgeWidget",
     "FlagDialog",
     "ConnectButton",
+    "WorkstationCardsWidget",
 ]

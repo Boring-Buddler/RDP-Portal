@@ -50,6 +50,9 @@ rdp-agent = "workstation_agent.service:main"
 where = ["."]
 include = ["portal_app*", "workstation_agent*", "shared*"]
 
+[tool.setuptools.package-data]
+portal_app = ["ui/assets/*.png"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

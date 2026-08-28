@@ -1,6 +1,7 @@
 """RDP file generator for Kirschke RDP Workstation Portal."""
 
 import os
+import re
 import tempfile
 import uuid
 from datetime import datetime
@@ -52,8 +53,10 @@ class RDPFileGenerator:
             # Validate the profile
             self._validate_profile(profile)
             
-            # Create filename
-            filename = f"rdp_{profile.hostname.replace('.', '_')}_{uuid.uuid4().hex[:8]}.rdp"
+            # Create filename from the effective target, without unsafe path characters.
+            target, _ = profile.resolve_connection_target()
+            safe_target = re.sub(r"[^a-zA-Z0-9._-]", "_", target)
+            filename = f"rdp_{safe_target.replace('.', '_')}_{uuid.uuid4().hex[:8]}.rdp"
             filepath = os.path.join(self.temp_dir, filename)
             
             # Generate content
@@ -73,8 +76,11 @@ class RDPFileGenerator:
     
     def _validate_profile(self, profile: RDPProfileSchema) -> None:
         """Validate the RDP profile."""
-        # Validate hostname
-        RDPProfileValidator.validate_hostname(profile.hostname)
+        try:
+            target, _ = profile.resolve_connection_target()
+        except ValueError as exc:
+            raise RDPValidationError(str(exc), "connection_target") from exc
+        RDPProfileValidator.validate_hostname(target)
         
         # Validate gateway if present
         if profile.gateway_hostname:
@@ -88,21 +94,23 @@ class RDPFileGenerator:
         """Generate RDP file content from profile."""
         lines = []
         
-        # Required: full address (hostname or FQDN)
-        if profile.fqdn:
-            lines.append(f"full address:s:{profile.fqdn}")
-        else:
-            lines.append(f"full address:s:{profile.hostname}")
+        # Required: the selected IP, hostname or FQDN.
+        target, _ = profile.resolve_connection_target()
+        lines.append(f"full address:s:{target}")
         
-        # Optional: username hint (as comment, not actual username)
+        # Optional username. Passwords are deliberately left to Windows.
         if profile.username_hint:
-            # We store this as a comment since actual username should be entered by user
-            # or handled by Entra SSO
-            lines.append(f"#username hint:s:{profile.username_hint}")
+            lines.append(f"username:s:{profile.username_hint}")
         
-        # Entra SSO
-        if profile.entra_sso_enabled:
-            lines.append("enablerdsaadauth:i:1")
+        # Microsoft Entra web authentication is unsupported for IP targets.
+        lines.append(f"enablerdsaadauth:i:{1 if profile.effective_entra_sso_enabled() else 0}")
+
+        # This is never enabled by default.  It is a deliberate, persisted exception
+        # for one known machine after the user verified its address in the portal.
+        # With authentication level 0 mstsc connects even if server authentication
+        # cannot be verified, so the native certificate warning is not shown again.
+        if profile.trust_unverified_server:
+            lines.append("authentication level:i:0")
         
         # Gateway settings
         if profile.gateway_hostname:

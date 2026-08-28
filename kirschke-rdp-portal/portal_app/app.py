@@ -5,7 +5,7 @@ import logging
 from typing import Optional
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QPalette, QColor
 
 from portal_app.ui.design import DesignSystem, Colors, Typography
 from portal_app.ui.main_window import MainWindow
@@ -54,17 +54,17 @@ class RDPPortalApp(QApplication):
         """Apply Kirschke design system to the application."""
         # Set palette
         palette = self.palette()
-        palette.setColor(palette.Window, Colors.background)
-        palette.setColor(palette.WindowText, Colors.text)
-        palette.setColor(palette.Base, Colors.surface)
-        palette.setColor(palette.AlternateBase, Colors.paper)
-        palette.setColor(palette.Text, Colors.text)
-        palette.setColor(palette.Button, Colors.surface)
-        palette.setColor(palette.ButtonText, Colors.text)
-        palette.setColor(palette.Highlight, Colors.brand_blue)
-        palette.setColor(palette.HighlightedText, Colors.surface)
-        palette.setColor(palette.ToolTipBase, Colors.surface)
-        palette.setColor(palette.ToolTipText, Colors.text)
+        palette.setColor(QPalette.Window, Colors.background)
+        palette.setColor(QPalette.WindowText, Colors.text)
+        palette.setColor(QPalette.Base, Colors.surface)
+        palette.setColor(QPalette.AlternateBase, Colors.paper)
+        palette.setColor(QPalette.Text, Colors.text)
+        palette.setColor(QPalette.Button, Colors.surface)
+        palette.setColor(QPalette.ButtonText, Colors.text)
+        palette.setColor(QPalette.Highlight, Colors.brand_blue)
+        palette.setColor(QPalette.HighlightedText, Colors.surface)
+        palette.setColor(QPalette.ToolTipBase, Colors.surface)
+        palette.setColor(QPalette.ToolTipText, Colors.text)
         self.setPalette(palette)
     
     def get_current_user(self) -> MockUser:

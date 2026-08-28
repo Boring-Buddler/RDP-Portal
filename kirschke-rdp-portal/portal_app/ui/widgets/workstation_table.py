@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, Signal, Slot, QSize, QSortFilterProxyModel
 from PySide6.QtGui import QColor, QFont
 
 from portal_app.ui.design import DesignSystem, Colors, Typography, Spacing
+from portal_app.ui.widgets.connect_button import ConnectButton
 from portal_app.models.workstation import Workstation
 from portal_app.models.user import User, MockUser
 from portal_app.models.session import SessionEvent
@@ -279,18 +280,18 @@ class WorkstationTableWidget(QWidget):
             # Color based on status
             if ws.is_blocked():
                 if ws.manual_flag_type == ManualFlagType.BLOCKED:
-                    status_cell.setTextColor(QColor(Colors.error.name()))
+                    status_cell.setForeground(QColor(Colors.error))
                 elif ws.manual_flag_type == ManualFlagType.MAINTENANCE:
-                    status_cell.setTextColor(QColor(Colors.warning.name()))
+                    status_cell.setForeground(QColor(Colors.warning))
                 else:
-                    status_cell.setTextColor(QColor(Colors.info.name()))
+                    status_cell.setForeground(QColor(Colors.info))
             else:
                 if ws.current_session_state.value == "connected":
-                    status_cell.setTextColor(QColor(Colors.success.name()))
+                    status_cell.setForeground(QColor(Colors.success))
                 elif ws.current_session_state.value == "disconnected":
-                    status_cell.setTextColor(QColor(Colors.warning.name()))
+                    status_cell.setForeground(QColor(Colors.warning))
                 else:
-                    status_cell.setTextColor(QColor(Colors.text.name()))
+                    status_cell.setForeground(QColor(Colors.text))
             
             table.setItem(row, 3, status_cell)
             
@@ -298,13 +299,13 @@ class WorkstationTableWidget(QWidget):
             agent_cell = QTableWidgetItem(ws.get_agent_status_display())
             agent_cell.setTextAlignment(Qt.AlignCenter)
             if ws.agent_status == AgentStatus.ONLINE:
-                agent_cell.setTextColor(QColor(Colors.success.name()))
+                agent_cell.setForeground(QColor(Colors.success))
             elif ws.agent_status == AgentStatus.STALE:
-                agent_cell.setTextColor(QColor(Colors.warning.name()))
+                agent_cell.setForeground(QColor(Colors.warning))
             elif ws.agent_status == AgentStatus.OFFLINE:
-                agent_cell.setTextColor(QColor(Colors.text_muted.name()))
+                agent_cell.setForeground(QColor(Colors.text_muted))
             else:
-                agent_cell.setTextColor(QColor(Colors.error.name()))
+                agent_cell.setForeground(QColor(Colors.error))
             table.setItem(row, 4, agent_cell)
             
             # Sitzung

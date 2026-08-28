@@ -4,6 +4,7 @@ These schemas define the data structures used for communication between
 the portal application, workstation agent, and SharePoint lists.
 """
 
+import ipaddress
 from datetime import datetime
 from typing import Any, Optional
 from pydantic import BaseModel, Field, ConfigDict, field_validator
@@ -16,6 +17,7 @@ from shared.enums import (
     EventSource,
     CommandType,
     CommandStatus,
+    ConnectionTargetMode,
 )
 
 
@@ -95,7 +97,7 @@ class RDPProfileSchema(BaseSchema):
     """RDP connection profile settings."""
     
     hostname: str = Field(
-        ...,
+        default="",
         max_length=256,
         description="Hostname or FQDN of the workstation"
     )
@@ -103,6 +105,14 @@ class RDPProfileSchema(BaseSchema):
         default=None,
         max_length=256,
         description="Fully qualified domain name"
+    )
+    ip_address: Optional[str] = Field(default=None, max_length=50)
+    subnet_mask: Optional[str] = Field(default=None, max_length=50)
+    default_gateway: Optional[str] = Field(default=None, max_length=50)
+    dns_server: Optional[str] = Field(default=None, max_length=50)
+    connection_target_mode: ConnectionTargetMode = Field(
+        default=ConnectionTargetMode.AUTO,
+        description="Address source used for the RDP connection",
     )
     display_name: str = Field(
         ...,
@@ -127,6 +137,10 @@ class RDPProfileSchema(BaseSchema):
     entra_sso_enabled: bool = Field(
         default=False,
         description="Whether Entra SSO is enabled"
+    )
+    trust_unverified_server: bool = Field(
+        default=False,
+        description="Explicit per-machine exception that suppresses the RDP server identity warning",
     )
     gateway_hostname: Optional[str] = Field(
         default=None,
@@ -171,6 +185,44 @@ class RDPProfileSchema(BaseSchema):
         default_factory=list,
         description="List of allowed Entra group IDs"
     )
+
+    def resolve_connection_target(self) -> tuple[str, ConnectionTargetMode]:
+        """Resolve the configured address source to one concrete RDP target."""
+        candidates = {
+            ConnectionTargetMode.IP_ADDRESS: self.ip_address,
+            ConnectionTargetMode.HOSTNAME: self.hostname,
+            ConnectionTargetMode.FQDN: self.fqdn,
+        }
+        if self.connection_target_mode != ConnectionTargetMode.AUTO:
+            target = candidates[self.connection_target_mode]
+            if not target:
+                raise ValueError(
+                    f"Für das Verbindungsziel {self.connection_target_mode.value} fehlt eine Angabe."
+                )
+            return target, self.connection_target_mode
+
+        for mode in (
+            ConnectionTargetMode.FQDN,
+            ConnectionTargetMode.HOSTNAME,
+            ConnectionTargetMode.IP_ADDRESS,
+        ):
+            if candidates[mode]:
+                return candidates[mode] or "", mode
+        raise ValueError("Für diese Maschine ist kein Verbindungsziel hinterlegt.")
+
+    def uses_ip_target(self) -> bool:
+        target, mode = self.resolve_connection_target()
+        if mode == ConnectionTargetMode.IP_ADDRESS:
+            return True
+        try:
+            ipaddress.ip_address(target)
+            return True
+        except ValueError:
+            return False
+
+    def effective_entra_sso_enabled(self) -> bool:
+        """Microsoft Entra web-account authentication cannot target an IP address."""
+        return self.entra_sso_enabled and not self.uses_ip_target()
 
 
 # =============================================================================
@@ -398,6 +450,14 @@ class WorkstationSchema(BaseSchema):
         max_length=256,
         description="Fully qualified domain name"
     )
+    ip_address: Optional[str] = Field(default=None, max_length=50)
+    subnet_mask: Optional[str] = Field(default=None, max_length=50)
+    default_gateway: Optional[str] = Field(default=None, max_length=50)
+    dns_server: Optional[str] = Field(default=None, max_length=50)
+    connection_target_mode: ConnectionTargetMode = Field(
+        default=ConnectionTargetMode.AUTO,
+        description="Address source used for the RDP connection",
+    )
     site: Optional[str] = Field(
         default=None,
         max_length=100,
@@ -424,6 +484,10 @@ class WorkstationSchema(BaseSchema):
     entra_sso_enabled: bool = Field(
         default=False,
         description="Entra SSO enabled"
+    )
+    trust_unverified_server: bool = Field(
+        default=False,
+        description="Explicit per-machine exception that suppresses the RDP server identity warning",
     )
     gateway_hostname: Optional[str] = Field(
         default=None,
@@ -513,11 +577,17 @@ class WorkstationSchema(BaseSchema):
         return RDPProfileSchema(
             hostname=self.hostname,
             fqdn=self.fqdn,
+            ip_address=self.ip_address,
+            subnet_mask=self.subnet_mask,
+            default_gateway=self.default_gateway,
+            dns_server=self.dns_server,
+            connection_target_mode=self.connection_target_mode,
             display_name=self.display_name,
             site=self.site,
             description=self.description,
             username_hint=self.username_hint,
             entra_sso_enabled=self.entra_sso_enabled,
+            trust_unverified_server=self.trust_unverified_server,
             gateway_hostname=self.gateway_hostname,
             use_all_monitors=self.use_all_monitors,
             redirect_clipboard=self.redirect_clipboard,

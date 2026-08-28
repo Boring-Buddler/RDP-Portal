@@ -22,22 +22,19 @@ import socket
 import win32serviceutil
 import win32service
 import win32event
-from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Any
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Optional
 from pathlib import Path
 
 from shared.enums import (
     AgentStatus,
     SessionState,
     ManualFlagType,
-    EventType,
-    EventResult,
-    EventSource,
     CommandType,
     CommandStatus,
 )
-from shared.schemas import WorkstationSchema
+from shared.agent_snapshot import AgentSnapshot, write_agent_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +72,7 @@ class AgentConfig:
     # Logging settings
     log_level: str = os.getenv("AGENT_LOG_LEVEL", "INFO")
     log_file: str = os.getenv("AGENT_LOG_FILE", "")
+    publish_local_status: bool = os.getenv("AGENT_PUBLISH_LOCAL_STATUS", "true").lower() == "true"
     
     @classmethod
     def from_env(cls) -> "AgentConfig":
@@ -108,6 +106,17 @@ class AgentConfig:
         # For Phase 1, we can run with minimal config
         # For production, we need tenant_id, client_id, certificate_thumbprint
         return bool(self.workstation_id and self.hostname)
+
+    def has_graph_configuration(self) -> bool:
+        """Return whether the external status channel can be used."""
+        return all(
+            (
+                self.tenant_id,
+                self.client_id,
+                self.certificate_thumbprint,
+                self.sharepoint_site_id,
+            )
+        )
 
 
 # =============================================================================
@@ -151,10 +160,16 @@ class AgentState:
         windows_session_id: Optional[int] = None,
     ) -> None:
         """Update current session information."""
+        changed = (
+            self.current_session_state != session_state
+            or self.current_session_user != session_user
+            or self.current_windows_session_id != windows_session_id
+        )
         self.current_session_state = session_state
         self.current_session_user = session_user
         self.current_windows_session_id = windows_session_id
-        self.last_event_time = datetime.now(timezone.utc)
+        if changed:
+            self.last_event_time = datetime.now(timezone.utc)
     
     def increment_events_submitted(self) -> None:
         """Increment the events submitted counter."""
@@ -352,6 +367,7 @@ class WorkstationAgent:
         self._event_detector = None
         self._event_queue = None
         self._graph_client = None
+        self._last_rdp_sessions = []
         
         # Service control
         self._running = False
@@ -463,9 +479,15 @@ class WorkstationAgent:
         self.state.last_poll_time = datetime.now(timezone.utc)
         
         logger.info(f"Workstation agent started: {self.config.workstation_id}")
+
+        self._refresh_session_state()
+        self._publish_local_snapshot()
         
         # Run initial sync
-        self._sync_with_portal()
+        if self.config.has_graph_configuration():
+            self._sync_with_portal()
+        else:
+            logger.info("Graph synchronization disabled: no complete external configuration")
         
         return True
     
@@ -473,6 +495,11 @@ class WorkstationAgent:
         """Stop the agent."""
         self._running = False
         self.state.status = AgentStatus.OFFLINE
+        self._publish_local_snapshot()
+
+        if self._wts_monitor is not None:
+            self._wts_monitor.close()
+            self._wts_monitor = None
         
         logger.info("Workstation agent stopped")
     
@@ -493,6 +520,9 @@ class WorkstationAgent:
             
             # Update timestamp
             self.state.last_poll_time = datetime.now(timezone.utc)
+
+            # Read the actual Windows RDP session state first.
+            self._refresh_session_state()
             
             # 1. Detect session changes and create events
             self._detect_session_changes()
@@ -508,11 +538,67 @@ class WorkstationAgent:
             
             # 5. Cleanup old events
             self._cleanup_old_events()
+
+            # 6. Publish the local test snapshot even without Graph credentials.
+            self._publish_local_snapshot()
             
             logger.debug(f"Polling cycle completed: {self.config.workstation_id}")
             
         except Exception as e:
             logger.error(f"Polling cycle failed: {str(e)}")
+            self.state.increment_errors()
+
+    def _refresh_session_state(self) -> None:
+        """Refresh the primary occupied session from the local WTS API."""
+        try:
+            monitor = self._get_wts_monitor()
+            sessions = monitor.get_rdp_sessions()
+            priorities = {
+                SessionState.CONNECTED: 4,
+                SessionState.RECONNECTED: 4,
+                SessionState.LOGON: 3,
+                SessionState.DISCONNECTED: 2,
+            }
+            primary = max(
+                sessions,
+                key=lambda session: priorities.get(session.session_state, 0),
+                default=None,
+            )
+            self._last_rdp_sessions = sessions
+            if self._running:
+                self.state.status = AgentStatus.ONLINE
+            if primary is None:
+                self.state.update_session_info(SessionState.NONE)
+                return
+            self.state.update_session_info(
+                primary.session_state,
+                primary.full_username or None,
+                primary.session_id,
+            )
+        except Exception as e:
+            logger.error(f"Failed to refresh WTS session state: {str(e)}")
+            self.state.status = AgentStatus.ERROR
+            self.state.increment_errors()
+
+    def _publish_local_snapshot(self) -> None:
+        """Write an atomic local status file for the credential-free test build."""
+        if not self.config.publish_local_status:
+            return
+        try:
+            snapshot = AgentSnapshot(
+                workstation_id=self.config.workstation_id,
+                hostname=self.config.hostname,
+                agent_version=self.config.agent_version,
+                observed_at_utc=datetime.now(timezone.utc),
+                agent_status=self.state.status,
+                current_session_state=self.state.current_session_state,
+                current_session_user=self.state.current_session_user,
+                current_windows_session_id=self.state.current_windows_session_id,
+                rdp_sessions=[session.to_dict() for session in self._last_rdp_sessions],
+            )
+            write_agent_snapshot(snapshot)
+        except OSError as e:
+            logger.error(f"Failed to publish local agent status: {str(e)}")
             self.state.increment_errors()
     
     def _detect_session_changes(self) -> None:
@@ -530,6 +616,8 @@ class WorkstationAgent:
     
     def _submit_events(self) -> None:
         """Submit queued events to the portal."""
+        if not self.config.has_graph_configuration():
+            return
         try:
             queue = self._get_event_queue()
             unsent_events = queue.get_unsent_events()
@@ -563,6 +651,8 @@ class WorkstationAgent:
     
     def _check_admin_commands(self) -> None:
         """Check for and execute pending admin commands."""
+        if not self.config.has_graph_configuration():
+            return
         try:
             graph_client = self._get_graph_client()
             
@@ -612,6 +702,8 @@ class WorkstationAgent:
     
     def _update_status(self) -> None:
         """Update workstation status in SharePoint."""
+        if not self.config.has_graph_configuration():
+            return
         try:
             graph_client = self._get_graph_client()
             
@@ -820,12 +912,36 @@ def main():
         action="store_true",
         help="Enable debug logging",
     )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Print the current local WTS/RDP status as JSON and exit",
+    )
     
     args = parser.parse_args()
     
     # Set debug logging if requested
     if args.debug:
         os.environ["AGENT_LOG_LEVEL"] = "DEBUG"
+
+    if args.status:
+        from workstation_agent.wts.monitor import WTSMonitor
+
+        config = AgentConfig.from_env()
+        with WTSMonitor() as monitor:
+            sessions = monitor.get_rdp_sessions()
+            primary = monitor.get_primary_rdp_session()
+        result = {
+            "workstation_id": config.workstation_id,
+            "hostname": config.hostname,
+            "agent_version": config.agent_version,
+            "session_state": primary.session_state.value if primary else SessionState.NONE.value,
+            "session_user": primary.full_username if primary else None,
+            "windows_session_id": primary.session_id if primary else None,
+            "rdp_sessions": [session.to_dict() for session in sessions],
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
     
     # Handle service commands
     if args.install:

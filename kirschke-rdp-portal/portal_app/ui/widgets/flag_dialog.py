@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 
-from portal_app.ui.design import DesignSystem, Colors, Typography, Spacing
+from portal_app.ui.design import Typography, Spacing
 from portal_app.models.workstation import Workstation
 from portal_app.models.user import User
 from shared.enums import ManualFlagType
@@ -37,8 +37,7 @@ class FlagDialog(QDialog):
         # Create UI
         self._create_ui()
         
-        # Apply design
-        self.setStyleSheet(DesignSystem.styles.card())
+        self.setObjectName("flagDialog")
     
     def _create_ui(self) -> None:
         """Create the user interface."""
@@ -48,21 +47,21 @@ class FlagDialog(QDialog):
         
         # Title
         title_label = QLabel("Manuelles Flag setzen")
+        title_label.setObjectName("dialogTitle")
         title_font = Typography.heading_3()
         title_label.setFont(title_font)
-        title_label.setStyleSheet(f"color: {Colors.brand_charcoal.name()};")
         layout.addWidget(title_label)
         
         # Current flag info
         current_flag_label = QLabel(f"Aktuelles Flag: {self.workstation.get_status_display()}")
-        current_flag_label.setStyleSheet(f"color: {Colors.text_muted.name()};")
+        current_flag_label.setObjectName("dialogNote")
         layout.addWidget(current_flag_label)
         
         # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
         sep.setFrameShadow(QFrame.Sunken)
-        sep.setStyleSheet(f"color: {Colors.border.name()};")
+        sep.setObjectName("detailDivider")
         layout.addWidget(sep)
         
         # Flag type selection
@@ -70,7 +69,7 @@ class FlagDialog(QDialog):
         flag_layout.setSpacing(Spacing.MD)
         
         flag_label = QLabel("Flag-Typ:")
-        flag_label.setStyleSheet(f"color: {Colors.text.name()};")
+        flag_label.setObjectName("dialogFormLabel")
         flag_layout.addWidget(flag_label)
         
         self.flag_combo = QComboBox()
@@ -84,7 +83,6 @@ class FlagDialog(QDialog):
             # Regular users can only set calculation_running
             self.flag_combo.addItem("Berechnung laeuft", ManualFlagType.CALCULATION_RUNNING)
         
-        self.flag_combo.setStyleSheet(DesignSystem.styles.input_field())
         flag_layout.addWidget(self.flag_combo, stretch=1)
         
         layout.addLayout(flag_layout)
@@ -94,30 +92,28 @@ class FlagDialog(QDialog):
         project_layout.setSpacing(Spacing.MD)
         
         project_label = QLabel("Projekt/Vorgang (optional):")
-        project_label.setStyleSheet(f"color: {Colors.text.name()};")
+        project_label.setObjectName("dialogFormLabel")
         project_layout.addWidget(project_label)
         
         self.project_edit = QLineEdit()
         self.project_edit.setPlaceholderText("z.B. Projekt XYZ-123")
-        self.project_edit.setStyleSheet(DesignSystem.styles.input_field())
         project_layout.addWidget(self.project_edit, stretch=1)
         
         layout.addLayout(project_layout)
         
         # Reason field
         reason_label = QLabel("Grund (erforderlich):")
-        reason_label.setStyleSheet(f"color: {Colors.text.name()};")
+        reason_label.setObjectName("dialogFormLabel")
         layout.addWidget(reason_label)
         
         self.reason_edit = QTextEdit()
         self.reason_edit.setPlaceholderText("Bitte geben Sie einen Grund fuer das Flag ein...")
-        self.reason_edit.setStyleSheet(DesignSystem.styles.input_field())
         self.reason_edit.setMinimumHeight(80)
         layout.addWidget(self.reason_edit)
         
         # Warning
         warning_label = QLabel("Hinweis: Dieses Flag blockiert normale Verbindungs- und Abmeldeaktionen.")
-        warning_label.setStyleSheet(f"color: {Colors.warning.name()};")
+        warning_label.setObjectName("dialogWarning")
         warning_label.setWordWrap(True)
         layout.addWidget(warning_label)
         
@@ -125,7 +121,7 @@ class FlagDialog(QDialog):
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.HLine)
         sep2.setFrameShadow(QFrame.Sunken)
-        sep2.setStyleSheet(f"color: {Colors.border.name()};")
+        sep2.setObjectName("detailDivider")
         layout.addWidget(sep2)
         
         # Buttons
@@ -137,13 +133,13 @@ class FlagDialog(QDialog):
         
         # Cancel button
         cancel_btn = QPushButton("Abbrechen")
-        cancel_btn.setStyleSheet(DesignSystem.styles.button_secondary())
+        cancel_btn.setObjectName("toolbarButton")
         cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(cancel_btn)
         
         # Set flag button
         self.set_btn = QPushButton("Flag setzen")
-        self.set_btn.setStyleSheet(DesignSystem.styles.button_primary())
+        self.set_btn.setObjectName("cardPrimaryButton")
         self.set_btn.clicked.connect(self._on_set_flag)
         button_layout.addWidget(self.set_btn)
         

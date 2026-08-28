@@ -14,7 +14,7 @@ import json
 import uuid
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Any
 from pathlib import Path
 from threading import Lock
@@ -378,10 +378,6 @@ class EventQueue:
             return removed
 
 
-# Import timedelta at the method level to avoid circular imports
-from datetime import timedelta
-
-
 # =============================================================================
 # Session Event Detector
 # =============================================================================
@@ -472,8 +468,8 @@ class SessionEventDetector:
         Returns:
             AgentSessionEvent if event should be created
         """
-        if session.is_console_session:
-            # Skip console sessions
+        if not session.is_rdp_session:
+            # Skip console, service, and listener sessions.
             return None
         
         # Determine event type based on connect state
@@ -573,7 +569,7 @@ class SessionEventDetector:
         Returns:
             AgentSessionEvent if event should be created
         """
-        if session.is_console_session:
+        if not session.is_rdp_session:
             return None
         
         event = AgentSessionEvent(

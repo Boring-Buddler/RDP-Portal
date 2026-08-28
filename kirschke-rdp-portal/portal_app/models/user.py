@@ -22,6 +22,8 @@ class User:
     email: Optional[str] = None
     role: UserRole = UserRole.USER
     is_authenticated: bool = True
+    rdp_username: Optional[str] = None
+    rdp_domain: Optional[str] = None
     
     @property
     def is_admin(self) -> bool:
@@ -44,6 +46,14 @@ class User:
         """Check if user can execute admin commands."""
         return self.is_admin
 
+    def get_rdp_username(self) -> Optional[str]:
+        """Return the Windows-compatible default RDP username."""
+        if not self.rdp_username:
+            return None
+        if self.rdp_domain and "\\" not in self.rdp_username and "@" not in self.rdp_username:
+            return f"{self.rdp_domain}\\{self.rdp_username}"
+        return self.rdp_username
+
 
 @dataclass
 class MockUser(User):
@@ -58,6 +68,8 @@ class MockUser(User):
             display_name="System Administrator",
             email="admin@prof-kirschke.de",
             role=UserRole.ADMIN,
+            rdp_username="administrator",
+            rdp_domain="KIRSCHKE",
         )
     
     @classmethod
@@ -69,6 +81,8 @@ class MockUser(User):
             display_name="Regular User",
             email="user@prof-kirschke.de",
             role=UserRole.USER,
+            rdp_username="user",
+            rdp_domain="KIRSCHKE",
         )
 
 
