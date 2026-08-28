@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import sys
+import uuid
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 from secrets import compare_digest
 
@@ -27,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from portal_app.models.reservation import Reservation
-from portal_app.models.session import SessionLog, create_mock_session_logs
+from portal_app.models.session import SessionEvent
 from portal_app.models.user import MockUser
 from portal_app.models.workstation import Workstation, create_initial_workstations
 from portal_app.services.local_store import LocalStore
@@ -41,6 +43,7 @@ from portal_app.ui.widgets.user_settings_dialog import UserSettingsDialog
 from portal_app.ui.widgets.workstation_cards import WorkstationCardsWidget
 from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
 from portal_app.ui.widgets.workstation_dialog import WorkstationDialog
+from shared.enums import EventResult, EventSource, EventType
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +74,12 @@ class MainWindow(QMainWindow):
         self.agent_status_service = LocalAgentStatusService()
         self.workstations: list[Workstation] = []
         self.reservations: list[Reservation] = []
-        self.session_logs: list[SessionLog] = create_mock_session_logs(10)
+        self.session_events: list[SessionEvent] = []
         self.current_user = detect_initial_user(MockUser.create_user())
         self.nav_buttons: list[QPushButton] = []
         self._admin_unlocked = False
+        self._current_rdp_notice_key: str | None = None
+        self._dismissed_rdp_notice_key: str | None = None
         self._load_data()
         self._create_ui()
         self._connect_signals()
@@ -93,10 +98,16 @@ class MainWindow(QMainWindow):
     def _load_data(self) -> None:
         fallback = create_initial_workstations()
         self.workstations, self.current_user, self.reservations = self.store.load(fallback, self.current_user)
+        self.session_events = self.store.load_events()
         self.theme_mode = self.store.theme_mode
         self.dark_mode = self._resolve_dark_mode()
         self._saved_workstations = deepcopy(self.workstations)
         self._saved_user = deepcopy(self.current_user)
+        try:
+            self.store.save(self._saved_workstations, self._saved_user, self.reservations, self.store.theme_mode)
+            self.store.initialize_event_log()
+        except OSError as exc:
+            logger.warning("Could not initialize shared portal storage: %s", exc)
 
     def _create_ui(self) -> None:
         central = QWidget(self)
@@ -227,9 +238,11 @@ class MainWindow(QMainWindow):
             self.workstations, self.reservations, self.current_user, self
         )
         self.stack.addWidget(self.calendar_view)
-        self.session_log_view = SessionLogWidget(self.session_logs, self.current_user, self)
+        self.session_log_view = SessionLogWidget([], self.current_user, self)
+        self.session_log_view.set_events(self.session_events)
         self.stack.addWidget(self.session_log_view)
         self.admin_view = AdministrationWidget(self.workstations, self)
+        self.admin_view.set_storage_directory(str(self.store.directory))
         self.stack.addWidget(self.admin_view)
         self.settings_view = SettingsWidget(
             self.current_user,
@@ -254,6 +267,7 @@ class MainWindow(QMainWindow):
         self.admin_view.force_disconnect_requested.connect(self._force_disconnect_workstation)
         self.admin_view.delete_requested.connect(self._delete_workstation)
         self.admin_view.lock_requested.connect(self._lock_admin)
+        self.admin_view.storage_directory_requested.connect(self._change_storage_directory)
         self.settings_view.edit_user_requested.connect(self._edit_user)
         self.settings_view.agent_refresh_requested.connect(self._poll_agent_status)
         self.settings_view.theme_changed.connect(self._set_theme_mode)
@@ -267,6 +281,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _dismiss_rdp_warning(self) -> None:
+        self._dismissed_rdp_notice_key = self._current_rdp_notice_key
         self.rdp_warning_banner.setVisible(False)
 
     @Slot()
@@ -276,7 +291,21 @@ class MainWindow(QMainWindow):
 
         active = get_active_rdp_sessions()
         finished = consume_finished_rdp_sessions()
+        for session in finished:
+            workstation = next(
+                (item for item in self.workstations if item.workstation_id == session.workstation_id),
+                None,
+            )
+            if workstation:
+                self._record_event(
+                    workstation,
+                    EventType.RDP_DISCONNECT,
+                    EventResult.SUCCESS,
+                    "Lokales RDP-Fenster geschlossen",
+                )
         if active:
+            notice_key = "active:" + ",".join(str(session.pid) for session in sorted(active, key=lambda item: item.pid))
+            self._current_rdp_notice_key = notice_key
             machine_names = ", ".join(sorted({session.display_name for session in active}))
             count = len(active)
             self.rdp_warning_title.setText(
@@ -287,14 +316,21 @@ class MainWindow(QMainWindow):
             self.rdp_warning_text.setText(
                 f"{machine_names} · Beim Trennen kann die Windows-Sitzung angemeldet bleiben und den Zugang belegen."
             )
-            self.rdp_warning_banner.setVisible(True)
+            if self._dismissed_rdp_notice_key != notice_key:
+                self.rdp_warning_banner.setVisible(True)
         elif finished:
+            notice_key = "finished:" + ",".join(str(session.pid) for session in sorted(finished, key=lambda item: item.pid))
+            self._current_rdp_notice_key = notice_key
             machine_names = ", ".join(sorted({session.display_name for session in finished}))
             self.rdp_warning_title.setText("RDP-Fenster wurde geschlossen")
             self.rdp_warning_text.setText(
                 f"{machine_names} · Das beendet nicht zwingend die Windows-Sitzung. Bitte auf der Maschine abmelden."
             )
-            self.rdp_warning_banner.setVisible(True)
+            if self._dismissed_rdp_notice_key != notice_key:
+                self.rdp_warning_banner.setVisible(True)
+        else:
+            self._current_rdp_notice_key = None
+            self._dismissed_rdp_notice_key = None
 
     @Slot()
     def _poll_agent_status(self) -> None:
@@ -307,6 +343,8 @@ class MainWindow(QMainWindow):
         )
         if not changed:
             return
+        self._saved_workstations = deepcopy(self.workstations)
+        self._persist()
         self._refresh_workstation_views()
         if self.detail_view.workstation is not None:
             self.detail_view.set_workstation(self.detail_view.workstation)
@@ -360,14 +398,30 @@ class MainWindow(QMainWindow):
         self.nav_buttons[self.PAGE_ADMIN].setText("Admin")
         self._show_machines()
 
+    @Slot(str)
+    def _change_storage_directory(self, directory: str) -> None:
+        try:
+            self.store.relocate(Path(directory), move_files=True)
+            self.admin_view.set_storage_directory(str(self.store.directory))
+            self._persist()
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(
+                self,
+                "Speicherort konnte nicht geändert werden",
+                f"Die Dateien wurden nicht vollständig verschoben:\n{exc}",
+            )
+            return
+        QMessageBox.information(
+            self,
+            "Speicherort geändert",
+            f"Status und Ereignislog werden jetzt gespeichert unter:\n{self.store.directory}",
+        )
+
     @Slot(Workstation)
     def on_workstation_selected(self, workstation: Workstation) -> None:
         self.workstation_selected.emit(workstation)
         events = [
-            event
-            for session_log in self.session_logs
-            for event in session_log.events
-            if event.workstation_id == workstation.workstation_id
+            event for event in self.session_events if event.workstation_id == workstation.workstation_id
         ]
         self.detail_view.set_session_events(events)
         self.stack.setCurrentIndex(self.PAGE_DETAIL)
@@ -447,14 +501,33 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.Yes:
             return
+        self._record_event(
+            workstation,
+            EventType.ADMIN_DISCONNECT_REQUESTED,
+            EventResult.PENDING,
+            source=EventSource.ADMIN,
+        )
         disconnected, failures = disconnect_rdp_session(workstation.workstation_id)
         if failures or disconnected == 0:
+            self._record_event(
+                workstation,
+                EventType.ADMIN_DISCONNECT_FAILED,
+                EventResult.FAILED,
+                "Lokales RDP-Fenster konnte nicht beendet werden",
+                EventSource.ADMIN,
+            )
             QMessageBox.critical(
                 self,
                 "Trennen fehlgeschlagen",
                 f"Das RDP-Fenster für {workstation.display_name} konnte nicht beendet werden.",
             )
             return
+        self._record_event(
+            workstation,
+            EventType.ADMIN_DISCONNECT_COMPLETED,
+            EventResult.SUCCESS,
+            source=EventSource.ADMIN,
+        )
         self._poll_rdp_sessions()
         QMessageBox.information(
             self,
@@ -598,6 +671,40 @@ class MainWindow(QMainWindow):
         self.reservations = reservations
         self._persist()
 
+    def _record_event(
+        self,
+        workstation: Workstation,
+        event_type: EventType,
+        result: EventResult,
+        reason: str | None = None,
+        source: EventSource = EventSource.PORTAL,
+    ) -> None:
+        """Persist one credential-free event in the shared append-only log."""
+        event = SessionEvent(
+            event_id=f"EVT-{uuid.uuid4().hex}",
+            timestamp_utc=datetime.now(),
+            event_type=event_type,
+            workstation_id=workstation.workstation_id,
+            workstation_hostname=workstation.hostname or workstation.fqdn,
+            session_user_upn=self.current_user.get_rdp_username(),
+            actor_entra_object_id=self.current_user.object_id,
+            actor_upn=self.current_user.upn,
+            result=result,
+            reason=reason,
+            source=source,
+        )
+        try:
+            self.store.append_event(event)
+        except OSError as exc:
+            logger.warning("Could not write portal event: %s", exc)
+            return
+        self.session_events.append(event)
+        self.session_log_view.add_event(event)
+        if self.detail_view.workstation is workstation:
+            self.detail_view.set_session_events(
+                [item for item in self.session_events if item.workstation_id == workstation.workstation_id]
+            )
+
     @Slot(Workstation)
     def on_connect_requested(self, workstation: Workstation) -> None:
         from portal_app.rdp import has_active_rdp_session, launch_rdp_session
@@ -678,6 +785,7 @@ class MainWindow(QMainWindow):
                 workstation.display_name,
             )
             if success:
+                self._record_event(workstation, EventType.LAUNCH_REQUESTED, EventResult.SUCCESS)
                 self._poll_rdp_sessions()
                 QMessageBox.information(
                     self,
@@ -685,9 +793,11 @@ class MainWindow(QMainWindow):
                     f"Die RDP-Verbindung zu {workstation.display_name} wird über {target} gestartet.",
                 )
             else:
+                self._record_event(workstation, EventType.LAUNCH_REQUESTED, EventResult.FAILED, message)
                 QMessageBox.critical(self, "Verbindung fehlgeschlagen", message)
         except Exception as exc:  # pragma: no cover - platform integration
             logger.exception("Failed to launch RDP")
+            self._record_event(workstation, EventType.LAUNCH_REQUESTED, EventResult.FAILED, str(exc))
             QMessageBox.critical(self, "Fehler", f"Die Verbindung konnte nicht gestartet werden: {exc}")
 
     @Slot(Workstation)
@@ -724,11 +834,14 @@ class MainWindow(QMainWindow):
         self.workstations, self.current_user, self.reservations = self.store.load(
             self.workstations, self.current_user
         )
+        self.session_events = self.store.load_events()
         self.theme_mode = self.store.theme_mode
         self.dark_mode = self._resolve_dark_mode()
         self._saved_workstations = deepcopy(self.workstations)
         self._saved_user = deepcopy(self.current_user)
         self.calendar_view.reservations = self.reservations
+        self.session_log_view.set_events(self.session_events)
+        self.admin_view.set_storage_directory(str(self.store.directory))
         self.calendar_view.set_user(self.current_user)
         self.settings_view.set_user(self.current_user)
         self.settings_view.set_theme_mode(self.theme_mode, self.dark_mode)

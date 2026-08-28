@@ -5,23 +5,99 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 
 from portal_app.models.reservation import Reservation
+from portal_app.models.session import SessionEvent
 from portal_app.models.user import MockUser, UserRole
 from portal_app.models.workstation import Workstation
-from shared.schemas import WorkstationSchema
+from shared.schemas import SessionEventSchema, WorkstationSchema
 
 
 class LocalStore:
     """Persist test data without requiring SharePoint or Entra ID."""
 
     def __init__(self, path: Path | None = None) -> None:
+        self.config_path = self._config_path()
+        self._uses_default_location = path is None
         if path is None:
-            local_data = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.cwd())
-            path = Path(local_data) / "KirschkeRDPPortal" / "test-data.json"
+            path = self._configured_directory() / "portal-state.json"
         self.path = path
+        self.events_path = self.path.parent / "portal-events.jsonl"
         self.theme_mode = "system"
+
+    @staticmethod
+    def default_directory() -> Path:
+        user_profile = Path(os.environ.get("USERPROFILE") or Path.home())
+        return (
+            user_profile
+            / "Prof. Dr.-Ing. Dieter Kirschke GmbH & Co. KG"
+            / "IB Kirschke - Dokumente"
+            / "90"
+            / "_K.I. Strategie"
+            / "Testprogramme"
+            / "RDP-Portal"
+        )
+
+    @staticmethod
+    def _config_path() -> Path:
+        local_data = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.cwd())
+        return Path(local_data) / "KirschkeRDPPortal" / "storage-config.json"
+
+    def _configured_directory(self) -> Path:
+        try:
+            config = json.loads(self.config_path.read_text(encoding="utf-8"))
+            location = config.get("storage_directory")
+            if location:
+                return Path(location)
+        except (OSError, ValueError, TypeError):
+            pass
+        # If the local configuration was removed, a redirect marker in the
+        # original SharePoint folder still makes a previous move recoverable.
+        marker = self.default_directory() / "storage-location.json"
+        try:
+            location = json.loads(marker.read_text(encoding="utf-8")).get("storage_directory")
+            if location:
+                return Path(location)
+        except (OSError, ValueError, TypeError):
+            pass
+        return self.default_directory()
+
+    @property
+    def directory(self) -> Path:
+        return self.path.parent
+
+    def _save_directory_config(self, directory: Path | None = None) -> None:
+        if not self._uses_default_location:
+            return
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        self.config_path.write_text(
+            json.dumps(
+                {"storage_directory": str(directory or self.directory), "version": 1},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _write_redirect_marker(previous_directory: Path, new_directory: Path) -> None:
+        """Leave a small, human-readable recovery pointer at the old location."""
+        marker = previous_directory / "storage-location.json"
+        temporary = marker.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(
+                {
+                    "storage_directory": str(new_directory),
+                    "message": "RDP-Portal-Dateien wurden in diesen Ordner verschoben.",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        temporary.replace(marker)
 
     def load(
         self,
@@ -96,6 +172,68 @@ class LocalStore:
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(self.path)
+
+    def load_events(self) -> list[SessionEvent]:
+        """Load the append-only portal event log; malformed individual lines are skipped."""
+        if not self.events_path.exists():
+            return []
+        events: list[SessionEvent] = []
+        try:
+            for line in self.events_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    schema = SessionEventSchema.model_validate_json(line)
+                    events.append(SessionEvent.from_schema(schema))
+                except ValueError:
+                    continue
+        except OSError:
+            return []
+        return events
+
+    def append_event(self, event: SessionEvent) -> None:
+        """Append one portal event without retaining credentials or passwords."""
+        self.events_path.parent.mkdir(parents=True, exist_ok=True)
+        serialized = event.to_schema().model_dump_json()
+        with self.events_path.open("a", encoding="utf-8") as event_file:
+            event_file.write(serialized + "\n")
+
+    def initialize_event_log(self) -> None:
+        """Create the empty append-only log on first portal startup."""
+        self.events_path.parent.mkdir(parents=True, exist_ok=True)
+        self.events_path.touch(exist_ok=True)
+
+    def relocate(self, directory: Path, move_files: bool = True) -> None:
+        """Switch storage folders and copy-verify existing state and event files first."""
+        previous_directory = self.directory
+        target_directory = directory.expanduser().resolve()
+        target_directory.mkdir(parents=True, exist_ok=True)
+        target_state = target_directory / "portal-state.json"
+        target_events = target_directory / "portal-events.jsonl"
+        if target_directory == self.directory:
+            self._save_directory_config()
+            return
+        pairs = [
+            (source, target)
+            for source, target in ((self.path, target_state), (self.events_path, target_events))
+            if source.exists()
+        ]
+        for _, target in pairs:
+            if target.exists():
+                raise FileExistsError(f"Zieldatei existiert bereits: {target.name}")
+        for source, target in pairs:
+            shutil.copy2(source, target)
+            if source.suffix == ".json":
+                json.loads(target.read_text(encoding="utf-8"))
+        # The reference is written before the original files are removed.  If
+        # it cannot be written, the original data remains intact.
+        self._save_directory_config(target_directory)
+        self._write_redirect_marker(previous_directory, target_directory)
+        if move_files:
+            for source, _ in pairs:
+                source.unlink()
+        self.path = target_state
+        self.events_path = target_events
 
 
 __all__ = ["LocalStore"]

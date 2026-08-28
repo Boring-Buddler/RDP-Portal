@@ -189,6 +189,38 @@ class SessionLogWidget(QWidget):
         for event_type, name in type_names.items():
             self.type_filter.addItem(name, event_type.value)
 
+    def set_events(self, events: list[SessionEvent]) -> None:
+        """Replace the displayed append-only portal event stream."""
+        self.all_events = list(events)
+        self._refresh_dynamic_filters()
+        self._apply_filters()
+
+    def add_event(self, event: SessionEvent) -> None:
+        """Add one persisted event without rebuilding the whole log page."""
+        self.all_events.append(event)
+        if self.ws_filter.findData(event.workstation_id) < 0:
+            self.ws_filter.addItem(event.workstation_id, event.workstation_id)
+        for user in (event.session_user_upn, event.actor_upn):
+            if user and self.user_filter.findData(user) < 0:
+                self.user_filter.addItem(user, user)
+        self._apply_filters()
+
+    def _refresh_dynamic_filters(self) -> None:
+        current_ws = self.ws_filter.currentData()
+        current_user = self.user_filter.currentData()
+        self.ws_filter.blockSignals(True)
+        self.user_filter.blockSignals(True)
+        self.ws_filter.clear()
+        self.user_filter.clear()
+        self.ws_filter.addItem("Alle Workstations", "")
+        self.user_filter.addItem("Alle Benutzer", "")
+        self._populate_workstation_filter()
+        self._populate_user_filter()
+        self.ws_filter.setCurrentIndex(max(0, self.ws_filter.findData(current_ws)))
+        self.user_filter.setCurrentIndex(max(0, self.user_filter.findData(current_user)))
+        self.ws_filter.blockSignals(False)
+        self.user_filter.blockSignals(False)
+
     def _create_table(self) -> QTableWidget:
         """Create the table widget."""
         table = QTableWidget()
@@ -319,7 +351,7 @@ class SessionLogWidget(QWidget):
                     result_cell.setForeground(QColor(Colors.success))
                 elif event.result == EventResult.FAILED:
                     result_cell.setForeground(QColor(Colors.error))
-                elif event.result == EventResult.WARNING:
+                elif event.result in {EventResult.PENDING, EventResult.TIMEOUT}:
                     result_cell.setForeground(QColor(Colors.warning))
             table.setItem(row, 4, result_cell)
 

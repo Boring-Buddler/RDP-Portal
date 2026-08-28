@@ -8,9 +8,11 @@ import sys
 from PySide6.QtCore import QProcess, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -30,6 +32,7 @@ class AdministrationWidget(QWidget):
     force_disconnect_requested = Signal(Workstation)
     delete_requested = Signal(Workstation)
     lock_requested = Signal()
+    storage_directory_requested = Signal(str)
 
     def __init__(self, workstations: list[Workstation], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -68,6 +71,35 @@ class AdministrationWidget(QWidget):
         lock.clicked.connect(self.lock_requested)
         actions.addWidget(lock)
         root.addLayout(actions)
+        storage_card = QFrame()
+        storage_card.setObjectName("detailCard")
+        storage_layout = QHBoxLayout(storage_card)
+        storage_layout.setContentsMargins(16, 12, 16, 12)
+        storage_layout.setSpacing(10)
+        storage_copy = QVBoxLayout()
+        storage_title = QLabel("SharePoint-Speicherort")
+        storage_title.setObjectName("detailCardTitle")
+        storage_copy.addWidget(storage_title)
+        storage_note = QLabel(
+            "Statusdatei und Ereignislog werden hier gespeichert. Beim Anwenden werden vorhandene Dateien verschoben."
+        )
+        storage_note.setObjectName("detailMuted")
+        storage_note.setWordWrap(True)
+        storage_copy.addWidget(storage_note)
+        storage_layout.addLayout(storage_copy)
+        self.storage_directory = QLineEdit()
+        self.storage_directory.setMinimumWidth(420)
+        self.storage_directory.setPlaceholderText("Lokaler OneDrive-/SharePoint-Ordner")
+        storage_layout.addWidget(self.storage_directory, 1)
+        browse = QPushButton("Auswählen")
+        browse.setObjectName("toolbarButton")
+        browse.clicked.connect(self._choose_storage_directory)
+        storage_layout.addWidget(browse)
+        apply_storage = QPushButton("Dateien verschieben")
+        apply_storage.setObjectName("toolbarButton")
+        apply_storage.clicked.connect(self._apply_storage_directory)
+        storage_layout.addWidget(apply_storage)
+        root.addWidget(storage_card)
         self.table = QTableWidget()
         self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(["ID", "Name", "Hostname", "IP-Adresse", "Standort", "Status"])
@@ -90,6 +122,21 @@ class AdministrationWidget(QWidget):
     def set_workstations(self, workstations: list[Workstation]) -> None:
         self.workstations = workstations
         self.refresh()
+
+    def set_storage_directory(self, directory: str) -> None:
+        self.storage_directory.setText(directory)
+
+    def _choose_storage_directory(self) -> None:
+        directory = QFileDialog.getExistingDirectory(
+            self, "SharePoint-Speicherordner auswählen", self.storage_directory.text().strip()
+        )
+        if directory:
+            self.storage_directory.setText(directory)
+
+    def _apply_storage_directory(self) -> None:
+        directory = self.storage_directory.text().strip()
+        if directory:
+            self.storage_directory_requested.emit(directory)
 
     def refresh(self) -> None:
         active = sum(ws.enabled for ws in self.workstations)

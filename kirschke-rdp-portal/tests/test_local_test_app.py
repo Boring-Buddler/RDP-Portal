@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from portal_app.models.reservation import Reservation
-from portal_app.models.session import create_mock_session_logs
+from portal_app.models.session import SessionEvent, create_mock_session_logs
 from portal_app.models.user import MockUser
 from portal_app.models.workstation import (
     Workstation,
@@ -27,7 +27,7 @@ from portal_app.ui.widgets.session_log import event_to_export_row
 from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
 from portal_app.ui.widgets.workstation_dialog import WorkstationDialog
 from shared.agent_snapshot import AgentSnapshot, load_agent_snapshots, write_agent_snapshot
-from shared.enums import AgentStatus, ConnectionTargetMode, SessionState
+from shared.enums import AgentStatus, ConnectionTargetMode, EventResult, EventType, SessionState
 from workstation_agent.service import AgentConfig, WorkstationAgent
 from workstation_agent.wts.monitor import WTSSessionInfo, WTS_CONNECTSTATE_CLASS
 
@@ -69,6 +69,35 @@ def test_local_store_removes_legacy_demo_machine_username(tmp_path):
     assert workstations[0].username_hint is None
     saved = json.loads(store.path.read_text(encoding="utf-8"))
     assert saved["workstations"][0]["username_hint"] is None
+
+
+def test_local_store_writes_and_moves_shared_status_and_event_log(tmp_path):
+    source = tmp_path / "source" / "portal-state.json"
+    store = LocalStore(source)
+    user = MockUser.create_user()
+    workstation = create_test_workstation()
+    store.save([workstation], user, [])
+    store.initialize_event_log()
+    store.append_event(
+        SessionEvent(
+            event_id="EVT-1",
+            timestamp_utc=datetime.now(),
+            event_type=EventType.LAUNCH_REQUESTED,
+            workstation_id=workstation.workstation_id,
+            result=EventResult.SUCCESS,
+        )
+    )
+
+    target = tmp_path / "sharepoint" / "RDP-Portal"
+    store.relocate(target)
+
+    assert store.path == target / "portal-state.json"
+    assert store.events_path == target / "portal-events.jsonl"
+    assert store.path.exists()
+    assert len(store.load_events()) == 1
+    assert not source.exists()
+    marker = json.loads((source.parent / "storage-location.json").read_text(encoding="utf-8"))
+    assert marker["storage_directory"] == str(target)
 
 
 def test_initial_user_uses_whoami_for_default(monkeypatch):
