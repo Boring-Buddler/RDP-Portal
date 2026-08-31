@@ -18,6 +18,7 @@ class RDPDiagnosticResult:
 
     target: str
     port_open: bool | None
+    saved_credentials_present: bool | None
     report: str
     log_path: Path
 
@@ -62,6 +63,14 @@ def run_rdp_diagnostics(profile: RDPProfileSchema, timeout_seconds: float = 3.0)
         lines.append("TCP-Port 3389 (RDP): nicht geprÃ¼ft, weil die NamensauflÃ¶sung fehlgeschlagen ist")
 
     lines.extend(("", "Letzte lokale Windows-RDP-Clientereignisse:"))
+    saved_credentials_present = _has_saved_rdp_credentials(target)
+    credential_status = (
+        "VORHANDEN" if saved_credentials_present else "nicht vorhanden"
+        if saved_credentials_present is not None else "nicht pr\u00fcfbar"
+    )
+    lines.append(f"Gespeicherte Windows-Anmeldedaten f\u00fcr dieses Ziel: {credential_status}")
+    lines.append("Hinweis: Gespeicherte Anmeldedaten k\u00f6nnen einen alten Benutzer vorausw\u00e4hlen.")
+
     event_output = _recent_rdp_client_events()
     lines.append(event_output or "Keine lesbaren Ereignisse gefunden.")
 
@@ -81,7 +90,33 @@ def run_rdp_diagnostics(profile: RDPProfileSchema, timeout_seconds: float = 3.0)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log_file:
         log_file.write(report + "\n\n" + ("-" * 72) + "\n\n")
-    return RDPDiagnosticResult(target=target, port_open=port_open, report=report, log_path=log_path)
+    return RDPDiagnosticResult(
+        target=target,
+        port_open=port_open,
+        saved_credentials_present=saved_credentials_present,
+        report=report,
+        log_path=log_path,
+    )
+
+
+def _has_saved_rdp_credentials(target: str) -> bool | None:
+    """Check for a matching Windows Credential Manager entry without reading it."""
+    credential_target = f"TERMSRV/{target}"
+    try:
+        result = subprocess.run(
+            ["cmdkey", f"/list:{credential_target}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=4,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return credential_target.casefold() in result.stdout.casefold()
 
 
 def _recent_rdp_client_events() -> str:

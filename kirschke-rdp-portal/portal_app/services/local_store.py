@@ -15,6 +15,10 @@ from portal_app.models.workstation import Workstation
 from shared.schemas import SessionEventSchema, WorkstationSchema
 
 
+class StoreConflictError(RuntimeError):
+    """Raised when two portal instances changed the same shared record."""
+
+
 class LocalStore:
     """Persist test data without requiring SharePoint or Entra ID."""
 
@@ -25,9 +29,16 @@ class LocalStore:
             path = self._configured_directory() / "portal-state.json"
         self.path = path
         self.events_path = self.path.parent / "portal-events.jsonl"
+        self.preferences_path = (
+            self.config_path.parent / "portal-preferences.json"
+            if self._uses_default_location
+            else self.path.with_name(f"{self.path.stem}-preferences.json")
+        )
         self.theme_mode = "system"
         self._state_signature: tuple[int, int] | None = None
         self._events_signature: tuple[int, int] | None = None
+        self._baseline_workstations: dict[str, dict] = {}
+        self._baseline_reservations: dict[str, dict] = {}
 
     @staticmethod
     def default_directory() -> Path:
@@ -82,6 +93,122 @@ class LocalStore:
         self._state_signature = self._signature(self.path)
         self._events_signature = self._signature(self.events_path)
 
+    @staticmethod
+    def _write_json(path: Path, data: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+
+    @staticmethod
+    def _user_from_data(data: dict, fallback: MockUser) -> MockUser:
+        return MockUser(
+            object_id=data.get("object_id", fallback.object_id),
+            upn=data.get("upn", fallback.upn),
+            display_name=data.get("display_name", fallback.display_name),
+            email=data.get("email", fallback.email),
+            role=UserRole(data.get("role", fallback.role.value)),
+            rdp_username=data.get("rdp_username"),
+            rdp_domain=data.get("rdp_domain"),
+        )
+
+    @staticmethod
+    def _user_data(user: MockUser) -> dict:
+        return {
+            "object_id": user.object_id,
+            "upn": user.upn,
+            "display_name": user.display_name,
+            "email": user.email,
+            "role": user.role.value,
+            "rdp_username": user.rdp_username,
+            "rdp_domain": user.rdp_domain,
+        }
+
+    def _load_preferences(self, fallback: MockUser, legacy_data: dict | None = None) -> MockUser:
+        data: dict = {}
+        uses_legacy_data = False
+        try:
+            data = json.loads(self.preferences_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            data = legacy_data or {}
+            uses_legacy_data = bool(legacy_data)
+        stored_theme = data.get("theme_mode")
+        if uses_legacy_data and data.get("version", 0) < 3:
+            self.theme_mode = "dark" if stored_theme == "dark" else "system"
+        else:
+            self.theme_mode = stored_theme if stored_theme in {"system", "light", "dark"} else "system"
+        return self._user_from_data(data.get("user", {}), fallback)
+
+    def _save_preferences(self, user: MockUser, theme_mode: str) -> None:
+        self.theme_mode = theme_mode if theme_mode in {"system", "light", "dark"} else "system"
+        self._write_json(
+            self.preferences_path,
+            {"version": 1, "theme_mode": self.theme_mode, "user": self._user_data(user)},
+        )
+
+    def _set_baseline(self, data: dict) -> None:
+        self._baseline_workstations = {
+            item["workstation_id"]: item for item in data.get("workstations", []) if item.get("workstation_id")
+        }
+        self._baseline_reservations = {
+            item["reservation_id"]: item for item in data.get("reservations", []) if item.get("reservation_id")
+        }
+
+    @staticmethod
+    def _merge_records(
+        baseline: dict[str, dict],
+        local_records: list[dict],
+        remote_records: list[dict],
+        identifier: str,
+        label: str,
+    ) -> list[dict]:
+        """Three-way merge records; refuse a simultaneous edit of one record."""
+        local = {item[identifier]: item for item in local_records if item.get(identifier)}
+        remote = {item[identifier]: item for item in remote_records if item.get(identifier)}
+        merged: dict[str, dict] = {}
+        conflicts: list[str] = []
+        for record_id in sorted(set(baseline) | set(local) | set(remote)):
+            base = baseline.get(record_id)
+            current = local.get(record_id)
+            incoming = remote.get(record_id)
+            if current == incoming:
+                selected = current
+            elif current == base:
+                selected = incoming
+            elif incoming == base:
+                selected = current
+            else:
+                conflicts.append(record_id)
+                continue
+            if selected is not None:
+                merged[record_id] = selected
+        if conflicts:
+            raise StoreConflictError(
+                f"{label} wurde parallel bearbeitet: {', '.join(conflicts)}. "
+                "Bitte aktualisieren und die Änderung erneut vornehmen."
+            )
+        return list(merged.values())
+
+    def _merge_shared_data(self, remote_data: dict, local_data: dict) -> dict:
+        """Merge an externally synced state file with the current portal changes."""
+        return {
+            "version": 4,
+            "workstations": self._merge_records(
+                self._baseline_workstations,
+                local_data["workstations"],
+                remote_data.get("workstations", []),
+                "workstation_id",
+                "Maschine",
+            ),
+            "reservations": self._merge_records(
+                self._baseline_reservations,
+                local_data["reservations"],
+                remote_data.get("reservations", []),
+                "reservation_id",
+                "Reservierung",
+            ),
+        }
+
     def has_external_changes(self) -> bool:
         """Return whether the OneDrive/SharePoint mirror changed since the last read/write."""
         return (
@@ -126,18 +253,12 @@ class LocalStore:
         fallback_user: MockUser,
     ) -> tuple[list[Workstation], MockUser, list[Reservation]]:
         if not self.path.exists():
+            user = self._load_preferences(fallback_user)
             self._remember_signatures()
-            return fallback_workstations, fallback_user, []
+            return fallback_workstations, user, []
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            # Older local files used "light" as an implicit default. Treat it
-            # as the new system-default mode rather than overriding Windows.
-            stored_theme = data.get("theme_mode")
-            is_current_format = data.get("version", 0) >= 3
-            self.theme_mode = (
-                stored_theme if is_current_format and stored_theme in {"system", "light", "dark"}
-                else "dark" if stored_theme == "dark" else "system"
-            )
+            user = self._load_preferences(fallback_user, data)
             workstations = [
                 Workstation.from_schema(WorkstationSchema.model_validate(item))
                 for item in data.get("workstations", [])
@@ -151,20 +272,11 @@ class LocalStore:
                 if re.fullmatch(r"user\d+@prof-kirschke\.de", username_hint, re.IGNORECASE):
                     workstation.username_hint = None
                     removed_legacy_placeholders = True
-            user_data = data.get("user", {})
-            user = MockUser(
-                object_id=user_data.get("object_id", fallback_user.object_id),
-                upn=user_data.get("upn", fallback_user.upn),
-                display_name=user_data.get("display_name", fallback_user.display_name),
-                email=user_data.get("email", fallback_user.email),
-                role=UserRole(user_data.get("role", fallback_user.role.value)),
-                rdp_username=user_data.get("rdp_username"),
-                rdp_domain=user_data.get("rdp_domain"),
-            )
             reservations = [Reservation.from_dict(item) for item in data.get("reservations", [])]
             if removed_legacy_placeholders:
                 self.save(workstations, user, reservations, theme_mode=self.theme_mode)
             else:
+                self._set_baseline(data)
                 self._remember_signatures()
             return workstations or fallback_workstations, user, reservations
         except (OSError, ValueError, KeyError, TypeError):
@@ -180,23 +292,19 @@ class LocalStore:
     ) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {
-            "version": 3,
-            "theme_mode": theme_mode if theme_mode in {"system", "light", "dark"} else "system",
+            "version": 4,
             "workstations": [ws.to_schema().model_dump(mode="json") for ws in workstations],
-            "user": {
-                "object_id": user.object_id,
-                "upn": user.upn,
-                "display_name": user.display_name,
-                "email": user.email,
-                "role": user.role.value,
-                "rdp_username": user.rdp_username,
-                "rdp_domain": user.rdp_domain,
-            },
             "reservations": [reservation.to_dict() for reservation in reservations],
         }
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(self.path)
+        if self._signature(self.path) != self._state_signature and self.path.exists():
+            try:
+                remote_data = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError) as exc:
+                raise StoreConflictError("Die gemeinsame Konfigurationsdatei kann nicht sicher zusammengeführt werden.") from exc
+            data = self._merge_shared_data(remote_data, data)
+        self._write_json(self.path, data)
+        self._save_preferences(user, theme_mode)
+        self._set_baseline(data)
         self._remember_signatures()
 
     def load_events(self) -> list[SessionEvent]:

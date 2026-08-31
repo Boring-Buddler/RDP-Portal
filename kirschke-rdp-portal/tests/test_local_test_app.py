@@ -16,7 +16,7 @@ from portal_app.models.workstation import (
 from portal_app.rdp.generator import RDPFileGenerator
 from portal_app.rdp.launcher import RDPSessionLauncher
 from portal_app.services.agent_status import LocalAgentStatusService
-from portal_app.services.local_store import LocalStore
+from portal_app.services.local_store import LocalStore, StoreConflictError
 from portal_app.services.local_identity import detect_initial_user
 from portal_app.services.machine_discovery import MachineDiscovery, _ipconfig_network_details, discover_remote_machine
 from portal_app.services.rdp_diagnostics import run_rdp_diagnostics
@@ -53,6 +53,61 @@ def test_local_store_roundtrip(tmp_path):
     assert loaded_user.get_rdp_username() == "KIRSCHKE\\user"
     assert reservations[0].title == "Testlauf"
     assert store.theme_mode == "dark"
+
+
+def test_local_preferences_are_not_written_to_shared_portal_state(tmp_path):
+    store = LocalStore(tmp_path / "portal-state.json")
+    user = MockUser.create_user()
+
+    store.save([create_test_workstation()], user, [], theme_mode="dark")
+
+    shared_data = json.loads(store.path.read_text(encoding="utf-8"))
+    preferences = json.loads(store.preferences_path.read_text(encoding="utf-8"))
+    assert shared_data["version"] == 4
+    assert "user" not in shared_data
+    assert "theme_mode" not in shared_data
+    assert preferences["theme_mode"] == "dark"
+    assert preferences["user"]["upn"] == user.upn
+
+
+def test_shared_state_merges_independent_machine_changes(tmp_path):
+    path = tmp_path / "portal-state.json"
+    user = MockUser.create_user()
+    initial = create_test_workstation()
+    first = LocalStore(path)
+    first.save([initial], user, [])
+    second = LocalStore(path)
+    first_workstations, _, _ = first.load([], user)
+    second_workstations, _, _ = second.load([], user)
+    first_added = Workstation(workstation_id="WS-FIRST", display_name="Erste", hostname="FIRST")
+    second_added = Workstation(workstation_id="WS-SECOND", display_name="Zweite", hostname="SECOND")
+
+    first.save(first_workstations + [first_added], user, [])
+    second.save(second_workstations + [second_added], user, [])
+
+    merged, _, _ = LocalStore(path).load([], user)
+    assert {workstation.workstation_id for workstation in merged} == {
+        initial.workstation_id,
+        "WS-FIRST",
+        "WS-SECOND",
+    }
+
+
+def test_shared_state_rejects_simultaneous_change_to_same_machine(tmp_path):
+    path = tmp_path / "portal-state.json"
+    user = MockUser.create_user()
+    initial = create_test_workstation()
+    first = LocalStore(path)
+    first.save([initial], user, [])
+    second = LocalStore(path)
+    first_workstations, _, _ = first.load([], user)
+    second_workstations, _, _ = second.load([], user)
+    first_workstations[0].display_name = "Portal Eins"
+    second_workstations[0].display_name = "Portal Zwei"
+
+    first.save(first_workstations, user, [])
+    with pytest.raises(StoreConflictError):
+        second.save(second_workstations, user, [])
 
 
 def test_local_store_removes_legacy_demo_machine_username(tmp_path):
@@ -275,7 +330,7 @@ def test_main_window_starts_with_two_machines_and_persists_theme(tmp_path, monke
     ]
     assert logo_pixels
     assert all(color.red() > 240 and color.green() > 240 and color.blue() > 240 for color in logo_pixels)
-    assert json.loads(store.path.read_text(encoding="utf-8"))["theme_mode"] == "dark"
+    assert json.loads(store.preferences_path.read_text(encoding="utf-8"))["theme_mode"] == "dark"
 
 
 def test_machine_username_overrides_user_default(tmp_path):
@@ -446,6 +501,10 @@ def test_rdp_diagnostics_reports_reachable_port_without_credentials(monkeypatch,
         "portal_app.services.rdp_diagnostics._recent_rdp_client_events",
         lambda: "[RDP-Client]\nFehlercode: Beispiel",
     )
+    monkeypatch.setattr(
+        "portal_app.services.rdp_diagnostics._has_saved_rdp_credentials",
+        lambda target: True,
+    )
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     profile = Workstation(
         workstation_id="WS-DIAG",
@@ -461,6 +520,8 @@ def test_rdp_diagnostics_reports_reachable_port_without_credentials(monkeypatch,
     assert "KIRSCHKE\\becker" in result.report
     assert "Passwort: wird nicht protokolliert" in result.report
     assert "Fehlercode: Beispiel" in result.report
+    assert "Gespeicherte Windows-Anmeldedaten" in result.report
+    assert result.saved_credentials_present
     assert result.log_path.exists()
 
 

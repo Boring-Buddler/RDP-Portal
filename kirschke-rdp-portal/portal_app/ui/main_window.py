@@ -32,7 +32,7 @@ from portal_app.models.reservation import Reservation
 from portal_app.models.session import SessionEvent
 from portal_app.models.user import MockUser
 from portal_app.models.workstation import Workstation, create_initial_workstations
-from portal_app.services.local_store import LocalStore
+from portal_app.services.local_store import LocalStore, StoreConflictError
 from portal_app.services.local_identity import detect_initial_user
 from portal_app.services.agent_status import LocalAgentStatusService
 from portal_app.ui.design import Typography
@@ -876,6 +876,12 @@ class MainWindow(QMainWindow):
                 self._saved_user,
                 self.reservations,
                 theme_mode=self.theme_mode,
+            )
+        except StoreConflictError as exc:
+            QMessageBox.warning(
+                self,
+                "Paralleländerung erkannt",
+                f"Die gemeinsame SharePoint-Konfiguration wurde auf einem anderen Portal geändert.\n\n{exc}",
             )
         except OSError as exc:
             QMessageBox.warning(self, "Speichern fehlgeschlagen", f"Die lokalen Testdaten konnten nicht gespeichert werden: {exc}")
