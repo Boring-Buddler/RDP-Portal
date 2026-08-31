@@ -1036,6 +1036,8 @@ class MainWindow(QMainWindow):
                 color: #263f52;
                 border: 1px solid #aebfca;
                 border-radius: 7px;
+                font-size: 14px;
+                min-height: 22px;
                 padding: 7px 16px;
                 min-width: 82px;
                 font-weight: 600;
@@ -1047,10 +1049,12 @@ class MainWindow(QMainWindow):
             QDialog QSpinBox, QDialog QTextEdit, QDialog QPlainTextEdit {
                 background: #ffffff;
                 color: #17212b;
+                font-size: 14px;
+                min-height: 22px;
                 placeholder-text-color: #7a8994;
                 border: 1px solid #cbd6dd;
                 border-radius: 6px;
-                padding: 7px 9px;
+                padding: 6px 10px;
             }
             QDialog QLineEdit:read-only, QDialog QLineEdit:disabled {
                 background: #eef2f4;
@@ -1126,7 +1130,7 @@ class MainWindow(QMainWindow):
                 color: #e7f0f5;
             }
             QMessageBox QLabel { color: #edf3f8; }
-            QMessageBox QPushButton, QDialogButtonBox QPushButton { background: #263d4b; color: #f3f8fb; border-color: #628196; }
+            QMessageBox QPushButton, QDialogButtonBox QPushButton { background: #263d4b; color: #f3f8fb; font-size: 14px; min-height: 22px; border-color: #628196; }
             QMessageBox QPushButton:hover, QDialogButtonBox QPushButton:hover { background: #315164; border-color: #9ac3da; }
             QMessageBox QPushButton:default, QDialogButtonBox QPushButton:default { background: #5b91b1; color: #ffffff; border-color: #8cc0db; }
             QMessageBox QPushButton:default:hover, QDialogButtonBox QPushButton:default:hover { background: #6ca6c7; border-color: #b5d9ea; }
@@ -1134,10 +1138,13 @@ class MainWindow(QMainWindow):
             QDialog QSpinBox, QDialog QTextEdit, QDialog QPlainTextEdit {
                 background: #1a2a35;
                 color: #f1f6fa;
+                font-size: 14px;
+                min-height: 22px;
                 placeholder-text-color: #8fa6b5;
                 border-color: #557386;
                 selection-background-color: #4f7897;
                 selection-color: #ffffff;
+                padding: 6px 10px;
             }
             QDialog QLineEdit:read-only, QDialog QLineEdit:disabled {
                 background: #22343f;

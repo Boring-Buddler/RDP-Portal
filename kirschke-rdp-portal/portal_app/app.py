@@ -1,7 +1,17 @@
 """Main application for Kirschke RDP Workstation Portal."""
 
-import sys
 import logging
+import sys
+from pathlib import Path
+
+# A direct ``python portal_app/app.py`` start puts only ``portal_app`` on
+# sys.path.  Add the project directory first so absolute package imports work
+# just like they do with ``python -m portal_app.app``.
+if __package__ in {None, ""}:
+    project_directory = str(Path(__file__).resolve().parents[1])
+    if project_directory not in sys.path:
+        sys.path.insert(0, project_directory)
+
 from PySide6.QtWidgets import QApplication, QWidget
 from PySide6.QtCore import QEvent
 from PySide6.QtGui import QPalette

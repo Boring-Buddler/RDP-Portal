@@ -23,7 +23,7 @@ from portal_app.services.rdp_diagnostics import run_rdp_diagnostics
 from portal_app.ui.main_window import MainWindow
 from portal_app.ui.widgets.ping_tool import PingToolWidget
 from portal_app.ui.widgets.management_pages import AdministrationWidget, SettingsWidget
-from portal_app.ui.widgets.reservation_calendar import ReservationCalendarWidget
+from portal_app.ui.widgets.reservation_calendar import ReservationCalendarWidget, ReservationDialog
 from portal_app.ui.widgets.session_log import event_to_export_row
 from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
 from portal_app.ui.widgets.workstation_dialog import WorkstationDialog
@@ -235,6 +235,28 @@ def test_registration_wizard_passes_detected_values_to_profile(qtbot):
     assert dialog.display_name.text() == "PC-TEST"
     assert dialog.hostname.text() == "PC-TEST"
     assert dialog.fqdn.text() == "pc-test.kirschke.local"
+
+
+def test_dialog_inputs_keep_a_readable_height(qtbot):
+    app = QApplication.instance()
+    assert app is not None
+    previous_style = app.styleSheet()
+    app.setStyleSheet(MainWindow._application_style(False))
+    try:
+        profile = WorkstationDialog()
+        reservation = ReservationDialog([create_test_workstation()], MockUser.create_user())
+        qtbot.addWidget(profile)
+        qtbot.addWidget(reservation)
+        profile.show()
+        reservation.show()
+        qtbot.wait(20)
+        assert profile.display_name.height() >= 36
+        assert profile.hostname.height() >= 36
+        assert reservation.title.height() >= 36
+        assert reservation.start.height() >= 36
+        assert reservation.end.height() >= 36
+    finally:
+        app.setStyleSheet(previous_style)
 
 
 def test_initial_user_uses_whoami_for_default(monkeypatch):

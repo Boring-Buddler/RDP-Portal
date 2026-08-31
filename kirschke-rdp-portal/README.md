@@ -132,7 +132,7 @@ python -m pip install -e ".[dev]"
 python -m portal_app.app
 ```
 
-Do not start `portal_app/app.py` directly. The module command above ensures that package imports work correctly.
+The recommended start is `python -m portal_app.app`. Direct starts via `python portal_app/app.py` are also supported.
 
 ## Repository Hygiene
 
