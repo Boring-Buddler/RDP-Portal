@@ -153,6 +153,8 @@ langsamer und ist für den ersten Test nicht empfohlen.
 Die Admin-Verwaltung kann gespeicherte RDP-Zugriffe nach Bestätigung mit AD-Gruppen
 `RDP-<Maschinen-ID>` abgleichen. Die Vorbereitung auf einem Verwaltungsrechner ist in
 [docs/active-directory-setup.md](docs/active-directory-setup.md) beschrieben.
+Für die vollständige Pilotabnahme siehe auch
+[docs/pilotbetrieb-anleitung.md](docs/pilotbetrieb-anleitung.md).
 
 ## Repository Hygiene
 

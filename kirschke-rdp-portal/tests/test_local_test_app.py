@@ -19,7 +19,11 @@ from portal_app.services.agent_status import LocalAgentStatusService
 from portal_app.services.local_store import LocalStore, StoreConflictError
 from portal_app.services.local_identity import detect_initial_user
 from portal_app.services.directory_users import discover_windows_domain_accounts
-from portal_app.services.active_directory_sync import sync_rdp_group_members
+from portal_app.services.active_directory_sync import check_active_directory_readiness, sync_rdp_group_members
+from portal_app.services.windows_admin_auth import (
+    check_windows_admin_authorization,
+    test_password_fallback_allowed as is_test_password_fallback_allowed,
+)
 from portal_app.services.machine_discovery import MachineDiscovery, _ipconfig_network_details, discover_remote_machine
 from portal_app.services.rdp_diagnostics import clear_saved_rdp_credentials, run_rdp_diagnostics
 from portal_app.ui.main_window import MainWindow
@@ -360,6 +364,46 @@ def test_admin_actions_include_disconnect_and_delete(qtbot):
     assert signal.args == [workstations[0]]
     admin.set_storage_status("Gemeinsamer Stand gespeichert · 12:34:56")
     assert "12:34:56" in admin.storage_status.text()
+
+
+def test_windows_admin_authorization_matches_domain_group(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = '"KIRSCHKE\\RDP-Portal-Admins","S-1-5-21","Mandatory group, Enabled by default"\n'
+
+    monkeypatch.setattr("portal_app.services.windows_admin_auth.subprocess.run", lambda *args, **kwargs: Result())
+    result = check_windows_admin_authorization()
+
+    assert result.authorized
+    assert result.group_name == "RDP-Portal-Admins"
+
+
+def test_test_admin_password_can_be_disabled_for_production(monkeypatch):
+    monkeypatch.delenv("RDP_PORTAL_ALLOW_TEST_ADMIN_PASSWORD", raising=False)
+    assert is_test_password_fallback_allowed()
+    monkeypatch.setenv("RDP_PORTAL_ALLOW_TEST_ADMIN_PASSWORD", "false")
+    assert not is_test_password_fallback_allowed()
+
+
+def test_ad_readiness_reports_module_and_windows_admin_group(monkeypatch):
+    class Authorization:
+        authorized = True
+        group_name = "RDP-Portal-Admins"
+
+    class Result:
+        returncode = 0
+        stdout = "installed\n"
+
+    monkeypatch.setattr(
+        "portal_app.services.active_directory_sync.check_windows_admin_authorization",
+        lambda: Authorization(),
+    )
+    monkeypatch.setattr("portal_app.services.active_directory_sync.subprocess.run", lambda *args, **kwargs: Result())
+    readiness = check_active_directory_readiness()
+
+    assert readiness.module_available
+    assert readiness.admin_authorized
+    assert "verfügbar" in readiness.message
 
 
 def test_rdp_access_dialog_selects_and_manually_adds_accounts(qtbot):

@@ -34,6 +34,7 @@ class AdministrationWidget(QWidget):
     rdp_access_requested = Signal(Workstation)
     lock_requested = Signal()
     storage_directory_requested = Signal(str)
+    active_directory_status_requested = Signal()
 
     def __init__(self, workstations: list[Workstation], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -110,6 +111,25 @@ class AdministrationWidget(QWidget):
         apply_storage.clicked.connect(self._apply_storage_directory)
         storage_layout.addWidget(apply_storage)
         root.addWidget(storage_card)
+        directory_card = QFrame()
+        directory_card.setObjectName("detailCard")
+        directory_layout = QHBoxLayout(directory_card)
+        directory_layout.setContentsMargins(16, 12, 16, 12)
+        directory_layout.setSpacing(10)
+        directory_copy = QVBoxLayout()
+        directory_title = QLabel("Active Directory")
+        directory_title.setObjectName("detailCardTitle")
+        directory_copy.addWidget(directory_title)
+        self.active_directory_status = QLabel("AD-Status wird beim Öffnen geprüft.")
+        self.active_directory_status.setObjectName("detailMuted")
+        self.active_directory_status.setWordWrap(True)
+        directory_copy.addWidget(self.active_directory_status)
+        directory_layout.addLayout(directory_copy, 1)
+        refresh_directory_status = QPushButton("AD-Status prüfen")
+        refresh_directory_status.setObjectName("toolbarButton")
+        refresh_directory_status.clicked.connect(self.active_directory_status_requested)
+        directory_layout.addWidget(refresh_directory_status)
+        root.addWidget(directory_card)
         self.table = QTableWidget()
         self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(
@@ -125,8 +145,8 @@ class AdministrationWidget(QWidget):
         root.addWidget(self.table, 1)
         self.refresh()
 
-    def set_access_status(self, unlocked: bool) -> None:
-        self.access_status.setText("Admin-Sitzung freigeschaltet" if unlocked else "Admin-Sitzung gesperrt")
+    def set_access_status(self, unlocked: bool, detail: str | None = None) -> None:
+        self.access_status.setText(detail or ("Admin-Sitzung freigeschaltet" if unlocked else "Admin-Sitzung gesperrt"))
         self.access_status.setProperty("unlocked", unlocked)
         self.access_status.style().unpolish(self.access_status)
         self.access_status.style().polish(self.access_status)
@@ -140,6 +160,9 @@ class AdministrationWidget(QWidget):
 
     def set_storage_status(self, status: str) -> None:
         self.storage_status.setText(status)
+
+    def set_active_directory_status(self, status: str) -> None:
+        self.active_directory_status.setText(status)
 
     def _choose_storage_directory(self) -> None:
         directory = QFileDialog.getExistingDirectory(

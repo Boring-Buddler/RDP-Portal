@@ -7,6 +7,8 @@ import json
 import subprocess
 from dataclasses import dataclass
 
+from portal_app.services.windows_admin_auth import check_windows_admin_authorization
+
 
 @dataclass(frozen=True)
 class ActiveDirectorySyncResult:
@@ -14,6 +16,45 @@ class ActiveDirectorySyncResult:
     added: list[str]
     removed: list[str]
     message: str
+
+
+@dataclass(frozen=True)
+class ActiveDirectoryReadiness:
+    module_available: bool
+    admin_authorized: bool
+    message: str
+
+
+def check_active_directory_readiness() -> ActiveDirectoryReadiness:
+    """Read local prerequisites only; do not query or modify the directory."""
+    authorization = check_windows_admin_authorization()
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "if (Get-Module -ListAvailable -Name ActiveDirectory) { 'installed' } else { 'missing' }",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        module_available = result.returncode == 0 and result.stdout.strip().casefold() == "installed"
+    except (OSError, subprocess.SubprocessError):
+        module_available = False
+    module_text = "RSAT/ActiveDirectory-Modul verfügbar" if module_available else "RSAT/ActiveDirectory-Modul fehlt"
+    access_text = (
+        f"Admin-Gruppe {authorization.group_name} bestätigt"
+        if authorization.authorized
+        else f"Admin-Gruppe {authorization.group_name} nicht im Windows-Token"
+    )
+    return ActiveDirectoryReadiness(module_available, authorization.authorized, f"{module_text} · {access_text}")
 
 
 def sync_rdp_group_members(group_name: str, accounts: list[str]) -> ActiveDirectorySyncResult:
@@ -87,4 +128,9 @@ foreach ($user in $toRemove) {{ Remove-ADGroupMember -Identity $group -Members $
     )
 
 
-__all__ = ["ActiveDirectorySyncResult", "sync_rdp_group_members"]
+__all__ = [
+    "ActiveDirectoryReadiness",
+    "ActiveDirectorySyncResult",
+    "check_active_directory_readiness",
+    "sync_rdp_group_members",
+]

@@ -37,6 +37,8 @@ from portal_app.services.local_identity import detect_initial_user
 from portal_app.services.agent_status import LocalAgentStatusService
 from portal_app.services.directory_users import discover_windows_domain_accounts
 from portal_app.services.active_directory_sync import sync_rdp_group_members
+from portal_app.services.active_directory_sync import check_active_directory_readiness
+from portal_app.services.windows_admin_auth import check_windows_admin_authorization, test_password_fallback_allowed
 from portal_app.ui.design import Typography
 from portal_app.ui.icons import kirschke_window_icon
 from portal_app.ui.widgets.management_pages import AdministrationWidget, SettingsWidget
@@ -280,6 +282,7 @@ class MainWindow(QMainWindow):
         self.admin_view.rdp_access_requested.connect(self._manage_rdp_access)
         self.admin_view.lock_requested.connect(self._lock_admin)
         self.admin_view.storage_directory_requested.connect(self._change_storage_directory)
+        self.admin_view.active_directory_status_requested.connect(self._update_active_directory_status)
         self.settings_view.edit_user_requested.connect(self._edit_user)
         self.settings_view.agent_refresh_requested.connect(self._poll_agent_status)
         self.settings_view.theme_changed.connect(self._set_theme_mode)
@@ -369,6 +372,8 @@ class MainWindow(QMainWindow):
                 fallback_page = current_page if 0 <= current_page < self.PAGE_DETAIL else self.PAGE_MACHINES
                 self.nav_buttons[fallback_page].setChecked(True)
                 return
+        if page_index == self.PAGE_ADMIN:
+            self._update_active_directory_status()
         self.stack.setCurrentIndex(page_index)
         pages = (
             ("ARBEITSPLATZÜBERSICHT", "Maschinen", "Verfügbare Arbeitsplätze und aktive Sitzungen auf einen Blick."),
@@ -384,9 +389,20 @@ class MainWindow(QMainWindow):
         self.summary.setVisible(page_index == self.PAGE_MACHINES)
 
     def _request_admin_access(self) -> bool:
+        authorization = check_windows_admin_authorization()
+        if authorization.authorized:
+            self._unlock_admin(f"Admin per Windows-Gruppe: {authorization.group_name}")
+            return True
+        if not test_password_fallback_allowed():
+            QMessageBox.warning(
+                self,
+                "Admin-Zugang verweigert",
+                f"{authorization.message}\n\nDie lokale Testfreigabe ist deaktiviert.",
+            )
+            return False
         password, accepted = QInputDialog.getText(
             self,
-            "Admin-Zugang",
+            "Admin-Zugang (Test-Fallback)",
             "Passwort für den Administrationsbereich:",
             QLineEdit.Password,
         )
@@ -396,9 +412,14 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Zugriff verweigert", "Das eingegebene Admin-Passwort ist nicht korrekt.")
             return False
         self._admin_unlocked = True
-        self.admin_view.set_access_status(True)
+        self.admin_view.set_access_status(True, "Admin-Testfreigabe aktiv")
         self.nav_buttons[self.PAGE_ADMIN].setText("Admin · offen")
         return True
+
+    def _unlock_admin(self, access_label: str) -> None:
+        self._admin_unlocked = True
+        self.admin_view.set_access_status(True, access_label)
+        self.nav_buttons[self.PAGE_ADMIN].setText("Admin · offen")
 
     @classmethod
     def _is_admin_password_valid(cls, password: str) -> bool:
@@ -409,6 +430,11 @@ class MainWindow(QMainWindow):
         self.admin_view.set_access_status(False)
         self.nav_buttons[self.PAGE_ADMIN].setText("Admin")
         self._show_machines()
+
+    @Slot()
+    def _update_active_directory_status(self) -> None:
+        readiness = check_active_directory_readiness()
+        self.admin_view.set_active_directory_status(readiness.message)
 
     @Slot(str)
     def _change_storage_directory(self, directory: str) -> None:
