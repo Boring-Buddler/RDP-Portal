@@ -1,6 +1,9 @@
 build/
 build-spec/
+agent-build/
+agent-build-spec/
 dist/
+dist-agent/
 *.spec
 rdp_portal.log
 __pycache__/

@@ -13,6 +13,7 @@ from portal_app.services.active_directory_sync import (
     sync_rdp_group_members,
 )
 from portal_app.services.windows_admin_auth import check_windows_admin_authorization, test_password_fallback_allowed
+from portal_app.services.admin_security import LocalAdminPasswordStore, directory_mode
 from portal_app.services.rdp_diagnostics import (
     RDPDiagnosticResult,
     clear_saved_rdp_credentials,
@@ -30,6 +31,8 @@ __all__ = [
     "sync_rdp_group_members",
     "check_windows_admin_authorization",
     "test_password_fallback_allowed",
+    "LocalAdminPasswordStore",
+    "directory_mode",
     "RDPDiagnosticResult",
     "clear_saved_rdp_credentials",
     "run_rdp_diagnostics",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from portal_app.models.workstation import Workstation
 from shared.agent_snapshot import AgentSnapshot, get_agent_snapshot_directory, load_agent_snapshots
@@ -12,15 +13,25 @@ from shared.enums import AgentStatus
 class LocalAgentStatusService:
     """Read the optional local bridge that is replaced by Graph in production."""
 
-    def __init__(self, stale_after_seconds: int = 90, offline_after_seconds: int = 300) -> None:
+    def __init__(
+        self,
+        stale_after_seconds: int = 90,
+        offline_after_seconds: int = 300,
+        directory: Path | None = None,
+    ) -> None:
         self.stale_after_seconds = stale_after_seconds
         self.offline_after_seconds = offline_after_seconds
+        self._directory = directory
         self.last_snapshot_count = 0
         self.last_match_count = 0
 
     @property
     def directory(self):
-        return get_agent_snapshot_directory()
+        return self._directory or get_agent_snapshot_directory()
+
+    def set_directory(self, directory: Path | None) -> None:
+        """Use the portal's shared storage folder as the agent-status source."""
+        self._directory = directory
 
     @staticmethod
     def _identity_values(workstation: Workstation) -> set[str]:
@@ -54,7 +65,7 @@ class LocalAgentStatusService:
         return snapshot.agent_status
 
     def apply(self, workstations: list[Workstation]) -> int:
-        snapshots = load_agent_snapshots()
+        snapshots = load_agent_snapshots(self.directory)
         self.last_snapshot_count = len(snapshots)
         self.last_match_count = 0
         changed_count = 0

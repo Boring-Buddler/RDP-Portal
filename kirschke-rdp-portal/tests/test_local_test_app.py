@@ -24,6 +24,7 @@ from portal_app.services.windows_admin_auth import (
     check_windows_admin_authorization,
     test_password_fallback_allowed as is_test_password_fallback_allowed,
 )
+from portal_app.services.admin_security import LocalAdminPasswordStore, directory_mode
 from portal_app.services.machine_discovery import MachineDiscovery, _ipconfig_network_details, discover_remote_machine
 from portal_app.services.rdp_diagnostics import clear_saved_rdp_credentials, run_rdp_diagnostics
 from portal_app.ui.main_window import MainWindow
@@ -359,6 +360,9 @@ def test_admin_actions_include_disconnect_and_delete(qtbot):
     assert admin.force_disconnect.isEnabled()
     assert admin.delete_workstation.isEnabled()
     assert admin.rdp_access.isEnabled()
+    admin.set_directory_mode("local")
+    assert admin.rdp_access.isHidden()
+    assert not admin.change_admin_password.isHidden()
     with qtbot.waitSignal(admin.delete_requested) as signal:
         admin._delete_selected()
     assert signal.args == [workstations[0]]
@@ -383,6 +387,30 @@ def test_test_admin_password_can_be_disabled_for_production(monkeypatch):
     assert is_test_password_fallback_allowed()
     monkeypatch.setenv("RDP_PORTAL_ALLOW_TEST_ADMIN_PASSWORD", "false")
     assert not is_test_password_fallback_allowed()
+
+
+def test_local_admin_password_uses_a_salted_hash(tmp_path):
+    password_store = LocalAdminPasswordStore(tmp_path / "admin-security.json")
+
+    assert not password_store.is_configured()
+    with pytest.raises(ValueError):
+        password_store.set_password("zu-kurz")
+    password_store.set_password("ein-sicheres-testpasswort")
+
+    assert password_store.is_configured()
+    assert password_store.verify_password("ein-sicheres-testpasswort")
+    assert not password_store.verify_password("falsches-passwort")
+    password_store.set_password("noch-ein-sicheres-testpasswort")
+    assert password_store.verify_password("noch-ein-sicheres-testpasswort")
+    assert not password_store.verify_password("ein-sicheres-testpasswort")
+    assert "ein-sicheres-testpasswort" not in password_store.path.read_text(encoding="utf-8")
+
+
+def test_directory_mode_defaults_to_local_and_can_enable_ad(monkeypatch):
+    monkeypatch.delenv("RDP_PORTAL_DIRECTORY_MODE", raising=False)
+    assert directory_mode() == "local"
+    monkeypatch.setenv("RDP_PORTAL_DIRECTORY_MODE", "active_directory")
+    assert directory_mode() == "active_directory"
 
 
 def test_ad_readiness_reports_module_and_windows_admin_group(monkeypatch):
@@ -901,10 +929,32 @@ def test_workstation_agent_publishes_real_session_shape(tmp_path, monkeypatch):
     assert load_agent_snapshots()[0].agent_status == AgentStatus.OFFLINE
 
 
-def test_admin_password_is_case_sensitive():
-    assert MainWindow._is_admin_password_valid("Kirschke")
-    assert not MainWindow._is_admin_password_valid("kirschke")
-    assert not MainWindow._is_admin_password_valid("")
+def test_agent_config_reads_json_file(tmp_path, monkeypatch):
+    config_path = tmp_path / "agent-config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "workstation_id": "WS-JSON",
+                "poll_interval": 45,
+                "status_directory": str(tmp_path / "agent-status"),
+                "publish_local_status": True,
+                "log_file": str(tmp_path / "agent.log"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_CONFIG_PATH", str(config_path))
+
+    config = AgentConfig.from_env()
+
+    assert config.workstation_id == "WS-JSON"
+    assert config.poll_interval == 45
+    assert config.status_directory == str(tmp_path / "agent-status")
+    assert config.publish_local_status is True
+
+
+def test_fixed_admin_password_is_no_longer_accepted():
+    assert not MainWindow._is_admin_password_valid("Kirschke")
 
 
 def test_session_event_export_contains_audit_fields():

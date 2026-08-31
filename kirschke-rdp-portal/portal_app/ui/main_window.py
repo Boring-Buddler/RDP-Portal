@@ -8,7 +8,6 @@ import uuid
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from secrets import compare_digest
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPixmap
@@ -39,6 +38,7 @@ from portal_app.services.directory_users import discover_windows_domain_accounts
 from portal_app.services.active_directory_sync import sync_rdp_group_members
 from portal_app.services.active_directory_sync import check_active_directory_readiness
 from portal_app.services.windows_admin_auth import check_windows_admin_authorization, test_password_fallback_allowed
+from portal_app.services.admin_security import LocalAdminPasswordStore, directory_mode
 from portal_app.ui.design import Typography
 from portal_app.ui.icons import kirschke_window_icon
 from portal_app.ui.widgets.management_pages import AdministrationWidget, SettingsWidget
@@ -67,7 +67,6 @@ class MainWindow(QMainWindow):
     PAGE_ADMIN = 3
     PAGE_SETTINGS = 4
     PAGE_DETAIL = 5
-    ADMIN_PASSWORD = "Kirschke"  # noqa: S105 - explicitly requested for the local test build
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -78,7 +77,9 @@ class MainWindow(QMainWindow):
         self.resize(1360, 860)
 
         self.store = LocalStore()
-        self.agent_status_service = LocalAgentStatusService()
+        self.directory_mode = directory_mode()
+        self.local_admin_password_store = LocalAdminPasswordStore()
+        self.agent_status_service = LocalAgentStatusService(directory=self.store.directory / "agent-status")
         self.workstations: list[Workstation] = []
         self.reservations: list[Reservation] = []
         self.session_events: list[SessionEvent] = []
@@ -256,6 +257,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.session_log_view)
         self.admin_view = AdministrationWidget(self.workstations, self)
         self.admin_view.set_storage_directory(str(self.store.directory))
+        self.admin_view.set_directory_mode(self.directory_mode)
         self.stack.addWidget(self.admin_view)
         self.settings_view = SettingsWidget(
             self.current_user,
@@ -283,6 +285,7 @@ class MainWindow(QMainWindow):
         self.admin_view.lock_requested.connect(self._lock_admin)
         self.admin_view.storage_directory_requested.connect(self._change_storage_directory)
         self.admin_view.active_directory_status_requested.connect(self._update_active_directory_status)
+        self.admin_view.admin_password_change_requested.connect(self._change_local_admin_password)
         self.settings_view.edit_user_requested.connect(self._edit_user)
         self.settings_view.agent_refresh_requested.connect(self._poll_agent_status)
         self.settings_view.theme_changed.connect(self._set_theme_mode)
@@ -372,7 +375,7 @@ class MainWindow(QMainWindow):
                 fallback_page = current_page if 0 <= current_page < self.PAGE_DETAIL else self.PAGE_MACHINES
                 self.nav_buttons[fallback_page].setChecked(True)
                 return
-        if page_index == self.PAGE_ADMIN:
+        if page_index == self.PAGE_ADMIN and self.directory_mode == "active_directory":
             self._update_active_directory_status()
         self.stack.setCurrentIndex(page_index)
         pages = (
@@ -389,6 +392,8 @@ class MainWindow(QMainWindow):
         self.summary.setVisible(page_index == self.PAGE_MACHINES)
 
     def _request_admin_access(self) -> bool:
+        if self.directory_mode != "active_directory":
+            return self._request_local_admin_access()
         authorization = check_windows_admin_authorization()
         if authorization.authorized:
             self._unlock_admin(f"Admin per Windows-Gruppe: {authorization.group_name}")
@@ -400,6 +405,7 @@ class MainWindow(QMainWindow):
                 f"{authorization.message}\n\nDie lokale Testfreigabe ist deaktiviert.",
             )
             return False
+        return self._request_local_admin_access()
         password, accepted = QInputDialog.getText(
             self,
             "Admin-Zugang (Test-Fallback)",
@@ -416,6 +422,91 @@ class MainWindow(QMainWindow):
         self.nav_buttons[self.PAGE_ADMIN].setText("Admin · offen")
         return True
 
+    def _request_local_admin_access(self) -> bool:
+        if not self.local_admin_password_store.is_configured():
+            return self._configure_local_admin_password()
+        password, accepted = QInputDialog.getText(
+            self,
+            "Admin-Zugang",
+            "Lokales Admin-Passwort:",
+            QLineEdit.Password,
+        )
+        if not accepted:
+            return False
+        if not self.local_admin_password_store.verify_password(password):
+            QMessageBox.warning(self, "Zugriff verweigert", "Das eingegebene Admin-Passwort ist nicht korrekt.")
+            return False
+        self._unlock_admin("Lokales Admin-Passwort bestätigt")
+        return True
+
+    def _configure_local_admin_password(self) -> bool:
+        password, accepted = QInputDialog.getText(
+            self,
+            "Admin-Passwort einrichten",
+            "Noch kein lokales Admin-Passwort eingerichtet. Neues Passwort (mindestens 10 Zeichen):",
+            QLineEdit.Password,
+        )
+        if not accepted:
+            return False
+        confirmation, confirmed = QInputDialog.getText(
+            self,
+            "Admin-Passwort bestätigen",
+            "Neues Admin-Passwort wiederholen:",
+            QLineEdit.Password,
+        )
+        if not confirmed:
+            return False
+        if password != confirmation:
+            QMessageBox.warning(self, "Passwörter stimmen nicht überein", "Bitte die Einrichtung erneut starten.")
+            return False
+        try:
+            self.local_admin_password_store.set_password(password)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Admin-Passwort ungültig", str(exc))
+            return False
+        self._unlock_admin("Lokales Admin-Passwort eingerichtet")
+        return True
+
+    def _change_local_admin_password(self) -> None:
+        if self.directory_mode == "active_directory" or not self._admin_unlocked:
+            return
+        current, accepted = QInputDialog.getText(
+            self,
+            "Admin-Passwort ändern",
+            "Aktuelles lokales Admin-Passwort:",
+            QLineEdit.Password,
+        )
+        if not accepted:
+            return
+        if not self.local_admin_password_store.verify_password(current):
+            QMessageBox.warning(self, "Zugriff verweigert", "Das aktuelle Admin-Passwort ist nicht korrekt.")
+            return
+        new_password, accepted = QInputDialog.getText(
+            self,
+            "Admin-Passwort ändern",
+            "Neues lokales Admin-Passwort (mindestens 10 Zeichen):",
+            QLineEdit.Password,
+        )
+        if not accepted:
+            return
+        confirmation, confirmed = QInputDialog.getText(
+            self,
+            "Admin-Passwort bestätigen",
+            "Neues Admin-Passwort wiederholen:",
+            QLineEdit.Password,
+        )
+        if not confirmed:
+            return
+        if new_password != confirmation:
+            QMessageBox.warning(self, "Passwörter stimmen nicht überein", "Das Passwort wurde nicht geändert.")
+            return
+        try:
+            self.local_admin_password_store.set_password(new_password)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Admin-Passwort ungültig", str(exc))
+            return
+        QMessageBox.information(self, "Admin-Passwort geändert", "Das lokale Admin-Passwort wurde aktualisiert.")
+
     def _unlock_admin(self, access_label: str) -> None:
         self._admin_unlocked = True
         self.admin_view.set_access_status(True, access_label)
@@ -423,7 +514,8 @@ class MainWindow(QMainWindow):
 
     @classmethod
     def _is_admin_password_valid(cls, password: str) -> bool:
-        return compare_digest(password, cls.ADMIN_PASSWORD)
+        """Deprecated compatibility hook; the fixed test password no longer exists."""
+        return False
 
     def _lock_admin(self) -> None:
         self._admin_unlocked = False
@@ -440,6 +532,7 @@ class MainWindow(QMainWindow):
     def _change_storage_directory(self, directory: str) -> None:
         try:
             self.store.relocate(Path(directory), move_files=True)
+            self.agent_status_service.set_directory(self.store.directory / "agent-status")
             self.admin_view.set_storage_directory(str(self.store.directory))
             self._persist()
             self._update_storage_status("Speicherort gewechselt")

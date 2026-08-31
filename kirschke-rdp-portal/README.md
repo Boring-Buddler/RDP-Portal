@@ -148,6 +148,16 @@ Danach die komplette Ausgabe aus `dist\Kirschke-RDP-Portal\` weitergeben und
 Für eine einzelne EXE kann optional `.\deployment\build_portable.cmd -OneFile` verwendet werden; sie startet
 langsamer und ist für den ersten Test nicht empfohlen.
 
+## Optionaler Standalone-Agent für Sitzungsstatus
+
+Der Agent ist eine zweite, portable Windows-Anwendung ohne Python-Abhängigkeit. Er meldet den echten
+RDP-Sitzungszustand eines Ziel-PCs an den gemeinsamen Portalordner. Build, Installation und die Grenzen des
+benutzerbasierten Pilotbetriebs sind in [docs/agent-installation.md](docs/agent-installation.md) beschrieben.
+
+```powershell
+.\deployment\build_agent.cmd
+```
+
 ## Active Directory (optional)
 
 Die Admin-Verwaltung kann gespeicherte RDP-Zugriffe nach Bestätigung mit AD-Gruppen
@@ -155,6 +165,8 @@ Die Admin-Verwaltung kann gespeicherte RDP-Zugriffe nach Bestätigung mit AD-Gru
 [docs/active-directory-setup.md](docs/active-directory-setup.md) beschrieben.
 Für die vollständige Pilotabnahme siehe auch
 [docs/pilotbetrieb-anleitung.md](docs/pilotbetrieb-anleitung.md).
+Für ein Büro ohne Active Directory gibt es die
+[No-AD-Pilotanleitung](docs/no-ad-pilotbetrieb.md).
 
 ## Repository Hygiene
 

@@ -35,6 +35,7 @@ class AdministrationWidget(QWidget):
     lock_requested = Signal()
     storage_directory_requested = Signal(str)
     active_directory_status_requested = Signal()
+    admin_password_change_requested = Signal()
 
     def __init__(self, workstations: list[Workstation], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -111,25 +112,30 @@ class AdministrationWidget(QWidget):
         apply_storage.clicked.connect(self._apply_storage_directory)
         storage_layout.addWidget(apply_storage)
         root.addWidget(storage_card)
-        directory_card = QFrame()
-        directory_card.setObjectName("detailCard")
-        directory_layout = QHBoxLayout(directory_card)
+        self.directory_card = QFrame()
+        self.directory_card.setObjectName("detailCard")
+        directory_layout = QHBoxLayout(self.directory_card)
         directory_layout.setContentsMargins(16, 12, 16, 12)
         directory_layout.setSpacing(10)
         directory_copy = QVBoxLayout()
-        directory_title = QLabel("Active Directory")
-        directory_title.setObjectName("detailCardTitle")
-        directory_copy.addWidget(directory_title)
+        self.directory_title = QLabel("Active Directory")
+        self.directory_title.setObjectName("detailCardTitle")
+        directory_copy.addWidget(self.directory_title)
         self.active_directory_status = QLabel("AD-Status wird beim Öffnen geprüft.")
         self.active_directory_status.setObjectName("detailMuted")
         self.active_directory_status.setWordWrap(True)
         directory_copy.addWidget(self.active_directory_status)
         directory_layout.addLayout(directory_copy, 1)
-        refresh_directory_status = QPushButton("AD-Status prüfen")
-        refresh_directory_status.setObjectName("toolbarButton")
-        refresh_directory_status.clicked.connect(self.active_directory_status_requested)
-        directory_layout.addWidget(refresh_directory_status)
-        root.addWidget(directory_card)
+        self.refresh_directory_status = QPushButton("AD-Status prüfen")
+        self.refresh_directory_status.setObjectName("toolbarButton")
+        self.refresh_directory_status.clicked.connect(self.active_directory_status_requested)
+        directory_layout.addWidget(self.refresh_directory_status)
+        self.change_admin_password = QPushButton("Admin-Passwort ändern")
+        self.change_admin_password.setObjectName("toolbarButton")
+        self.change_admin_password.setVisible(False)
+        self.change_admin_password.clicked.connect(self.admin_password_change_requested)
+        directory_layout.addWidget(self.change_admin_password)
+        root.addWidget(self.directory_card)
         self.table = QTableWidget()
         self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(
@@ -163,6 +169,19 @@ class AdministrationWidget(QWidget):
 
     def set_active_directory_status(self, status: str) -> None:
         self.active_directory_status.setText(status)
+
+    def set_directory_mode(self, mode: str) -> None:
+        """Make the non-AD deployment explicit instead of exposing inactive actions."""
+        active_directory = mode == "active_directory"
+        self.rdp_access.setVisible(active_directory)
+        self.directory_title.setText("Active Directory" if active_directory else "Lokale RDP-Berechtigungen")
+        self.refresh_directory_status.setVisible(active_directory)
+        self.change_admin_password.setVisible(not active_directory)
+        if not active_directory:
+            self.active_directory_status.setText(
+                "No-AD-Modus: RDP-Konten werden direkt auf dem Ziel-PC in der lokalen Gruppe "
+                "‚Remotedesktopbenutzer‘ verwaltet. Das Portal speichert keine Windows-Berechtigungen."
+            )
 
     def _choose_storage_directory(self) -> None:
         directory = QFileDialog.getExistingDirectory(

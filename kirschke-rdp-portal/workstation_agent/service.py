@@ -73,22 +73,42 @@ class AgentConfig:
     log_level: str = os.getenv("AGENT_LOG_LEVEL", "INFO")
     log_file: str = os.getenv("AGENT_LOG_FILE", "")
     publish_local_status: bool = os.getenv("AGENT_PUBLISH_LOCAL_STATUS", "true").lower() == "true"
+    status_directory: str = os.getenv("AGENT_STATUS_DIR", "")
     
     @classmethod
     def from_env(cls) -> "AgentConfig":
         """Create configuration from environment variables."""
+        config_data: dict = {}
+        config_path = os.getenv("AGENT_CONFIG_PATH", "")
+        if config_path:
+            try:
+                config_data = json.loads(Path(config_path).read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                logger.warning("Could not read agent configuration: %s", config_path)
+
+        def configured_value(key: str, environment_name: str, default: str = "") -> str:
+            return str(os.getenv(environment_name) or config_data.get(key) or default)
+
+        def configured_integer(key: str, environment_name: str, default: int) -> int:
+            try:
+                return max(1, int(configured_value(key, environment_name, str(default))))
+            except (TypeError, ValueError):
+                logger.warning("Invalid %s in agent configuration; using %s", key, default)
+                return default
+
         # Build authority if not set
-        authority = os.getenv("AUTHORITY", "")
-        if not authority and os.getenv("TENANT_ID"):
-            authority = f"https://login.microsoftonline.com/{os.getenv('TENANT_ID')}"
+        tenant_id = configured_value("tenant_id", "TENANT_ID")
+        authority = configured_value("authority", "AUTHORITY")
+        if not authority and tenant_id:
+            authority = f"https://login.microsoftonline.com/{tenant_id}"
         
         # Set workstation ID from hostname if not set
-        workstation_id = os.getenv("WORKSTATION_ID", "")
+        workstation_id = configured_value("workstation_id", "WORKSTATION_ID")
         if not workstation_id:
             workstation_id = socket.gethostname()
         
         # Set default log file
-        log_file = os.getenv("AGENT_LOG_FILE", "")
+        log_file = configured_value("log_file", "AGENT_LOG_FILE")
         if not log_file:
             log_dir = Path.home() / ".kirschke" / "rdp-agent" / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -97,8 +117,22 @@ class AgentConfig:
         return cls(
             workstation_id=workstation_id,
             hostname=socket.gethostname(),
+            agent_version=configured_value("agent_version", "AGENT_VERSION", "1.0.0"),
+            poll_interval=configured_integer("poll_interval", "AGENT_POLL_INTERVAL", 30),
+            tenant_id=tenant_id,
+            client_id=configured_value("client_id", "AGENT_CLIENT_ID"),
             authority=authority,
+            certificate_thumbprint=configured_value("certificate_thumbprint", "AGENT_CERT_THUMBPRINT"),
+            certificate_store=configured_value("certificate_store", "AGENT_CERT_STORE", "My"),
+            sharepoint_site_id=configured_value("sharepoint_site_id", "SHAREPOINT_SITE_ID"),
+            workstations_list=configured_value("workstations_list", "SHAREPOINT_WORKSTATIONS_LIST", "RDP_Workstations"),
+            sessions_list=configured_value("sessions_list", "SHAREPOINT_SESSIONS_LIST", "RDP_SessionEvents"),
+            commands_list=configured_value("commands_list", "SHAREPOINT_COMMANDS_LIST", "RDP_AdminCommands"),
+            access_rules_list=configured_value("access_rules_list", "SHAREPOINT_ACCESS_RULES_LIST", "RDP_AccessRules"),
+            log_level=configured_value("log_level", "AGENT_LOG_LEVEL", "INFO"),
             log_file=log_file,
+            publish_local_status=configured_value("publish_local_status", "AGENT_PUBLISH_LOCAL_STATUS", "true").lower() == "true",
+            status_directory=configured_value("status_directory", "AGENT_STATUS_DIR"),
         )
     
     def validate(self) -> bool:
@@ -596,7 +630,8 @@ class WorkstationAgent:
                 current_windows_session_id=self.state.current_windows_session_id,
                 rdp_sessions=[session.to_dict() for session in self._last_rdp_sessions],
             )
-            write_agent_snapshot(snapshot)
+            directory = Path(self.config.status_directory).expanduser() if self.config.status_directory else None
+            write_agent_snapshot(snapshot, directory)
         except OSError as e:
             logger.error(f"Failed to publish local agent status: {str(e)}")
             self.state.increment_errors()
@@ -917,8 +952,16 @@ def main():
         action="store_true",
         help="Print the current local WTS/RDP status as JSON and exit",
     )
+    parser.add_argument(
+        "--config",
+        type=str,
+        help="Path to the agent JSON configuration file",
+    )
     
     args = parser.parse_args()
+
+    if args.config:
+        os.environ["AGENT_CONFIG_PATH"] = args.config
     
     # Set debug logging if requested
     if args.debug:
