@@ -120,6 +120,29 @@ python -m portal_app.app
 rdp-portal
 ```
 
+### Windows (PowerShell)
+
+Run the following commands from the `kirschke-rdp-portal` directory:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+python -m portal_app.app
+```
+
+Do not start `portal_app/app.py` directly. The module command above ensures that package imports work correctly.
+
+## Repository Hygiene
+
+The repository contains source code, configuration examples, tests, and documentation only. Local environments,
+Python/test caches, build output, and runtime logs are excluded through the root `.gitignore`. Recreate a local
+environment with the installation commands above instead of committing it.
+
+When a change affects setup, usage, configuration, or user-visible behavior, update this README concisely in the
+same change.
+
 ## Running with Different User Roles
 
 For testing admin features, you can modify the `app.py` file to use an admin user:

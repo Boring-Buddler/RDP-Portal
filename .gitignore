@@ -1,0 +1,20 @@
+# Python environments and package metadata
+**/.venv/
+**/*.egg-info/
+
+# Python and test caches
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/pytest-cache-files-*/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.pyright/
+.test-tmp/
+
+# Application runtime output
+**/*.log
+
+# Build output
+**/build/
+**/dist/

@@ -2,13 +2,13 @@
 
 import sys
 import logging
-from typing import Optional
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QIcon, QPalette, QColor
+from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtCore import QEvent
+from PySide6.QtGui import QPalette
 
 from portal_app.ui.design import DesignSystem, Colors, Typography
 from portal_app.ui.main_window import MainWindow
+from portal_app.ui.icons import kirschke_window_icon
 from portal_app.models.user import MockUser
 
 
@@ -36,6 +36,9 @@ class RDPPortalApp(QApplication):
         self.setApplicationVersion("0.1.0")
         self.setOrganizationName("Prof. Kirschke")
         self.setOrganizationDomain("prof-kirschke.de")
+        self.portal_icon = kirschke_window_icon()
+        self.setWindowIcon(self.portal_icon)
+        self.installEventFilter(self)
         
         # Apply design system
         self._apply_design_system()
@@ -49,6 +52,13 @@ class RDPPortalApp(QApplication):
         self.main_window.show()
         
         logger.info("RDP Workstation Portal started")
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        """Apply the branded signet to every Qt top-level window and dialog."""
+        if event.type() in (QEvent.Show, QEvent.Polish) and isinstance(watched, QWidget):
+            if watched.isWindow() and not self.portal_icon.isNull():
+                watched.setWindowIcon(self.portal_icon)
+        return super().eventFilter(watched, event)
     
     def _apply_design_system(self) -> None:
         """Apply Kirschke design system to the application."""
