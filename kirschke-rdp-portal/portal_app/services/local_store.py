@@ -26,6 +26,8 @@ class LocalStore:
         self.path = path
         self.events_path = self.path.parent / "portal-events.jsonl"
         self.theme_mode = "system"
+        self._state_signature: tuple[int, int] | None = None
+        self._events_signature: tuple[int, int] | None = None
 
     @staticmethod
     def default_directory() -> Path:
@@ -68,6 +70,25 @@ class LocalStore:
     def directory(self) -> Path:
         return self.path.parent
 
+    @staticmethod
+    def _signature(path: Path) -> tuple[int, int] | None:
+        try:
+            stat = path.stat()
+            return stat.st_mtime_ns, stat.st_size
+        except OSError:
+            return None
+
+    def _remember_signatures(self) -> None:
+        self._state_signature = self._signature(self.path)
+        self._events_signature = self._signature(self.events_path)
+
+    def has_external_changes(self) -> bool:
+        """Return whether the OneDrive/SharePoint mirror changed since the last read/write."""
+        return (
+            self._signature(self.path) != self._state_signature
+            or self._signature(self.events_path) != self._events_signature
+        )
+
     def _save_directory_config(self, directory: Path | None = None) -> None:
         if not self._uses_default_location:
             return
@@ -105,6 +126,7 @@ class LocalStore:
         fallback_user: MockUser,
     ) -> tuple[list[Workstation], MockUser, list[Reservation]]:
         if not self.path.exists():
+            self._remember_signatures()
             return fallback_workstations, fallback_user, []
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
@@ -142,8 +164,11 @@ class LocalStore:
             reservations = [Reservation.from_dict(item) for item in data.get("reservations", [])]
             if removed_legacy_placeholders:
                 self.save(workstations, user, reservations, theme_mode=self.theme_mode)
+            else:
+                self._remember_signatures()
             return workstations or fallback_workstations, user, reservations
         except (OSError, ValueError, KeyError, TypeError):
+            self._remember_signatures()
             return fallback_workstations, fallback_user, []
 
     def save(
@@ -172,6 +197,7 @@ class LocalStore:
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(self.path)
+        self._remember_signatures()
 
     def load_events(self) -> list[SessionEvent]:
         """Load the append-only portal event log; malformed individual lines are skipped."""
@@ -197,11 +223,13 @@ class LocalStore:
         serialized = event.to_schema().model_dump_json()
         with self.events_path.open("a", encoding="utf-8") as event_file:
             event_file.write(serialized + "\n")
+        self._remember_signatures()
 
     def initialize_event_log(self) -> None:
         """Create the empty append-only log on first portal startup."""
         self.events_path.parent.mkdir(parents=True, exist_ok=True)
         self.events_path.touch(exist_ok=True)
+        self._remember_signatures()
 
     def relocate(self, directory: Path, move_files: bool = True) -> None:
         """Switch storage folders and copy-verify existing state and event files first."""
@@ -234,6 +262,7 @@ class LocalStore:
                 source.unlink()
         self.path = target_state
         self.events_path = target_events
+        self._remember_signatures()
 
 
 __all__ = ["LocalStore"]

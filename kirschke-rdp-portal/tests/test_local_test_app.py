@@ -18,6 +18,7 @@ from portal_app.rdp.launcher import RDPSessionLauncher
 from portal_app.services.agent_status import LocalAgentStatusService
 from portal_app.services.local_store import LocalStore
 from portal_app.services.local_identity import detect_initial_user
+from portal_app.services.machine_discovery import MachineDiscovery, discover_remote_machine
 from portal_app.services.rdp_diagnostics import run_rdp_diagnostics
 from portal_app.ui.main_window import MainWindow
 from portal_app.ui.widgets.ping_tool import PingToolWidget
@@ -26,6 +27,7 @@ from portal_app.ui.widgets.reservation_calendar import ReservationCalendarWidget
 from portal_app.ui.widgets.session_log import event_to_export_row
 from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
 from portal_app.ui.widgets.workstation_dialog import WorkstationDialog
+from portal_app.ui.widgets.machine_registration_wizard import MachineRegistrationWizard
 from shared.agent_snapshot import AgentSnapshot, load_agent_snapshots, write_agent_snapshot
 from shared.enums import AgentStatus, ConnectionTargetMode, EventResult, EventType, SessionState
 from workstation_agent.service import AgentConfig, WorkstationAgent
@@ -100,6 +102,53 @@ def test_local_store_writes_and_moves_shared_status_and_event_log(tmp_path):
     assert marker["storage_directory"] == str(target)
 
 
+def test_local_store_detects_external_shared_file_change(tmp_path):
+    store = LocalStore(tmp_path / "portal-state.json")
+    user = MockUser.create_user()
+    store.save([create_test_workstation()], user, [])
+
+    assert not store.has_external_changes()
+    store.path.write_text(store.path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    assert store.has_external_changes()
+
+
+def test_remote_discovery_uses_reverse_dns(monkeypatch):
+    monkeypatch.setattr(
+        "portal_app.services.machine_discovery.socket.gethostbyaddr",
+        lambda address: ("pc-cad-01.kirschke.local", [], [address]),
+    )
+
+    result = discover_remote_machine("192.168.2.68")
+
+    assert result.hostname == "pc-cad-01"
+    assert result.fqdn == "pc-cad-01.kirschke.local"
+    assert result.ip_address == "192.168.2.68"
+
+
+def test_registration_wizard_passes_detected_values_to_profile(qtbot):
+    wizard = MachineRegistrationWizard()
+    qtbot.addWidget(wizard)
+    wizard.discovery = MachineDiscovery(
+        hostname="PC-TEST",
+        fqdn="pc-test.kirschke.local",
+        ip_address="192.168.2.70",
+        subnet_mask="255.255.255.0",
+        default_gateway="192.168.2.1",
+        dns_server="192.168.2.10",
+        message="Erkannt",
+    )
+    preview = wizard.page(MachineRegistrationWizard.PREVIEW_PAGE)
+    preview.initializePage()
+
+    dialog = WorkstationDialog(suggested_id="WS-003", prefill=wizard.prefill)
+    qtbot.addWidget(dialog)
+
+    assert dialog.display_name.text() == "PC-TEST"
+    assert dialog.hostname.text() == "PC-TEST"
+    assert dialog.fqdn.text() == "pc-test.kirschke.local"
+
+
 def test_initial_user_uses_whoami_for_default(monkeypatch):
     class Result:
         returncode = 0
@@ -165,6 +214,8 @@ def test_dark_theme_has_high_contrast_palette():
 
     assert "#101820" in style
     assert "#f4f8fb" in style
+    assert "QWizard, QWizardPage { background: #192833; color: #e7f0f5; }" in style
+    assert "QWizard QPushButton:default { background: #5b91b1; color: #ffffff;" in style
     assert "QMessageBox QPushButton" in style
     assert "QDialogButtonBox QPushButton" in style
     assert "QComboBox QAbstractItemView" in style

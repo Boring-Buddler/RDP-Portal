@@ -44,6 +44,7 @@ from portal_app.ui.widgets.user_settings_dialog import UserSettingsDialog
 from portal_app.ui.widgets.workstation_cards import WorkstationCardsWidget
 from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
 from portal_app.ui.widgets.workstation_dialog import WorkstationDialog
+from portal_app.ui.widgets.machine_registration_wizard import MachineRegistrationWizard
 from shared.enums import EventResult, EventSource, EventType
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,10 @@ class MainWindow(QMainWindow):
         self.agent_poll_timer.timeout.connect(self._poll_agent_status)
         self.agent_poll_timer.start()
         self._poll_agent_status()
+        self.shared_store_sync_timer = QTimer(self)
+        self.shared_store_sync_timer.setInterval(5000)
+        self.shared_store_sync_timer.timeout.connect(self._sync_shared_store)
+        self.shared_store_sync_timer.start()
 
     def _load_data(self) -> None:
         fallback = create_initial_workstations()
@@ -445,7 +450,14 @@ class MainWindow(QMainWindow):
         return f"WS-{max(numbers, default=0) + 1:03d}"
 
     def _add_workstation(self) -> None:
-        dialog = WorkstationDialog(suggested_id=self._next_workstation_id(), parent=self)
+        wizard = MachineRegistrationWizard(parent=self)
+        if wizard.exec() != QDialog.Accepted:
+            return
+        dialog = WorkstationDialog(
+            suggested_id=self._next_workstation_id(),
+            prefill=wizard.prefill,
+            parent=self,
+        )
         if dialog.exec() != QDialog.Accepted or not dialog.workstation:
             return
         if any(ws.workstation_id == dialog.workstation.workstation_id for ws in self.workstations):
@@ -851,6 +863,12 @@ class MainWindow(QMainWindow):
         self._apply_theme()
         self._refresh_workstation_views()
 
+    def _sync_shared_store(self) -> None:
+        """Reload an updated OneDrive/SharePoint mirror after another portal saves."""
+        if not self.store.has_external_changes():
+            return
+        self.on_refresh()
+
     def _persist(self) -> None:
         try:
             self.store.save(
@@ -1035,6 +1053,13 @@ class MainWindow(QMainWindow):
             QDialog QTabWidget::pane { background: #ffffff; border: 1px solid #d4dde3; border-radius: 7px; }
             QDialog QTabBar::tab { background: #eaf0f3; padding: 9px 16px; border: 1px solid #d4dde3; }
             QDialog QTabBar::tab:selected { background: #ffffff; color: #315e80; }
+            QWizard, QWizardPage { background: #f7f9fa; color: #263844; }
+            QWizard QLabel, QWizard QCheckBox, QWizard QRadioButton { color: #263844; }
+            QWizard QLineEdit { background: #ffffff; color: #17212b; placeholder-text-color: #7a8994; border: 1px solid #aebfca; border-radius: 6px; padding: 7px 9px; }
+            QWizard QPushButton { background: #ffffff; color: #263f52; border: 1px solid #aebfca; border-radius: 6px; padding: 7px 13px; min-width: 82px; font-weight: 600; }
+            QWizard QPushButton:hover { background: #edf4f8; border-color: #6389a4; }
+            QWizard QPushButton:default { background: #4f7897; color: #ffffff; border-color: #4f7897; }
+            QWizard QPushButton:disabled { background: #edf1f3; color: #8a99a3; border-color: #d3dce1; }
         """
         if not dark_mode:
             return light_style
@@ -1115,6 +1140,14 @@ class MainWindow(QMainWindow):
             QDialog QTabWidget::pane { background: #1a2a35; border-color: #456172; }
             QDialog QTabBar::tab { background: #263b48; color: #c8d8e2; border-color: #456172; }
             QDialog QTabBar::tab:selected { background: #1a2a35; color: #ffffff; }
+            QWizard, QWizardPage { background: #192833; color: #e7f0f5; }
+            QWizard QLabel, QWizard QCheckBox, QWizard QRadioButton { color: #e7f0f5; }
+            QWizard QLineEdit { background: #1a2a35; color: #f1f6fa; placeholder-text-color: #8fa6b5; border: 1px solid #557386; border-radius: 6px; padding: 7px 9px; }
+            QWizard QLineEdit:disabled { background: #22343f; color: #aebfca; border-color: #456172; }
+            QWizard QPushButton { background: #263d4b; color: #f3f8fb; border: 1px solid #628196; border-radius: 6px; padding: 7px 13px; min-width: 82px; font-weight: 600; }
+            QWizard QPushButton:hover { background: #315164; border-color: #9ac3da; }
+            QWizard QPushButton:default { background: #5b91b1; color: #ffffff; border-color: #8cc0db; }
+            QWizard QPushButton:disabled { background: #22343f; color: #8095a3; border-color: #3d5868; }
             QCheckBox { color: #e7f0f5; }
             QCheckBox::indicator { width: 15px; height: 15px; border: 1px solid #789bae; background: #1a2a35; border-radius: 3px; }
             QCheckBox::indicator:checked { background: #5f96b8; border-color: #8fc1dd; }

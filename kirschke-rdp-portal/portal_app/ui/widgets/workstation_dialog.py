@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 from dataclasses import replace
+from typing import Mapping
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -32,11 +33,13 @@ class WorkstationDialog(QDialog):
         self,
         workstation: Workstation | None = None,
         suggested_id: str = "WS-001",
+        prefill: Mapping[str, str] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.original = workstation
         self.suggested_id = suggested_id
+        self.prefill = dict(prefill or {})
         self.workstation: Workstation | None = None
         self.setWindowTitle("Maschine bearbeiten" if workstation else "Maschine hinzufügen")
         self.setMinimumSize(620, 650)
@@ -173,15 +176,17 @@ class WorkstationDialog(QDialog):
         ws = self.original
         self.workstation_id.setText(ws.workstation_id if ws else self.suggested_id)
         self.workstation_id.setReadOnly(ws is not None)
-        self.display_name.setText(ws.display_name if ws else "")
-        self.hostname.setText(ws.hostname if ws else "")
-        self.fqdn.setText(ws.fqdn or "" if ws else "")
-        self.ip_address.setText(ws.ip_address or "" if ws else "")
-        self.subnet_mask.setText(ws.subnet_mask or "" if ws else "255.255.255.0")
-        self.default_gateway.setText(ws.default_gateway or "" if ws else "")
-        self.dns_server.setText(ws.dns_server or "" if ws else "")
-        self.site.setText(ws.site or "" if ws else "")
-        self.description.setText(ws.description or "" if ws else "")
+        self.display_name.setText(ws.display_name if ws else self.prefill.get("display_name", ""))
+        self.hostname.setText(ws.hostname if ws else self.prefill.get("hostname", ""))
+        self.fqdn.setText(ws.fqdn or "" if ws else self.prefill.get("fqdn", ""))
+        self.ip_address.setText(ws.ip_address or "" if ws else self.prefill.get("ip_address", ""))
+        self.subnet_mask.setText(
+            ws.subnet_mask or "" if ws else self.prefill.get("subnet_mask", "255.255.255.0")
+        )
+        self.default_gateway.setText(ws.default_gateway or "" if ws else self.prefill.get("default_gateway", ""))
+        self.dns_server.setText(ws.dns_server or "" if ws else self.prefill.get("dns_server", ""))
+        self.site.setText(ws.site or "" if ws else self.prefill.get("site", ""))
+        self.description.setText(ws.description or "" if ws else self.prefill.get("description", ""))
         self.enabled.setChecked(ws.enabled if ws else True)
         self.username_hint.setText(ws.username_hint or "" if ws else "")
         self.gateway_hostname.setText(ws.gateway_hostname or "" if ws else "")
