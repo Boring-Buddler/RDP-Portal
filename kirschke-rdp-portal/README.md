@@ -148,6 +148,12 @@ Danach die komplette Ausgabe aus `dist\Kirschke-RDP-Portal\` weitergeben und
 Für eine einzelne EXE kann optional `.\deployment\build_portable.cmd -OneFile` verwendet werden; sie startet
 langsamer und ist für den ersten Test nicht empfohlen.
 
+## Active Directory (optional)
+
+Die Admin-Verwaltung kann gespeicherte RDP-Zugriffe nach Bestätigung mit AD-Gruppen
+`RDP-<Maschinen-ID>` abgleichen. Die Vorbereitung auf einem Verwaltungsrechner ist in
+[docs/active-directory-setup.md](docs/active-directory-setup.md) beschrieben.
+
 ## Repository Hygiene
 
 The repository contains source code, configuration examples, tests, and documentation only. Local environments,
