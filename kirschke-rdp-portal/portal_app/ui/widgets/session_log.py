@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 
 from portal_app.models.session import SessionEvent, SessionLog
 from portal_app.models.user import User
-from portal_app.ui.design import Spacing, Typography
+from portal_app.ui.design import Colors, Spacing, Typography
 from shared.enums import EventResult, EventType
 
 
