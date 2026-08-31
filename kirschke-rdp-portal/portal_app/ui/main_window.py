@@ -11,7 +11,7 @@ from pathlib import Path
 from secrets import compare_digest
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QGuiApplication, QIcon, QImage, QPainter, QPixmap
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -36,6 +36,7 @@ from portal_app.services.local_store import LocalStore
 from portal_app.services.local_identity import detect_initial_user
 from portal_app.services.agent_status import LocalAgentStatusService
 from portal_app.ui.design import Typography
+from portal_app.ui.icons import kirschke_window_icon
 from portal_app.ui.widgets.management_pages import AdministrationWidget, SettingsWidget
 from portal_app.ui.widgets.reservation_calendar import ReservationCalendarWidget
 from portal_app.ui.widgets.session_log import SessionLogWidget
@@ -66,7 +67,7 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("Kirschke · RDP Portal")
         self.logo_path = Path(__file__).resolve().parent / "assets" / "kirschke_logo.png"
-        self.setWindowIcon(QIcon(str(self.logo_path)))
+        self.setWindowIcon(kirschke_window_icon())
         self.setMinimumSize(QSize(1080, 720))
         self.resize(1360, 860)
 
@@ -1001,6 +1002,9 @@ class MainWindow(QMainWindow):
             QTableView, QTableWidget { background: #ffffff; alternate-background-color: #f8fafb; border: 1px solid #d6dfe5; border-radius: 8px; gridline-color: #e6ebee; selection-background-color: #dceaf3; selection-color: #1e3545; }
             QHeaderView::section { background: #e8eff3; color: #365466; border: none; border-bottom: 1px solid #cbd7df; padding: 9px 10px; font-weight: 600; }
             QDialog { background: #f7f9fa; }
+            QDialog QLabel, QDialog QCheckBox, QDialog QRadioButton, QDialog QGroupBox {
+                color: #263844;
+            }
             QMessageBox { background: #f7f9fa; color: #17212b; }
             QMessageBox QLabel { color: #17212b; }
             QMessageBox QPushButton, QDialogButtonBox QPushButton {
@@ -1015,7 +1019,19 @@ class MainWindow(QMainWindow):
             QMessageBox QPushButton:hover, QDialogButtonBox QPushButton:hover { background: #edf4f8; border-color: #6389a4; }
             QMessageBox QPushButton:default, QDialogButtonBox QPushButton:default { background: #4f7897; color: #ffffff; border-color: #4f7897; }
             QMessageBox QPushButton:default:hover, QDialogButtonBox QPushButton:default:hover { background: #416985; border-color: #416985; }
-            QDialog QLineEdit, QDialog QComboBox, QDialog QDateTimeEdit { background: #ffffff; border: 1px solid #cbd6dd; border-radius: 6px; padding: 7px 9px; }
+            QDialog QLineEdit, QDialog QComboBox, QDialog QDateEdit, QDialog QDateTimeEdit,
+            QDialog QSpinBox, QDialog QTextEdit, QDialog QPlainTextEdit {
+                background: #ffffff;
+                color: #17212b;
+                placeholder-text-color: #7a8994;
+                border: 1px solid #cbd6dd;
+                border-radius: 6px;
+                padding: 7px 9px;
+            }
+            QDialog QLineEdit:read-only, QDialog QLineEdit:disabled {
+                background: #eef2f4;
+                color: #5e6d77;
+            }
             QDialog QTabWidget::pane { background: #ffffff; border: 1px solid #d4dde3; border-radius: 7px; }
             QDialog QTabBar::tab { background: #eaf0f3; padding: 9px 16px; border: 1px solid #d4dde3; }
             QDialog QTabBar::tab:selected { background: #ffffff; color: #315e80; }
@@ -1074,11 +1090,28 @@ class MainWindow(QMainWindow):
             QHeaderView::section { background: #263b48; color: #edf4f8; border-bottom-color: #456172; }
             QTableWidget#calendarTable::item { color: #eef4f8; }
             QDialog, QMessageBox { background: #192833; color: #edf3f8; }
+            QDialog QLabel, QDialog QCheckBox, QDialog QRadioButton, QDialog QGroupBox {
+                color: #e7f0f5;
+            }
             QMessageBox QLabel { color: #edf3f8; }
             QMessageBox QPushButton, QDialogButtonBox QPushButton { background: #263d4b; color: #f3f8fb; border-color: #628196; }
             QMessageBox QPushButton:hover, QDialogButtonBox QPushButton:hover { background: #315164; border-color: #9ac3da; }
             QMessageBox QPushButton:default, QDialogButtonBox QPushButton:default { background: #5b91b1; color: #ffffff; border-color: #8cc0db; }
             QMessageBox QPushButton:default:hover, QDialogButtonBox QPushButton:default:hover { background: #6ca6c7; border-color: #b5d9ea; }
+            QDialog QLineEdit, QDialog QComboBox, QDialog QDateEdit, QDialog QDateTimeEdit,
+            QDialog QSpinBox, QDialog QTextEdit, QDialog QPlainTextEdit {
+                background: #1a2a35;
+                color: #f1f6fa;
+                placeholder-text-color: #8fa6b5;
+                border-color: #557386;
+                selection-background-color: #4f7897;
+                selection-color: #ffffff;
+            }
+            QDialog QLineEdit:read-only, QDialog QLineEdit:disabled {
+                background: #22343f;
+                color: #aebfca;
+                border-color: #456172;
+            }
             QDialog QTabWidget::pane { background: #1a2a35; border-color: #456172; }
             QDialog QTabBar::tab { background: #263b48; color: #c8d8e2; border-color: #456172; }
             QDialog QTabBar::tab:selected { background: #1a2a35; color: #ffffff; }

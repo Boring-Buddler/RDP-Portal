@@ -74,6 +74,7 @@ class WorkstationDialog(QDialog):
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText("Speichern")
+        buttons.button(QDialogButtonBox.Cancel).setText("Abbrechen")
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
