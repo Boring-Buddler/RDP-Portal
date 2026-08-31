@@ -1053,10 +1053,11 @@ class MainWindow(QMainWindow):
             QDialog QTabWidget::pane { background: #ffffff; border: 1px solid #d4dde3; border-radius: 7px; }
             QDialog QTabBar::tab { background: #eaf0f3; padding: 9px 16px; border: 1px solid #d4dde3; }
             QDialog QTabBar::tab:selected { background: #ffffff; color: #315e80; }
-            QWizard, QWizardPage { background: #f7f9fa; color: #263844; }
+            QWizard#machineRegistrationWizard, QWizard#machineRegistrationWizard > QWidget,
+            QWizard#machineRegistrationWizard QFrame, QWizardPage#machineWizardPage { background: #f7f9fa; color: #263844; }
             QWizard QLabel, QWizard QCheckBox, QWizard QRadioButton { color: #263844; }
-            QWizard QLineEdit { background: #ffffff; color: #17212b; placeholder-text-color: #7a8994; border: 1px solid #aebfca; border-radius: 6px; padding: 7px 9px; }
-            QWizard QPushButton { background: #ffffff; color: #263f52; border: 1px solid #aebfca; border-radius: 6px; padding: 7px 13px; min-width: 82px; font-weight: 600; }
+            QWizard QLineEdit { background: #ffffff; color: #17212b; font-size: 14px; min-height: 22px; placeholder-text-color: #7a8994; border: 1px solid #aebfca; border-radius: 6px; padding: 6px 10px; }
+            QWizard QPushButton { background: #ffffff; color: #263f52; font-size: 14px; min-height: 22px; border: 1px solid #aebfca; border-radius: 6px; padding: 7px 13px; min-width: 82px; font-weight: 600; }
             QWizard QPushButton:hover { background: #edf4f8; border-color: #6389a4; }
             QWizard QPushButton:default { background: #4f7897; color: #ffffff; border-color: #4f7897; }
             QWizard QPushButton:disabled { background: #edf1f3; color: #8a99a3; border-color: #d3dce1; }
@@ -1140,11 +1141,12 @@ class MainWindow(QMainWindow):
             QDialog QTabWidget::pane { background: #1a2a35; border-color: #456172; }
             QDialog QTabBar::tab { background: #263b48; color: #c8d8e2; border-color: #456172; }
             QDialog QTabBar::tab:selected { background: #1a2a35; color: #ffffff; }
-            QWizard, QWizardPage { background: #192833; color: #e7f0f5; }
+            QWizard#machineRegistrationWizard, QWizard#machineRegistrationWizard > QWidget,
+            QWizard#machineRegistrationWizard QFrame, QWizardPage#machineWizardPage { background: #192833; color: #e7f0f5; }
             QWizard QLabel, QWizard QCheckBox, QWizard QRadioButton { color: #e7f0f5; }
-            QWizard QLineEdit { background: #1a2a35; color: #f1f6fa; placeholder-text-color: #8fa6b5; border: 1px solid #557386; border-radius: 6px; padding: 7px 9px; }
+            QWizard QLineEdit { background: #1a2a35; color: #f1f6fa; font-size: 14px; min-height: 22px; placeholder-text-color: #8fa6b5; border: 1px solid #557386; border-radius: 6px; padding: 6px 10px; }
             QWizard QLineEdit:disabled { background: #22343f; color: #aebfca; border-color: #456172; }
-            QWizard QPushButton { background: #263d4b; color: #f3f8fb; border: 1px solid #628196; border-radius: 6px; padding: 7px 13px; min-width: 82px; font-weight: 600; }
+            QWizard QPushButton { background: #263d4b; color: #f3f8fb; font-size: 14px; min-height: 22px; border: 1px solid #628196; border-radius: 6px; padding: 7px 13px; min-width: 82px; font-weight: 600; }
             QWizard QPushButton:hover { background: #315164; border-color: #9ac3da; }
             QWizard QPushButton:default { background: #5b91b1; color: #ffffff; border-color: #8cc0db; }
             QWizard QPushButton:disabled { background: #22343f; color: #8095a3; border-color: #3d5868; }

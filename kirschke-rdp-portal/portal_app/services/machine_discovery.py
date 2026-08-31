@@ -5,9 +5,12 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import socket
 import subprocess
 from dataclasses import dataclass
+
+IPV4_PATTERN = r"\d{1,3}(?:\.\d{1,3}){3}"
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,12 @@ def discover_local_machine() -> MachineDiscovery:
     details = _local_network_details()
     hostname = details.get("hostname") or hostname
     fqdn = _normalise_fqdn(details.get("fqdn") or fqdn, hostname)
+    if not fqdn and details.get("ip_address"):
+        reverse = _discover_from_ip(details["ip_address"])
+        fqdn = reverse.fqdn
+    message = "Lokaler Rechner wurde automatisch erkannt."
+    if not fqdn:
+        message += " Kein FQDN ist in DNS oder den Windows-Domäneneinstellungen hinterlegt."
     return MachineDiscovery(
         hostname=hostname,
         fqdn=fqdn,
@@ -49,7 +58,7 @@ def discover_local_machine() -> MachineDiscovery:
         subnet_mask=details.get("subnet_mask"),
         default_gateway=details.get("default_gateway"),
         dns_server=details.get("dns_server"),
-        message="Lokaler Rechner wurde automatisch erkannt.",
+        message=message,
     )
 
 
@@ -118,13 +127,17 @@ def _normalise_fqdn(value: str | None, hostname: str) -> str | None:
 def _local_network_details() -> dict[str, str]:
     """Return a best-effort primary adapter config; empty on non-Windows hosts."""
     command = (
-        "$config = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE' | "
-        "ForEach-Object { $ipv4 = @($_.IPAddress | Where-Object { $_ -match '^\\d{1,3}(\\.\\d{1,3}){3}$' })[0]; "
-        "if ($ipv4) { [PSCustomObject]@{ Hostname=$env:COMPUTERNAME; Fqdn=\"$env:COMPUTERNAME.$env:USERDNSDOMAIN\"; "
-        "IPAddress=$ipv4; SubnetMask=@($_.IPSubnet | Where-Object { $_ -match '^\\d{1,3}(\\.\\d{1,3}){3}$' })[0]; "
-        "DefaultGateway=@($_.DefaultIPGateway | Where-Object { $_ -match '^\\d{1,3}(\\.\\d{1,3}){3}$' })[0]; "
-        "DnsServer=@($_.DNSServerSearchOrder | Where-Object { $_ -match '^\\d{1,3}(\\.\\d{1,3}){3}$' })[0] } } } | "
-        "Select-Object -First 1 | ConvertTo-Json -Compress"
+        "$entries = @(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE' | "
+        "ForEach-Object { $ipv4 = @($_.IPAddress | Where-Object { $_ -match '^\\d{1,3}(\\.\\d{1,3}){3}$' }); "
+        "if ($ipv4.Count -gt 0) { [PSCustomObject]@{ "
+        "IPAddress = $ipv4[0]; "
+        "SubnetMask = @($_.IPSubnet | Where-Object { $_ -match '^\\d{1,3}(\\.\\d{1,3}){3}$' })[0]; "
+        "DefaultGateway = @($_.DefaultIPGateway | Where-Object { $_ -match '^\\d{1,3}(\\.\\d{1,3}){3}$' })[0]; "
+        "DnsServer = @($_.DNSServerSearchOrder | Where-Object { $_ -match '^\\d{1,3}(\\.\\d{1,3}){3}$' })[0] "
+        "} } }); "
+        "$preferred = $entries | Where-Object { $_.DefaultGateway } | Select-Object -First 1; "
+        "if (-not $preferred) { $preferred = $entries | Select-Object -First 1 }; "
+        "if ($preferred) { $preferred | ConvertTo-Json -Compress }"
     )
     try:
         result = subprocess.run(
@@ -136,15 +149,52 @@ def _local_network_details() -> dict[str, str]:
         )
         payload = json.loads(result.stdout) if result.returncode == 0 and result.stdout.strip() else {}
     except (OSError, ValueError, subprocess.SubprocessError):
-        return {}
-    return {
-        "hostname": str(payload.get("Hostname") or "").strip(),
-        "fqdn": str(payload.get("Fqdn") or "").strip(),
+        payload = {}
+    details = {
         "ip_address": str(payload.get("IPAddress") or "").strip(),
         "subnet_mask": str(payload.get("SubnetMask") or "").strip(),
         "default_gateway": str(payload.get("DefaultGateway") or "").strip(),
         "dns_server": str(payload.get("DnsServer") or "").strip(),
     }
+    return details if details["ip_address"] else _ipconfig_network_details()
+
+
+def _ipconfig_network_details() -> dict[str, str]:
+    """Parse Windows' built-in ipconfig as a fallback for restricted CIM setups."""
+    try:
+        result = subprocess.run(
+            ["ipconfig", "/all"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0:
+        return {}
+
+    records: list[dict[str, str]] = []
+    for section in re.split(r"\r?\n\s*\r?\n", result.stdout):
+        ipv4 = _ipconfig_value(section, r"IPv4[^:]*")
+        if not ipv4:
+            continue
+        records.append(
+            {
+                "ip_address": ipv4,
+                "subnet_mask": _ipconfig_value(section, r"(?:Subnetzmaske|Subnet Mask)"),
+                "default_gateway": _ipconfig_value(section, r"(?:Standardgateway|Default Gateway)"),
+                "dns_server": _ipconfig_value(section, r"(?:DNS-Server|DNS Servers)"),
+            }
+        )
+    if not records:
+        return {}
+    return next((record for record in records if record["default_gateway"]), records[0])
+
+
+def _ipconfig_value(section: str, label: str) -> str:
+    match = re.search(rf"{label}[^:]*:\s*({IPV4_PATTERN})", section, re.IGNORECASE)
+    return match.group(1) if match else ""
 
 
 __all__ = ["MachineDiscovery", "discover_local_machine", "discover_remote_machine"]

@@ -18,7 +18,7 @@ from portal_app.rdp.launcher import RDPSessionLauncher
 from portal_app.services.agent_status import LocalAgentStatusService
 from portal_app.services.local_store import LocalStore
 from portal_app.services.local_identity import detect_initial_user
-from portal_app.services.machine_discovery import MachineDiscovery, discover_remote_machine
+from portal_app.services.machine_discovery import MachineDiscovery, _ipconfig_network_details, discover_remote_machine
 from portal_app.services.rdp_diagnostics import run_rdp_diagnostics
 from portal_app.ui.main_window import MainWindow
 from portal_app.ui.widgets.ping_tool import PingToolWidget
@@ -126,9 +126,41 @@ def test_remote_discovery_uses_reverse_dns(monkeypatch):
     assert result.ip_address == "192.168.2.68"
 
 
+def test_ipconfig_fallback_prefers_adapter_with_default_gateway(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = """
+Ethernet adapter VPN:
+   IPv4 Address. . . . . . . . . . . : 100.82.35.95
+   Subnet Mask . . . . . . . . . . . : 255.255.255.255
+
+Ethernet adapter LAN:
+   IPv4 Address. . . . . . . . . . . : 192.168.2.77
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . : 192.168.2.1
+   DNS Servers . . . . . . . . . . . : 192.168.2.1
+"""
+
+    monkeypatch.setattr("portal_app.services.machine_discovery.subprocess.run", lambda *args, **kwargs: Result())
+
+    assert _ipconfig_network_details() == {
+        "ip_address": "192.168.2.77",
+        "subnet_mask": "255.255.255.0",
+        "default_gateway": "192.168.2.1",
+        "dns_server": "192.168.2.1",
+    }
+
+
 def test_registration_wizard_passes_detected_values_to_profile(qtbot):
     wizard = MachineRegistrationWizard()
     qtbot.addWidget(wizard)
+    assert wizard.objectName() == "machineRegistrationWizard"
+    assert wizard.minimumWidth() >= 760
+    assert wizard.minimumHeight() >= 600
+    assert all(
+        wizard.page(page_id).objectName() == "machineWizardPage"
+        for page_id in (MachineRegistrationWizard.SOURCE_PAGE, MachineRegistrationWizard.PREVIEW_PAGE)
+    )
     wizard.discovery = MachineDiscovery(
         hostname="PC-TEST",
         fqdn="pc-test.kirschke.local",
@@ -140,6 +172,7 @@ def test_registration_wizard_passes_detected_values_to_profile(qtbot):
     )
     preview = wizard.page(MachineRegistrationWizard.PREVIEW_PAGE)
     preview.initializePage()
+    assert all(field.minimumHeight() >= 36 for field in preview.inputs.values())
 
     dialog = WorkstationDialog(suggested_id="WS-003", prefill=wizard.prefill)
     qtbot.addWidget(dialog)
@@ -214,7 +247,7 @@ def test_dark_theme_has_high_contrast_palette():
 
     assert "#101820" in style
     assert "#f4f8fb" in style
-    assert "QWizard, QWizardPage { background: #192833; color: #e7f0f5; }" in style
+    assert "QWizard#machineRegistrationWizard > QWidget" in style
     assert "QWizard QPushButton:default { background: #5b91b1; color: #ffffff;" in style
     assert "QMessageBox QPushButton" in style
     assert "QDialogButtonBox QPushButton" in style

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFormLayout,
@@ -25,8 +26,11 @@ class MachineRegistrationWizard(QWizard):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.discovery = MachineDiscovery()
+        self.setObjectName("machineRegistrationWizard")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.setWindowTitle("Maschine registrieren")
-        self.setMinimumSize(620, 450)
+        self.setMinimumSize(760, 600)
+        self.resize(780, 620)
         self.setOption(QWizard.NoBackButtonOnStartPage, True)
         self.addPage(_SourcePage(self))
         self.addPage(_PreviewPage(self))
@@ -43,6 +47,8 @@ class MachineRegistrationWizard(QWizard):
 class _SourcePage(QWizardPage):
     def __init__(self, wizard: MachineRegistrationWizard) -> None:
         super().__init__(wizard)
+        self.setObjectName("machineWizardPage")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.setTitle("Welche Maschine soll registriert werden?")
         self.setSubTitle("Die Erkennung füllt Hostname, FQDN und Netzwerkdaten soweit ohne Agent möglich aus.")
         layout = QVBoxLayout(self)
@@ -94,6 +100,8 @@ class _PreviewPage(QWizardPage):
 
     def __init__(self, wizard: MachineRegistrationWizard) -> None:
         super().__init__(wizard)
+        self.setObjectName("machineWizardPage")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.setTitle("Ermittelte Daten prüfen")
         self.setSubTitle("Die Werte sind editierbar. Anschließend ergänzen Sie bei Bedarf die RDP-Einstellungen.")
         layout = QVBoxLayout(self)
@@ -102,9 +110,13 @@ class _PreviewPage(QWizardPage):
         self.message.setWordWrap(True)
         layout.addWidget(self.message)
         form = QFormLayout()
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(10)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.inputs: dict[str, QLineEdit] = {}
         for key, label in self.FIELDS:
             field = QLineEdit()
+            field.setMinimumHeight(36)
             self.inputs[key] = field
             form.addRow(label, field)
         layout.addLayout(form)
