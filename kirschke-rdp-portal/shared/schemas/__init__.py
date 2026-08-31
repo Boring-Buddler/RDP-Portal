@@ -476,6 +476,10 @@ class WorkstationSchema(BaseSchema):
         default_factory=list,
         description="Allowed Entra group IDs"
     )
+    rdp_access_users: list[str] = Field(
+        default_factory=list,
+        description="Directory accounts assigned to this workstation's RDP access group",
+    )
     username_hint: Optional[str] = Field(
         default=None,
         max_length=256,

@@ -86,7 +86,7 @@ kirschke-rdp-portal/
 - [ ] CSV/JSON export
 
 ### Final
-- [ ] PyInstaller packaging
+- [x] PyInstaller packaging (portable Windows folder build)
 - [ ] Intune deployment documentation
 - [ ] Comprehensive tests
 - [ ] User documentation
@@ -133,6 +133,20 @@ python -m portal_app.app
 ```
 
 The recommended start is `python -m portal_app.app`. Direct starts via `python portal_app/app.py` are also supported.
+
+## Portable Windows-Testversion
+
+Erstellt eine portable Ordner-Version ohne Konsolenfenster. PyInstaller ist mit den Entwicklungsabhängigkeiten
+installiert; der Build benötigt keinen Administratorzugriff.
+
+```powershell
+.\deployment\build_portable.cmd
+```
+
+Danach die komplette Ausgabe aus `dist\Kirschke-RDP-Portal\` weitergeben und
+`Kirschke-RDP-Portal.exe` starten. Der Ordner darf nicht aufgeteilt werden, weil er die Qt-Laufzeitdateien enthält.
+Für eine einzelne EXE kann optional `.\deployment\build_portable.cmd -OneFile` verwendet werden; sie startet
+langsamer und ist für den ersten Test nicht empfohlen.
 
 ## Repository Hygiene
 

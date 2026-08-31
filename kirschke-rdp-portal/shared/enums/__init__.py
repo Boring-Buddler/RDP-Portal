@@ -65,6 +65,10 @@ class EventType(str, Enum):
     ADMIN_LOGOFF_REQUESTED: Final = "admin_logoff_requested"
     ADMIN_LOGOFF_COMPLETED: Final = "admin_logoff_completed"
     ADMIN_LOGOFF_FAILED: Final = "admin_logoff_failed"
+    RDP_ACCESS_GRANTED: Final = "rdp_access_granted"
+    RDP_ACCESS_REVOKED: Final = "rdp_access_revoked"
+    RDP_ACCESS_SYNC_COMPLETED: Final = "rdp_access_sync_completed"
+    RDP_ACCESS_SYNC_FAILED: Final = "rdp_access_sync_failed"
     
     # Manual flag events
     MANUAL_FLAG_SET: Final = "manual_flag_set"

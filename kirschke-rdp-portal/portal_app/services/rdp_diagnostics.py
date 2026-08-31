@@ -119,6 +119,27 @@ def _has_saved_rdp_credentials(target: str) -> bool | None:
     return credential_target.casefold() in result.stdout.casefold()
 
 
+def clear_saved_rdp_credentials(target: str) -> tuple[bool, str]:
+    """Remove exactly one RDP credential entry after the UI has confirmed it."""
+    credential_target = f"TERMSRV/{target}"
+    try:
+        result = subprocess.run(
+            ["cmdkey", f"/delete:{credential_target}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"Die Windows-Anmeldeinformationsverwaltung konnte nicht gestartet werden: {exc}"
+    if result.returncode == 0:
+        return True, f"Gespeicherte Anmeldedaten für {credential_target} wurden entfernt."
+    detail = (result.stderr or result.stdout).strip()
+    return False, detail or f"Windows konnte den Eintrag {credential_target} nicht entfernen."
+
+
 def _recent_rdp_client_events() -> str:
     """Read recent client-side RDP events without elevating privileges.
 
@@ -149,4 +170,4 @@ def _recent_rdp_client_events() -> str:
     return "\n\n".join(outputs)
 
 
-__all__ = ["RDPDiagnosticResult", "run_rdp_diagnostics"]
+__all__ = ["RDPDiagnosticResult", "clear_saved_rdp_credentials", "run_rdp_diagnostics"]

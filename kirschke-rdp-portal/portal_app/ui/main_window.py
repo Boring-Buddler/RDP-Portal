@@ -35,6 +35,8 @@ from portal_app.models.workstation import Workstation, create_initial_workstatio
 from portal_app.services.local_store import LocalStore, StoreConflictError
 from portal_app.services.local_identity import detect_initial_user
 from portal_app.services.agent_status import LocalAgentStatusService
+from portal_app.services.directory_users import discover_windows_domain_accounts
+from portal_app.services.active_directory_sync import sync_rdp_group_members
 from portal_app.ui.design import Typography
 from portal_app.ui.icons import kirschke_window_icon
 from portal_app.ui.widgets.management_pages import AdministrationWidget, SettingsWidget
@@ -45,6 +47,7 @@ from portal_app.ui.widgets.workstation_cards import WorkstationCardsWidget
 from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
 from portal_app.ui.widgets.workstation_dialog import WorkstationDialog
 from portal_app.ui.widgets.machine_registration_wizard import MachineRegistrationWizard
+from portal_app.ui.widgets.rdp_access_dialog import RDPAccessDialog
 from shared.enums import EventResult, EventSource, EventType
 
 logger = logging.getLogger(__name__)
@@ -84,6 +87,7 @@ class MainWindow(QMainWindow):
         self._dismissed_rdp_notice_key: str | None = None
         self._load_data()
         self._create_ui()
+        self._update_storage_status("Gemeinsamer Speicher bereit")
         self._connect_signals()
         self._apply_theme()
         self.rdp_poll_timer = QTimer(self)
@@ -105,6 +109,7 @@ class MainWindow(QMainWindow):
         fallback = create_initial_workstations()
         self.workstations, self.current_user, self.reservations = self.store.load(fallback, self.current_user)
         self.session_events = self.store.load_events()
+        self.directory_accounts = self.store.load_directory_accounts()
         self.theme_mode = self.store.theme_mode
         self.dark_mode = self._resolve_dark_mode()
         self._saved_workstations = deepcopy(self.workstations)
@@ -272,6 +277,7 @@ class MainWindow(QMainWindow):
         self.admin_view.edit_requested.connect(self._edit_workstation)
         self.admin_view.force_disconnect_requested.connect(self._force_disconnect_workstation)
         self.admin_view.delete_requested.connect(self._delete_workstation)
+        self.admin_view.rdp_access_requested.connect(self._manage_rdp_access)
         self.admin_view.lock_requested.connect(self._lock_admin)
         self.admin_view.storage_directory_requested.connect(self._change_storage_directory)
         self.settings_view.edit_user_requested.connect(self._edit_user)
@@ -410,6 +416,7 @@ class MainWindow(QMainWindow):
             self.store.relocate(Path(directory), move_files=True)
             self.admin_view.set_storage_directory(str(self.store.directory))
             self._persist()
+            self._update_storage_status("Speicherort gewechselt")
         except (OSError, ValueError) as exc:
             QMessageBox.critical(
                 self,
@@ -607,6 +614,70 @@ class MainWindow(QMainWindow):
         if dialog.should_save:
             self._saved_user = deepcopy(self.current_user)
             self._persist()
+
+    @Slot(Workstation)
+    def _manage_rdp_access(self, workstation: Workstation) -> None:
+        """Edit desired RDP group membership without handling any credentials."""
+        lookup = discover_windows_domain_accounts()
+        current_account = self.current_user.get_rdp_username() or self.current_user.upn
+        known_accounts = self.directory_accounts + lookup.accounts + [current_account]
+        dialog = RDPAccessDialog(workstation, known_accounts, lookup.message, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        previous = {account.casefold(): account for account in workstation.rdp_access_users}
+        updated = {account.casefold(): account for account in dialog.selected_members}
+        granted = [updated[key] for key in sorted(updated.keys() - previous.keys())]
+        revoked = [previous[key] for key in sorted(previous.keys() - updated.keys())]
+        self.directory_accounts = self.store.save_directory_accounts(dialog.known_accounts)
+        if not granted and not revoked:
+            if dialog.sync_to_active_directory:
+                self._sync_rdp_access_to_active_directory(workstation)
+            return
+        workstation.rdp_access_users = dialog.selected_members
+        self._commit_workstation(workstation)
+        self._refresh_workstation_views()
+        self._persist()
+        for account in granted:
+            self._record_event(
+                workstation,
+                EventType.RDP_ACCESS_GRANTED,
+                EventResult.SUCCESS,
+                f"RDP-{workstation.workstation_id}: {account}",
+                EventSource.ADMIN,
+            )
+        for account in revoked:
+            self._record_event(
+                workstation,
+                EventType.RDP_ACCESS_REVOKED,
+                EventResult.SUCCESS,
+                f"RDP-{workstation.workstation_id}: {account}",
+                EventSource.ADMIN,
+            )
+        if dialog.sync_to_active_directory:
+            self._sync_rdp_access_to_active_directory(workstation)
+
+    def _sync_rdp_access_to_active_directory(self, workstation: Workstation) -> None:
+        """Apply the explicitly saved membership to one AD group after confirmation."""
+        group_name = f"RDP-{workstation.workstation_id}"
+        members = workstation.rdp_access_users
+        preview = "\n".join(f"• {account}" for account in members) or "• Keine Benutzer (direkte Benutzer werden entfernt)"
+        answer = QMessageBox.warning(
+            self,
+            "RDP-Gruppe in Active Directory übernehmen",
+            f"Die direkten Benutzer der AD-Gruppe {group_name} werden auf diesen Stand gesetzt:\n\n{preview}\n\n"
+            "Die Ausführung verwendet Ihr aktuell angemeldetes Windows-Konto. Fortfahren?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        result = sync_rdp_group_members(group_name, members)
+        event_type = EventType.RDP_ACCESS_SYNC_COMPLETED if result.success else EventType.RDP_ACCESS_SYNC_FAILED
+        self._record_event(workstation, event_type, EventResult.SUCCESS if result.success else EventResult.FAILED, result.message, EventSource.ADMIN)
+        if result.success:
+            QMessageBox.information(self, "RDP-Gruppe abgeglichen", result.message)
+        else:
+            QMessageBox.warning(self, "AD-Übernahme nicht möglich", result.message)
 
     def _update_user_header(self) -> None:
         if not hasattr(self, "user_button"):
@@ -816,7 +887,7 @@ class MainWindow(QMainWindow):
     @Slot(Workstation)
     def _run_rdp_diagnostics(self, workstation: Workstation) -> None:
         """Show a credential-free RDP preflight report for one workstation."""
-        from portal_app.services.rdp_diagnostics import run_rdp_diagnostics
+        from portal_app.services.rdp_diagnostics import clear_saved_rdp_credentials, run_rdp_diagnostics
 
         try:
             profile = workstation.get_rdp_profile(self.current_user.get_rdp_username())
@@ -836,18 +907,42 @@ class MainWindow(QMainWindow):
         )
         message.setDetailedText(result.report)
         copy_button = message.addButton("Report kopieren", QMessageBox.ActionRole)
+        clear_button = None
+        if result.saved_credentials_present:
+            clear_button = message.addButton(
+                "Gespeicherte Anmeldedaten entfernen", QMessageBox.DestructiveRole
+            )
+            clear_button.setObjectName("dangerButton")
         message.addButton(QMessageBox.Ok)
         message.exec()
         if message.clickedButton() == copy_button:
             from PySide6.QtWidgets import QApplication
 
             QApplication.clipboard().setText(result.report)
+        elif message.clickedButton() == clear_button:
+            answer = QMessageBox.warning(
+                self,
+                "Gespeicherte RDP-Anmeldedaten entfernen",
+                f"Der gespeicherte Windows-Eintrag für {result.target} wird entfernt.\n\n"
+                "Das Kennwort bleibt unbekannt; beim nächsten RDP-Start fragt Windows erneut nach den Anmeldedaten.\n\n"
+                "Eintrag wirklich entfernen?",
+                QMessageBox.Yes | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            success, detail = clear_saved_rdp_credentials(result.target)
+            if success:
+                QMessageBox.information(self, "RDP-Anmeldedaten entfernt", detail)
+            else:
+                QMessageBox.warning(self, "Entfernen fehlgeschlagen", detail)
 
     def on_refresh(self) -> None:
         self.workstations, self.current_user, self.reservations = self.store.load(
             self.workstations, self.current_user
         )
         self.session_events = self.store.load_events()
+        self.directory_accounts = self.store.load_directory_accounts()
         self.theme_mode = self.store.theme_mode
         self.dark_mode = self._resolve_dark_mode()
         self._saved_workstations = deepcopy(self.workstations)
@@ -855,6 +950,7 @@ class MainWindow(QMainWindow):
         self.calendar_view.reservations = self.reservations
         self.session_log_view.set_events(self.session_events)
         self.admin_view.set_storage_directory(str(self.store.directory))
+        self._update_storage_status("Gemeinsame Änderungen übernommen")
         self.calendar_view.set_user(self.current_user)
         self.settings_view.set_user(self.current_user)
         self.settings_view.set_theme_mode(self.theme_mode, self.dark_mode)
@@ -877,6 +973,7 @@ class MainWindow(QMainWindow):
                 self.reservations,
                 theme_mode=self.theme_mode,
             )
+            self._update_storage_status("Gemeinsamer Stand gespeichert")
         except StoreConflictError as exc:
             QMessageBox.warning(
                 self,
@@ -885,6 +982,15 @@ class MainWindow(QMainWindow):
             )
         except OSError as exc:
             QMessageBox.warning(self, "Speichern fehlgeschlagen", f"Die lokalen Testdaten konnten nicht gespeichert werden: {exc}")
+
+    def _update_storage_status(self, action: str) -> None:
+        """Expose the shared storage state without claiming OneDrive server delivery."""
+        if not hasattr(self, "admin_view"):
+            return
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.admin_view.set_storage_status(
+            f"{action} · {timestamp} · portal-state.json und portal-events.jsonl"
+        )
 
     def _commit_workstation(self, workstation: Workstation) -> None:
         """Update only the explicitly saved machine in the persistent snapshot."""
@@ -1100,6 +1206,7 @@ class MainWindow(QMainWindow):
             QPushButton#warningDismissButton:hover { background: #5b481d; }
             QLineEdit, QComboBox, QDateEdit, QDateTimeEdit, QPlainTextEdit, QTextEdit { background: #1a2a35; color: #f1f6fa; border-color: #4c697a; selection-background-color: #4f7897; selection-color: #ffffff; }
             QLineEdit#dashboardSearch, QComboBox#dashboardFilter, QLineEdit#pingInput { background: #1a2a35; color: #f1f6fa; border-color: #4c697a; }
+            QLineEdit#dashboardSearch:focus, QLineEdit#pingInput:focus { background: #1a2a35; color: #f1f6fa; border-color: #8fc1dd; }
             QComboBox QAbstractItemView, QDateEdit QAbstractItemView, QDateTimeEdit QAbstractItemView { background: #1c2d38; color: #f1f6fa; border-color: #59788b; selection-background-color: #3a6884; selection-color: #ffffff; }
             QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QDateTimeEdit:focus, QTextEdit:focus { border-color: #8fc1dd; }
             QFrame#pingTool, QFrame#workstationCard, QFrame#detailCard { background: #1c2d38; border-color: #3d5868; }
@@ -1120,6 +1227,9 @@ class MainWindow(QMainWindow):
             QFrame#addWorkstationCard:hover { background: #213743; border-color: #8eb8cf; }
             QLabel#addCardPlus, QLabel#addCardTitle { color: #d9ebf5; }
             QTableView, QTableWidget { background: #1a2a35; color: #f0f5f8; alternate-background-color: #203440; border-color: #456172; gridline-color: #35505f; selection-background-color: #3a6884; selection-color: #ffffff; }
+            QDialog QListWidget { background: #1a2a35; color: #f0f5f8; border: 1px solid #456172; border-radius: 7px; selection-background-color: #3a6884; selection-color: #ffffff; }
+            QDialog QListWidget::item { padding: 6px 9px; }
+            QDialog QListWidget::item:hover { background: #263f4e; }
             QScrollBar::handle:vertical { background: #557386; }
             QScrollBar::handle:vertical:hover { background: #83abc2; }
             QFrame#filterBar { background: #1c2d38; border: 1px solid #3d5868; border-radius: 8px; }

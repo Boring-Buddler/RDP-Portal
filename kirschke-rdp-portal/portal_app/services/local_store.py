@@ -29,6 +29,7 @@ class LocalStore:
             path = self._configured_directory() / "portal-state.json"
         self.path = path
         self.events_path = self.path.parent / "portal-events.jsonl"
+        self.directory_users_path = self.path.parent / "portal-directory-users.json"
         self.preferences_path = (
             self.config_path.parent / "portal-preferences.json"
             if self._uses_default_location
@@ -37,6 +38,7 @@ class LocalStore:
         self.theme_mode = "system"
         self._state_signature: tuple[int, int] | None = None
         self._events_signature: tuple[int, int] | None = None
+        self._directory_users_signature: tuple[int, int] | None = None
         self._baseline_workstations: dict[str, dict] = {}
         self._baseline_reservations: dict[str, dict] = {}
 
@@ -92,6 +94,7 @@ class LocalStore:
     def _remember_signatures(self) -> None:
         self._state_signature = self._signature(self.path)
         self._events_signature = self._signature(self.events_path)
+        self._directory_users_signature = self._signature(self.directory_users_path)
 
     @staticmethod
     def _write_json(path: Path, data: dict) -> None:
@@ -214,7 +217,39 @@ class LocalStore:
         return (
             self._signature(self.path) != self._state_signature
             or self._signature(self.events_path) != self._events_signature
+            or self._signature(self.directory_users_path) != self._directory_users_signature
         )
+
+    @staticmethod
+    def _normalise_accounts(accounts: list[str]) -> list[str]:
+        """Return unique, non-empty directory accounts in a stable order."""
+        unique: dict[str, str] = {}
+        for account in accounts:
+            cleaned = str(account or "").strip()
+            if cleaned:
+                unique.setdefault(cleaned.casefold(), cleaned)
+        return sorted(unique.values(), key=str.casefold)
+
+    def load_directory_accounts(self) -> list[str]:
+        """Load the shared cache of selectable AD/Entra account names."""
+        try:
+            data = json.loads(self.directory_users_path.read_text(encoding="utf-8"))
+            accounts = data.get("accounts", [])
+            if not isinstance(accounts, list):
+                return []
+            result = self._normalise_accounts(accounts)
+        except (OSError, ValueError, TypeError):
+            result = []
+        self._directory_users_signature = self._signature(self.directory_users_path)
+        return result
+
+    def save_directory_accounts(self, accounts: list[str]) -> list[str]:
+        """Merge discovered/manual accounts into the shared selectable-user cache."""
+        existing = self.load_directory_accounts()
+        merged = self._normalise_accounts(existing + accounts)
+        self._write_json(self.directory_users_path, {"version": 1, "accounts": merged})
+        self._directory_users_signature = self._signature(self.directory_users_path)
+        return merged
 
     def _save_directory_config(self, directory: Path | None = None) -> None:
         if not self._uses_default_location:
@@ -346,12 +381,17 @@ class LocalStore:
         target_directory.mkdir(parents=True, exist_ok=True)
         target_state = target_directory / "portal-state.json"
         target_events = target_directory / "portal-events.jsonl"
+        target_directory_users = target_directory / "portal-directory-users.json"
         if target_directory == self.directory:
             self._save_directory_config()
             return
         pairs = [
             (source, target)
-            for source, target in ((self.path, target_state), (self.events_path, target_events))
+            for source, target in (
+                (self.path, target_state),
+                (self.events_path, target_events),
+                (self.directory_users_path, target_directory_users),
+            )
             if source.exists()
         ]
         for _, target in pairs:
@@ -370,6 +410,7 @@ class LocalStore:
                 source.unlink()
         self.path = target_state
         self.events_path = target_events
+        self.directory_users_path = target_directory_users
         self._remember_signatures()
 
 

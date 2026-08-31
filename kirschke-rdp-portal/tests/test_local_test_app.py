@@ -18,8 +18,10 @@ from portal_app.rdp.launcher import RDPSessionLauncher
 from portal_app.services.agent_status import LocalAgentStatusService
 from portal_app.services.local_store import LocalStore, StoreConflictError
 from portal_app.services.local_identity import detect_initial_user
+from portal_app.services.directory_users import discover_windows_domain_accounts
+from portal_app.services.active_directory_sync import sync_rdp_group_members
 from portal_app.services.machine_discovery import MachineDiscovery, _ipconfig_network_details, discover_remote_machine
-from portal_app.services.rdp_diagnostics import run_rdp_diagnostics
+from portal_app.services.rdp_diagnostics import clear_saved_rdp_credentials, run_rdp_diagnostics
 from portal_app.ui.main_window import MainWindow
 from portal_app.ui.widgets.ping_tool import PingToolWidget
 from portal_app.ui.widgets.management_pages import AdministrationWidget, SettingsWidget
@@ -28,6 +30,7 @@ from portal_app.ui.widgets.session_log import event_to_export_row
 from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
 from portal_app.ui.widgets.workstation_dialog import WorkstationDialog
 from portal_app.ui.widgets.machine_registration_wizard import MachineRegistrationWizard
+from portal_app.ui.widgets.rdp_access_dialog import RDPAccessDialog
 from shared.agent_snapshot import AgentSnapshot, load_agent_snapshots, write_agent_snapshot
 from shared.enums import AgentStatus, ConnectionTargetMode, EventResult, EventType, SessionState
 from workstation_agent.service import AgentConfig, WorkstationAgent
@@ -168,6 +171,26 @@ def test_local_store_detects_external_shared_file_change(tmp_path):
     assert store.has_external_changes()
 
 
+def test_rdp_access_members_and_directory_cache_are_shared_and_moved(tmp_path):
+    source = tmp_path / "source" / "portal-state.json"
+    store = LocalStore(source)
+    user = MockUser.create_user()
+    workstation = create_test_workstation()
+    workstation.rdp_access_users = ["KIRSCHKE\\becker"]
+    store.save([workstation], user, [])
+    assert store.save_directory_accounts(["KIRSCHKE\\becker", "user@firma.de"]) == [
+        "KIRSCHKE\\becker",
+        "user@firma.de",
+    ]
+
+    loaded, _, _ = store.load([], user)
+    assert loaded[0].rdp_access_users == ["KIRSCHKE\\becker"]
+    target = tmp_path / "sharepoint" / "RDP-Portal"
+    store.relocate(target)
+    assert store.directory_users_path == target / "portal-directory-users.json"
+    assert store.load_directory_accounts() == ["KIRSCHKE\\becker", "user@firma.de"]
+
+
 def test_remote_discovery_uses_reverse_dns(monkeypatch):
     monkeypatch.setattr(
         "portal_app.services.machine_discovery.socket.gethostbyaddr",
@@ -179,6 +202,47 @@ def test_remote_discovery_uses_reverse_dns(monkeypatch):
     assert result.hostname == "pc-cad-01"
     assert result.fqdn == "pc-cad-01.kirschke.local"
     assert result.ip_address == "192.168.2.68"
+
+
+def test_windows_domain_lookup_returns_selectable_accounts(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = """
+User accounts for \\KIRSCHKE
+-------------------------------------------------------------------------------
+becker       mueller.test     service-rdp
+The command completed successfully.
+"""
+
+    monkeypatch.setenv("USERDOMAIN", "KIRSCHKE")
+    monkeypatch.setattr("portal_app.services.directory_users.subprocess.run", lambda *args, **kwargs: Result())
+    result = discover_windows_domain_accounts()
+
+    assert result.accounts == ["KIRSCHKE\\becker", "KIRSCHKE\\mueller.test", "KIRSCHKE\\service-rdp"]
+
+
+def test_ad_group_sync_uses_current_windows_context_without_passwords(monkeypatch):
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stdout = '{"added":["becker"],"removed":["altuser"]}'
+        stderr = ""
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args[0]
+        captured["kwargs"] = kwargs
+        return Result()
+
+    monkeypatch.setattr("portal_app.services.active_directory_sync.subprocess.run", fake_run)
+    result = sync_rdp_group_members("RDP-WS-001", ["KIRSCHKE\\becker"])
+
+    assert result.success
+    assert result.added == ["becker"]
+    assert result.removed == ["altuser"]
+    assert captured["args"][:4] == ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy"]
+    assert "Import-Module ActiveDirectory" in captured["args"][-1]
+    assert "password" not in captured["args"][-1].casefold()
 
 
 def test_ipconfig_fallback_prefers_adapter_with_default_gateway(monkeypatch):
@@ -290,9 +354,39 @@ def test_admin_actions_include_disconnect_and_delete(qtbot):
     assert admin.force_disconnect.text() == "Trennen"
     assert admin.force_disconnect.isEnabled()
     assert admin.delete_workstation.isEnabled()
+    assert admin.rdp_access.isEnabled()
     with qtbot.waitSignal(admin.delete_requested) as signal:
         admin._delete_selected()
     assert signal.args == [workstations[0]]
+    admin.set_storage_status("Gemeinsamer Stand gespeichert · 12:34:56")
+    assert "12:34:56" in admin.storage_status.text()
+
+
+def test_rdp_access_dialog_selects_and_manually_adds_accounts(qtbot):
+    app = QApplication.instance()
+    assert app is not None
+    previous_style = app.styleSheet()
+    app.setStyleSheet(MainWindow._application_style(False))
+    try:
+        dialog = RDPAccessDialog(
+            create_test_workstation(),
+            ["KIRSCHKE\\becker"],
+            "1 Benutzer aus der Windows-Domäne gefunden.",
+        )
+        qtbot.addWidget(dialog)
+        dialog.show()
+        qtbot.wait(20)
+        assert dialog.search.height() >= 36
+        dialog.directory_list.setCurrentRow(0)
+        dialog._add_selected()
+        dialog.manual_account.setText("mueller@firma.de")
+        dialog._add_manual()
+        assert dialog.selected_members == ["KIRSCHKE\\becker", "mueller@firma.de"]
+        assert "mueller@firma.de" in dialog.known_accounts
+        dialog._accept_for_active_directory()
+        assert dialog.sync_to_active_directory
+    finally:
+        app.setStyleSheet(previous_style)
 
 
 def test_calendar_keeps_toolbar_compact_and_edits_by_double_click(qtbot):
@@ -325,6 +419,7 @@ def test_dark_theme_has_high_contrast_palette():
     assert "#101820" in style
     assert "#f4f8fb" in style
     assert "QWizard#machineRegistrationWizard > QWidget" in style
+    assert "QLineEdit#dashboardSearch:focus, QLineEdit#pingInput:focus" in style
     assert "QWizard QPushButton:default { background: #5b91b1; color: #ffffff;" in style
     assert "QMessageBox QPushButton" in style
     assert "QDialogButtonBox QPushButton" in style
@@ -545,6 +640,27 @@ def test_rdp_diagnostics_reports_reachable_port_without_credentials(monkeypatch,
     assert "Gespeicherte Windows-Anmeldedaten" in result.report
     assert result.saved_credentials_present
     assert result.log_path.exists()
+
+
+def test_clear_saved_rdp_credentials_removes_only_selected_target(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return Result()
+
+    monkeypatch.setattr("portal_app.services.rdp_diagnostics.subprocess.run", run)
+
+    success, message = clear_saved_rdp_credentials("192.168.2.68")
+
+    assert success
+    assert "TERMSRV/192.168.2.68" in message
+    assert calls == [["cmdkey", "/delete:TERMSRV/192.168.2.68"]]
 
 
 @pytest.mark.parametrize(

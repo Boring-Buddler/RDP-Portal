@@ -42,6 +42,7 @@ class Workstation:
     screen_mode: Optional[str] = None
     resolution: Optional[str] = None
     allowed_entra_group_ids: list[str] = field(default_factory=list)
+    rdp_access_users: list[str] = field(default_factory=list)
     
     # Manual Flag
     manual_flag_type: ManualFlagType = ManualFlagType.NONE
@@ -97,6 +98,7 @@ class Workstation:
             description=self.description,
             enabled=self.enabled,
             allowed_entra_group_ids=self.allowed_entra_group_ids,
+            rdp_access_users=self.rdp_access_users,
             username_hint=self.username_hint,
             entra_sso_enabled=self.entra_sso_enabled,
             trust_unverified_server=self.trust_unverified_server,
@@ -144,6 +146,7 @@ class Workstation:
             description=schema.description,
             enabled=schema.enabled,
             allowed_entra_group_ids=schema.allowed_entra_group_ids,
+            rdp_access_users=schema.rdp_access_users,
             username_hint=schema.username_hint,
             entra_sso_enabled=schema.entra_sso_enabled,
             trust_unverified_server=schema.trust_unverified_server,

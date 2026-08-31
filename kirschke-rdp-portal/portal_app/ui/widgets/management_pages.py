@@ -31,6 +31,7 @@ class AdministrationWidget(QWidget):
     edit_requested = Signal(Workstation)
     force_disconnect_requested = Signal(Workstation)
     delete_requested = Signal(Workstation)
+    rdp_access_requested = Signal(Workstation)
     lock_requested = Signal()
     storage_directory_requested = Signal(str)
 
@@ -56,6 +57,11 @@ class AdministrationWidget(QWidget):
         edit.setObjectName("toolbarButton")
         edit.clicked.connect(self._edit_selected)
         actions.addWidget(edit)
+        self.rdp_access = QPushButton("RDP-Zugriff")
+        self.rdp_access.setObjectName("toolbarButton")
+        self.rdp_access.setEnabled(False)
+        self.rdp_access.clicked.connect(self._manage_rdp_access_selected)
+        actions.addWidget(self.rdp_access)
         self.force_disconnect = QPushButton("Trennen")
         self.force_disconnect.setObjectName("dangerButton")
         self.force_disconnect.setEnabled(False)
@@ -86,6 +92,10 @@ class AdministrationWidget(QWidget):
         storage_note.setObjectName("detailMuted")
         storage_note.setWordWrap(True)
         storage_copy.addWidget(storage_note)
+        self.storage_status = QLabel("Gemeinsamer Speicher wird vorbereitet …")
+        self.storage_status.setObjectName("detailMuted")
+        self.storage_status.setWordWrap(True)
+        storage_copy.addWidget(self.storage_status)
         storage_layout.addLayout(storage_copy)
         self.storage_directory = QLineEdit()
         self.storage_directory.setMinimumWidth(420)
@@ -101,8 +111,10 @@ class AdministrationWidget(QWidget):
         storage_layout.addWidget(apply_storage)
         root.addWidget(storage_card)
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(["ID", "Name", "Hostname", "IP-Adresse", "Standort", "Status"])
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(
+            ["ID", "Name", "Hostname", "IP-Adresse", "Standort", "Status", "RDP-Zugriff"]
+        )
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -126,6 +138,9 @@ class AdministrationWidget(QWidget):
     def set_storage_directory(self, directory: str) -> None:
         self.storage_directory.setText(directory)
 
+    def set_storage_status(self, status: str) -> None:
+        self.storage_status.setText(status)
+
     def _choose_storage_directory(self) -> None:
         directory = QFileDialog.getExistingDirectory(
             self, "SharePoint-Speicherordner auswählen", self.storage_directory.text().strip()
@@ -148,6 +163,10 @@ class AdministrationWidget(QWidget):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.UserRole, ws.workstation_id)
                 self.table.setItem(row, column, item)
+        for row, ws in enumerate(self.workstations):
+            item = QTableWidgetItem(f"{len(ws.rdp_access_users)} Nutzer")
+            item.setData(Qt.UserRole, ws.workstation_id)
+            self.table.setItem(row, 6, item)
         self.table.resizeColumnsToContents()
 
     def _edit_selected(self) -> None:
@@ -168,9 +187,16 @@ class AdministrationWidget(QWidget):
             return
         self.delete_requested.emit(self.workstations[row])
 
+    def _manage_rdp_access_selected(self) -> None:
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self.workstations):
+            return
+        self.rdp_access_requested.emit(self.workstations[row])
+
     def _update_action_state(self) -> None:
         row = self.table.currentRow()
         enabled = 0 <= row < len(self.workstations)
+        self.rdp_access.setEnabled(enabled)
         self.force_disconnect.setEnabled(enabled)
         self.delete_workstation.setEnabled(enabled)
 

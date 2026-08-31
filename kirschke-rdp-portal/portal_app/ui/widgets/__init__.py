@@ -4,6 +4,7 @@ from portal_app.ui.widgets.connect_button import ConnectButton
 from portal_app.ui.widgets.flag_dialog import FlagDialog
 from portal_app.ui.widgets.management_pages import AdministrationWidget, SettingsWidget
 from portal_app.ui.widgets.ping_tool import PingToolWidget
+from portal_app.ui.widgets.rdp_access_dialog import RDPAccessDialog
 from portal_app.ui.widgets.reservation_calendar import ReservationCalendarWidget
 from portal_app.ui.widgets.session_log import SessionLogWidget
 from portal_app.ui.widgets.status_badge import StatusBadgeWidget
@@ -27,4 +28,5 @@ __all__ = [
     "AdministrationWidget",
     "SettingsWidget",
     "PingToolWidget",
+    "RDPAccessDialog",
 ]

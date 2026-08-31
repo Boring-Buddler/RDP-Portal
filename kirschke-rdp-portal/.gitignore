@@ -1,0 +1,8 @@
+build/
+build-spec/
+dist/
+*.spec
+rdp_portal.log
+__pycache__/
+.pytest_cache/
+.ruff_cache/
