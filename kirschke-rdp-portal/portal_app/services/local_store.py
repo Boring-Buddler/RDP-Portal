@@ -10,13 +10,19 @@ from pathlib import Path
 
 from portal_app.models.reservation import Reservation
 from portal_app.models.session import SessionEvent
-from portal_app.models.user import MockUser, UserRole
+from portal_app.models.user import MockUser
 from portal_app.models.workstation import Workstation
 from shared.schemas import SessionEventSchema, WorkstationSchema
+from shared.file_io import file_lock, write_json_atomic
+from shared.agent_paths import default_portal_directory, expand_directory, resolve_agent_directory
 
 
 class StoreConflictError(RuntimeError):
     """Raised when two portal instances changed the same shared record."""
+
+
+class StoreReadError(OSError):
+    """Existing state cannot be read safely; never replace it with defaults."""
 
 
 class LocalStore:
@@ -36,6 +42,7 @@ class LocalStore:
             else self.path.with_name(f"{self.path.stem}-preferences.json")
         )
         self.theme_mode = "system"
+        self.selected_login_accounts: dict[str, str] = {}
         self._state_signature: tuple[int, int] | None = None
         self._events_signature: tuple[int, int] | None = None
         self._directory_users_signature: tuple[int, int] | None = None
@@ -44,16 +51,7 @@ class LocalStore:
 
     @staticmethod
     def default_directory() -> Path:
-        user_profile = Path(os.environ.get("USERPROFILE") or Path.home())
-        return (
-            user_profile
-            / "Prof. Dr.-Ing. Dieter Kirschke GmbH & Co. KG"
-            / "IB Kirschke - Dokumente"
-            / "90"
-            / "_K.I. Strategie"
-            / "Testprogramme"
-            / "RDP-Portal"
-        )
+        return default_portal_directory()
 
     @staticmethod
     def _config_path() -> Path:
@@ -65,8 +63,8 @@ class LocalStore:
             config = json.loads(self.config_path.read_text(encoding="utf-8"))
             location = config.get("storage_directory")
             if location:
-                return Path(location)
-        except (OSError, ValueError, TypeError):
+                return expand_directory(location)
+        except (OSError, ValueError, TypeError, AttributeError):
             pass
         # If the local configuration was removed, a redirect marker in the
         # original SharePoint folder still makes a previous move recoverable.
@@ -74,14 +72,41 @@ class LocalStore:
         try:
             location = json.loads(marker.read_text(encoding="utf-8")).get("storage_directory")
             if location:
-                return Path(location)
-        except (OSError, ValueError, TypeError):
+                return expand_directory(location)
+        except (OSError, ValueError, TypeError, AttributeError):
             pass
         return self.default_directory()
 
     @property
     def directory(self) -> Path:
         return self.path.parent
+
+    @property
+    def agent_config_path(self) -> Path:
+        return (self.config_path if self._uses_default_location else
+                self.path.with_name(f"{self.path.stem}-storage-config.json"))
+
+    def _read_directory_config(self) -> dict:
+        try:
+            data = json.loads(self.agent_config_path.read_text(encoding="utf-8-sig"))
+            return data if isinstance(data, dict) else {}
+        except FileNotFoundError:
+            return {}
+
+    @property
+    def agent_status_directory(self) -> Path:
+        configured = self._read_directory_config().get("agent_status_directory")
+        return expand_directory(configured) if configured else resolve_agent_directory(self.directory)
+
+    def set_agent_status_directory(self, directory: str | Path) -> Path:
+        target = expand_directory(directory)
+        if not target.is_absolute() or re.search(r"%[^%]+%", str(target)):
+            raise ValueError("Bitte einen vollständigen lokalen oder Netzwerkpfad angeben.")
+        config = self._read_directory_config()
+        config["agent_status_directory"] = str(target)
+        config["version"] = 1
+        write_json_atomic(self.agent_config_path, config)
+        return target
 
     @staticmethod
     def _signature(path: Path) -> tuple[int, int] | None:
@@ -98,19 +123,44 @@ class LocalStore:
 
     @staticmethod
     def _write_json(path: Path, data: dict) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(path)
+        write_json_atomic(path, data)
+
+    @staticmethod
+    def _read_state(path: Path) -> dict:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            if not isinstance(data, dict) or data.get("version", 1) not in {1, 2, 3, 4}:
+                raise ValueError("Unbekanntes Speicherformat")
+            for field, identifier in (("workstations", "workstation_id"), ("reservations", "reservation_id")):
+                records = data.get(field, [])
+                if not isinstance(records, list):
+                    raise ValueError(f"Ungültige Liste: {field}")
+                seen = set()
+                for item in records:
+                    if not isinstance(item, dict) or not isinstance(item.get(identifier), str) or not item[identifier].strip():
+                        raise ValueError(f"Ungültige ID: {field}")
+                    key = item[identifier].casefold()
+                    if key in seen:
+                        raise ValueError(f"Doppelte ID: {item[identifier]}")
+                    seen.add(key)
+                    if field == "workstations":
+                        WorkstationSchema.model_validate(item)
+                    else:
+                        Reservation.from_dict(item)
+            return data
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise StoreReadError(f"Speicherdatei kann nicht sicher gelesen werden: {path}. {exc}") from exc
 
     @staticmethod
     def _user_from_data(data: dict, fallback: MockUser) -> MockUser:
+        if not isinstance(data, dict):
+            return fallback
         return MockUser(
             object_id=data.get("object_id", fallback.object_id),
             upn=data.get("upn", fallback.upn),
             display_name=data.get("display_name", fallback.display_name),
             email=data.get("email", fallback.email),
-            role=UserRole(data.get("role", fallback.role.value)),
+            role=fallback.role,
             rdp_username=data.get("rdp_username"),
             rdp_domain=data.get("rdp_domain"),
         )
@@ -132,10 +182,17 @@ class LocalStore:
         uses_legacy_data = False
         try:
             data = json.loads(self.preferences_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, AttributeError):
             data = legacy_data or {}
             uses_legacy_data = bool(legacy_data)
+        if not isinstance(data, dict):
+            data = {}
         stored_theme = data.get("theme_mode")
+        choices = data.get("selected_login_accounts", {})
+        self.selected_login_accounts = {
+            key: value for key, value in choices.items()
+            if isinstance(key, str) and isinstance(value, str)
+        } if isinstance(choices, dict) else {}
         if uses_legacy_data and data.get("version", 0) < 3:
             self.theme_mode = "dark" if stored_theme == "dark" else "system"
         else:
@@ -146,8 +203,22 @@ class LocalStore:
         self.theme_mode = theme_mode if theme_mode in {"system", "light", "dark"} else "system"
         self._write_json(
             self.preferences_path,
-            {"version": 1, "theme_mode": self.theme_mode, "user": self._user_data(user)},
+            {"version": 1, "theme_mode": self.theme_mode, "user": self._user_data(user),
+             "selected_login_accounts": self.selected_login_accounts},
         )
+
+    def save_login_selection(self, workstation_id: str, account: str, user: MockUser) -> None:
+        from shared.login_accounts import validate_login_account
+        previous = dict(self.selected_login_accounts)
+        if account:
+            self.selected_login_accounts[workstation_id] = validate_login_account(account)
+        else:
+            self.selected_login_accounts.pop(workstation_id, None)
+        try:
+            self._save_preferences(user, self.theme_mode)
+        except OSError:
+            self.selected_login_accounts = previous
+            raise
 
     def _set_baseline(self, data: dict) -> None:
         self._baseline_workstations = {
@@ -238,7 +309,7 @@ class LocalStore:
             if not isinstance(accounts, list):
                 return []
             result = self._normalise_accounts(accounts)
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, AttributeError):
             result = []
         self._directory_users_signature = self._signature(self.directory_users_path)
         return result
@@ -254,15 +325,9 @@ class LocalStore:
     def _save_directory_config(self, directory: Path | None = None) -> None:
         if not self._uses_default_location:
             return
-        self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        self.config_path.write_text(
-            json.dumps(
-                {"storage_directory": str(directory or self.directory), "version": 1},
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        config = self._read_directory_config()
+        config.update(storage_directory=str(directory or self.directory), version=1)
+        write_json_atomic(self.config_path, config)
 
     @staticmethod
     def _write_redirect_marker(previous_directory: Path, new_directory: Path) -> None:
@@ -286,13 +351,17 @@ class LocalStore:
         self,
         fallback_workstations: list[Workstation],
         fallback_user: MockUser,
+        *,
+        migrate: bool = True,
     ) -> tuple[list[Workstation], MockUser, list[Reservation]]:
         if not self.path.exists():
+            if self._state_signature is not None or self._baseline_workstations or self._baseline_reservations:
+                raise StoreReadError("Die bisherige Speicherdatei fehlt; bitte Verbindung und Speicherort prüfen.")
             user = self._load_preferences(fallback_user)
             self._remember_signatures()
             return fallback_workstations, user, []
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = self._read_state(self.path)
             user = self._load_preferences(fallback_user, data)
             workstations = [
                 Workstation.from_schema(WorkstationSchema.model_validate(item))
@@ -303,20 +372,28 @@ class LocalStore:
             # per-machine credentials, and would otherwise override whoami.
             removed_legacy_placeholders = False
             for workstation in workstations:
+                choice = self.selected_login_accounts.get(workstation.workstation_id)
+                if choice and choice in workstation.login_accounts + [workstation.username_hint]:
+                    workstation.selected_login_account = choice
                 username_hint = workstation.username_hint or ""
                 if re.fullmatch(r"user\d+@prof-kirschke\.de", username_hint, re.IGNORECASE):
                     workstation.username_hint = None
                     removed_legacy_placeholders = True
             reservations = [Reservation.from_dict(item) for item in data.get("reservations", [])]
-            if removed_legacy_placeholders:
+            self._set_baseline(data)
+            self._remember_signatures()
+            if removed_legacy_placeholders and migrate:
                 self.save(workstations, user, reservations, theme_mode=self.theme_mode)
             else:
                 self._set_baseline(data)
                 self._remember_signatures()
-            return workstations or fallback_workstations, user, reservations
-        except (OSError, ValueError, KeyError, TypeError):
-            self._remember_signatures()
-            return fallback_workstations, fallback_user, []
+            return workstations, user, reservations
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise StoreReadError(f"Portaldaten konnten nicht geladen werden: {exc}") from exc
+
+    def read_reservations(self) -> list[Reservation]:
+        """Read authoritative bookings without acknowledging other pending edits."""
+        return [Reservation.from_dict(item) for item in self._read_state(self.path).get("reservations", [])]
 
     def save(
         self,
@@ -331,16 +408,29 @@ class LocalStore:
             "workstations": [ws.to_schema().model_dump(mode="json") for ws in workstations],
             "reservations": [reservation.to_dict() for reservation in reservations],
         }
-        if self._signature(self.path) != self._state_signature and self.path.exists():
-            try:
-                remote_data = json.loads(self.path.read_text(encoding="utf-8"))
-            except (OSError, ValueError, TypeError) as exc:
-                raise StoreConflictError("Die gemeinsame Konfigurationsdatei kann nicht sicher zusammengeführt werden.") from exc
-            data = self._merge_shared_data(remote_data, data)
-        self._write_json(self.path, data)
+        local_data = data
+        with file_lock(self.path.with_suffix(".lock")):
+            if self.path.exists():
+                data = self._merge_shared_data(self._read_state(self.path), local_data)
+            elif self._state_signature is not None:
+                raise StoreConflictError("Die gemeinsame Speicherdatei wurde entfernt. Bitte den Speicherort prüfen.")
+            machine_ids = {item["workstation_id"] for item in data["workstations"]}
+            reservations_to_check = [Reservation.from_dict(item) for item in data["reservations"]]
+            for index, reservation in enumerate(reservations_to_check):
+                if reservation.workstation_id not in machine_ids:
+                    raise StoreConflictError("Eine reservierte Maschine wurde zwischenzeitlich gelöscht.")
+                if any(
+                    previous.workstation_id == reservation.workstation_id
+                    and previous.start < reservation.end and previous.end > reservation.start
+                    for previous in reservations_to_check[:index]
+                ):
+                    raise StoreConflictError("Der Reservierungszeitraum wurde zwischenzeitlich belegt.")
+            self._write_json(self.path, data)
         self._save_preferences(user, theme_mode)
-        self._set_baseline(data)
-        self._remember_signatures()
+        # Only the local input was seen by this caller. Remembering merged remote
+        # records here would interpret its next save as deleting unseen records.
+        self._set_baseline(local_data)
+        self._state_signature = self._signature(self.path) if data == local_data else None
 
     def load_events(self) -> list[SessionEvent]:
         """Load the append-only portal event log; malformed individual lines are skipped."""
@@ -364,9 +454,11 @@ class LocalStore:
         """Append one portal event without retaining credentials or passwords."""
         self.events_path.parent.mkdir(parents=True, exist_ok=True)
         serialized = event.to_schema().model_dump_json()
-        with self.events_path.open("a", encoding="utf-8") as event_file:
-            event_file.write(serialized + "\n")
-        self._remember_signatures()
+        with file_lock(self.events_path.with_suffix(".lock")):
+            with self.events_path.open("a", encoding="utf-8") as event_file:
+                event_file.write(serialized + "\n")
+        # Do not acknowledge unrelated state changes while appending an event.
+        self._events_signature = self._signature(self.events_path)
 
     def initialize_event_log(self) -> None:
         """Create the empty append-only log on first portal startup."""

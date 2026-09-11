@@ -5,7 +5,7 @@ constants as specified in the Kirschke_Corporate_Design_Masterprompt.
 """
 
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QWidget
 
 
 # =============================================================================
@@ -476,7 +476,7 @@ class DesignSystem:
     manual_flag = ManualFlagColors
     
     @classmethod
-    def apply_to(cls, widget: "QWidget") -> None:
+    def apply_to(cls, widget: QWidget) -> None:
         """Apply base styles to a widget."""
         widget.setStyleSheet(cls.styles.central_widget())
         

@@ -25,9 +25,9 @@ def configured_admin_group() -> str:
 
 
 def test_password_fallback_allowed() -> bool:
-    """Keep the local test password opt-out until AD authorization is ready."""
-    configured = (os.environ.get("RDP_PORTAL_ALLOW_TEST_ADMIN_PASSWORD") or "true").strip().casefold()
-    return configured not in {"0", "false", "no", "off"}
+    """In AD mode the local password fallback requires explicit opt-in."""
+    configured = (os.environ.get("RDP_PORTAL_ALLOW_TEST_ADMIN_PASSWORD") or "false").strip().casefold()
+    return configured in {"1", "true", "yes", "on"}
 
 
 def check_windows_admin_authorization(group_name: str | None = None) -> WindowsAdminAuthorization:

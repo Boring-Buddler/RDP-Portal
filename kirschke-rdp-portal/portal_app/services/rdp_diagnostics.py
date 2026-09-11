@@ -38,7 +38,7 @@ def run_rdp_diagnostics(profile: RDPProfileSchema, timeout_seconds: float = 3.0)
         f"Ziel: {target} ({mode.value})",
         f"RDP-Benutzer: {profile.username_hint or 'Beim Start abfragen'}",
         f"Webkonto / Entra: {'aktiv' if profile.effective_entra_sso_enabled() else 'aus'}",
-        f"ServeridentitÃ¤ts-Ausnahme: {'aktiv' if profile.trust_unverified_server else 'aus'}",
+        f"Serveridentitäts-Ausnahme: {'aktiv' if profile.trust_unverified_server else 'aus'}",
         "Passwort: wird nicht protokolliert",
         "",
     ]
@@ -46,9 +46,9 @@ def run_rdp_diagnostics(profile: RDPProfileSchema, timeout_seconds: float = 3.0)
     addresses: list[str] = []
     try:
         addresses = sorted({entry[4][0] for entry in socket.getaddrinfo(target, 3389, type=socket.SOCK_STREAM)})
-        lines.append(f"NamensauflÃ¶sung: OK ({', '.join(addresses)})")
+        lines.append(f"Namensauflösung: OK ({', '.join(addresses)})")
     except socket.gaierror as exc:
-        lines.append(f"NamensauflÃ¶sung: FEHLER ({exc})")
+        lines.append(f"Namensauflösung: FEHLER ({exc})")
 
     port_open: bool | None = None
     if addresses:
@@ -60,7 +60,7 @@ def run_rdp_diagnostics(profile: RDPProfileSchema, timeout_seconds: float = 3.0)
             port_open = False
             lines.append(f"TCP-Port 3389 (RDP): NICHT ERREICHBAR ({exc})")
     else:
-        lines.append("TCP-Port 3389 (RDP): nicht geprÃ¼ft, weil die NamensauflÃ¶sung fehlgeschlagen ist")
+        lines.append("TCP-Port 3389 (RDP): nicht geprüft, weil die Namensauflösung fehlgeschlagen ist")
 
     lines.extend(("", "Letzte lokale Windows-RDP-Clientereignisse:"))
     saved_credentials_present = _has_saved_rdp_credentials(target)
@@ -78,10 +78,10 @@ def run_rdp_diagnostics(profile: RDPProfileSchema, timeout_seconds: float = 3.0)
         (
             "",
             "Einordnung:",
-            "- Ist Port 3389 nicht erreichbar, prÃ¼fen Sie Netzwerk, Firewall, VPN und den Remotedesktopdienst.",
+            "- Ist Port 3389 nicht erreichbar, prüfen Sie Netzwerk, Firewall, VPN und den Remotedesktopdienst.",
             "- Ist Port 3389 erreichbar und Windows meldet trotzdem einen fehlgeschlagenen Anmeldeversuch,",
-            "  prÃ¼fen Sie Benutzerformat, Berechtigung 'Remotedesktopbenutzer', DomÃ¤nen-/Entra-Zuordnung",
-            "  sowie gespeicherte Windows-Anmeldedaten fÃ¼r dieses Ziel.",
+            "  prüfen Sie Benutzerformat, Berechtigung 'Remotedesktopbenutzer', Domänen-/Entra-Zuordnung",
+            "  sowie gespeicherte Windows-Anmeldedaten für dieses Ziel.",
         )
     )
     report = "\n".join(lines)

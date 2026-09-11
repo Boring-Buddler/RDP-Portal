@@ -1,11 +1,10 @@
 """Status badge widget for Kirschke RDP Workstation Portal."""
 
 from typing import Optional
-from PySide6.QtWidgets import QLabel, QFrame, QVBoxLayout
+from PySide6.QtWidgets import QLabel, QFrame
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
 
-from portal_app.ui.design import DesignSystem, Colors, Typography, Spacing
+from portal_app.ui.design import Colors, Typography, Spacing
 from shared.enums import AgentStatus, SessionState, ManualFlagType
 
 

@@ -23,8 +23,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Any
 from pathlib import Path
 from threading import Lock
+from enum import Enum
 
-import msal
 from msal import ConfidentialClientApplication
 
 from shared.schemas import (
@@ -33,7 +33,7 @@ from shared.schemas import (
     AdminCommandSchema,
     AccessRuleSchema,
 )
-from shared.enums import AgentStatus, SessionState
+from shared.enums import AgentStatus, SessionState, ManualFlagType, EventType, EventResult, EventSource
 
 logger = logging.getLogger(__name__)
 
@@ -323,7 +323,6 @@ class AgentGraphClient:
                 )
             
             # Create credential from certificate
-            from msal import SigningKey
             return {
                 "private_key": cert,
                 "thumbprint": self.config.certificate_thumbprint,
@@ -657,7 +656,6 @@ class AgentGraphClient:
         if not self.config.sharepoint_site_id:
             return 0
         
-        from workstation_agent.graph.sharepoint import SessionEventConverter
         
         count = 0
         for event in events:
@@ -751,7 +749,6 @@ class AgentGraphClient:
         # Update the command
         update_url = f"/sites/{self.config.sharepoint_site_id}/lists/{self.config.commands_list}/items/{item_id}"
         
-        from shared.enums import CommandStatus
         data = {
             "Status": status,
             "ExecutedAtUtc": datetime.now(timezone.utc).isoformat(),
@@ -852,8 +849,8 @@ class WorkstationConverter:
             project=get_field("manual_flag_project"),
             set_by_object_id=get_field("manual_flag_set_by_object_id"),
             set_by_upn=get_field("manual_flag_set_by_upn"),
-            set_at_utc=self._parse_datetime(get_field("manual_flag_set_at_utc")),
-            expires_at_utc=self._parse_datetime(get_field("manual_flag_expires_at_utc")),
+            set_at_utc=WorkstationConverter._parse_datetime(get_field("manual_flag_set_at_utc")),
+            expires_at_utc=WorkstationConverter._parse_datetime(get_field("manual_flag_expires_at_utc")),
         )
         
         return WorkstationSchema(
@@ -874,13 +871,13 @@ class WorkstationConverter:
             redirect_audio=get_field("redirect_audio", False),
             screen_mode=get_field("screen_mode"),
             resolution=get_field("resolution"),
-            allowed_entra_group_ids=self._parse_list(get_field("allowed_entra_group_ids", [])),
+            allowed_entra_group_ids=WorkstationConverter._parse_list(get_field("allowed_entra_group_ids", [])),
             agent_status=WorkstationConverter._parse_enum(
                 get_field("agent_status"),
                 AgentStatus,
                 AgentStatus.OFFLINE
             ),
-            agent_last_seen_utc=self._parse_datetime(get_field("agent_last_seen_utc")),
+            agent_last_seen_utc=WorkstationConverter._parse_datetime(get_field("agent_last_seen_utc")),
             agent_version=get_field("agent_version"),
             current_session_state=WorkstationConverter._parse_enum(
                 get_field("current_session_state"),
@@ -889,7 +886,7 @@ class WorkstationConverter:
             ),
             current_session_user=get_field("current_session_user"),
             current_windows_session_id=get_field("current_windows_session_id"),
-            last_session_event_utc=self._parse_datetime(get_field("last_session_event_utc")),
+            last_session_event_utc=WorkstationConverter._parse_datetime(get_field("last_session_event_utc")),
             manual_flag=manual_flag,
             etag=item.get("etag"),
         )

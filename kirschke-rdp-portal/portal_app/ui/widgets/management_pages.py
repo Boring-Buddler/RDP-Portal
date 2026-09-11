@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
+from shared.agent_paths import default_agent_directory
 
 
 class AdministrationWidget(QWidget):
@@ -246,6 +247,8 @@ class AdministrationWidget(QWidget):
 class SettingsWidget(QWidget):
     edit_user_requested = Signal()
     agent_refresh_requested = Signal()
+    agent_directory_requested = Signal(str)
+    share_setup_requested = Signal()
     theme_changed = Signal(str)
 
     def __init__(
@@ -361,19 +364,75 @@ class SettingsWidget(QWidget):
         agent_layout = QVBoxLayout(agent_card)
         agent_layout.setContentsMargins(22, 20, 22, 20)
         agent_layout.setSpacing(10)
-        agent_title = QLabel("Windows-Agent · lokaler Testkanal")
+        agent_title = QLabel("Windows-Agent · gemeinsamer Statusordner")
         agent_title.setObjectName("detailCardTitle")
         agent_layout.addWidget(agent_title)
         self.agent_status = QLabel("Noch nicht geprüft")
         self.agent_status.setObjectName("detailValue")
+        self.agent_status.setWordWrap(True)
         agent_layout.addWidget(self.agent_status)
         self.agent_path = QLabel()
         self.agent_path.setObjectName("detailMuted")
         self.agent_path.setWordWrap(True)
+        self.agent_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
         agent_layout.addWidget(self.agent_path)
+        self.agent_directory = QLineEdit()
+        self.agent_directory.setAccessibleName("Exakter Agent-Statusordner")
+        self.agent_directory.setPlaceholderText(str(default_agent_directory()))
+        self.agent_directory.setToolTip("Exakt den Ordner auswählen, in dem die Agent-JSON liegt. %USERPROFILE% wird aufgelöst.")
+        self.agent_directory.returnPressed.connect(lambda: self.agent_directory_requested.emit(self.agent_directory.text()))
+        agent_layout.addWidget(self.agent_directory)
+        path_buttons = QHBoxLayout()
+        browse_agent = QPushButton("Ordner auswählen …")
+        browse_agent.setObjectName("toolbarButton")
+        browse_agent.clicked.connect(self._choose_agent_directory)
+        path_buttons.addWidget(browse_agent)
+        apply_agent = QPushButton("Statusordner übernehmen")
+        apply_agent.setObjectName("toolbarButton")
+        apply_agent.clicked.connect(lambda: self.agent_directory_requested.emit(self.agent_directory.text()))
+        path_buttons.addWidget(apply_agent)
+        default_agent = QPushButton("Standard verwenden")
+        default_agent.setObjectName("toolbarButton")
+        default_agent.clicked.connect(lambda: self.agent_directory_requested.emit(str(default_agent_directory())))
+        path_buttons.addWidget(default_agent)
+        self.share_setup = QPushButton("Netzwerkzugriff einrichten …")
+        self.share_setup.setObjectName("toolbarButton")
+        self.share_setup.clicked.connect(self.share_setup_requested)
+        agent_layout.addWidget(self.share_setup, alignment=Qt.AlignLeft)
+        path_buttons.addStretch()
+        agent_layout.addLayout(path_buttons)
+        diagnostic_buttons = QHBoxLayout()
+        self.choose_agent_json = QPushButton("Agent-JSON auswählen …")
+        self.choose_agent_json.setObjectName("toolbarButton")
+        self.choose_agent_json.clicked.connect(self._choose_agent_json)
+        diagnostic_buttons.addWidget(self.choose_agent_json)
+        self.copy_agent_report = QPushButton("Diagnose kopieren")
+        self.copy_agent_report.setObjectName("toolbarButton")
+        self.copy_agent_report.clicked.connect(lambda: QApplication.clipboard().setText(self.agent_report.toPlainText()))
+        diagnostic_buttons.addWidget(self.copy_agent_report)
+        self.show_agent_report = QPushButton("Diagnose anzeigen")
+        self.show_agent_report.setObjectName("toolbarButton")
+        self.show_agent_report.setCheckable(True)
+        diagnostic_buttons.addWidget(self.show_agent_report)
+        diagnostic_buttons.addStretch()
+        agent_layout.addLayout(diagnostic_buttons)
+        self.agent_report = QPlainTextEdit()
+        self.agent_report.setObjectName("networkOutput")
+        self.agent_report.setReadOnly(True)
+        self.agent_report.setMinimumHeight(155)
+        self.agent_report.setMaximumHeight(200)
+        self.agent_report.hide()
+        self.show_agent_report.toggled.connect(self.agent_report.setVisible)
+        agent_layout.addWidget(self.agent_report)
+        self.agent_errors = QLabel()
+        self.agent_errors.setObjectName("detailMuted")
+        self.agent_errors.setWordWrap(True)
+        self.agent_errors.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.agent_errors.hide()
+        agent_layout.addWidget(self.agent_errors)
         agent_note = QLabel(
-            "Der Agent veröffentlicht hier seinen echten lokalen WTS-Sitzungsstatus. "
-            "In der Produktivphase übernimmt Microsoft Graph diesen Transport zwischen den Rechnern."
+            "Hier und im Agent-Setup denselben synchronisierten Ordner mit den Status-JSON-Dateien auswählen. "
+            "Das Portal liest direkt aus diesem Ordner. Eine aktuelle Agent-Meldung bestätigt den Sitzungsstatus."
         )
         agent_note.setObjectName("detailMuted")
         agent_note.setWordWrap(True)
@@ -382,7 +441,7 @@ class SettingsWidget(QWidget):
         refresh_agent.setObjectName("toolbarButton")
         refresh_agent.clicked.connect(self.agent_refresh_requested)
         agent_layout.addWidget(refresh_agent, alignment=Qt.AlignLeft)
-        layout.addWidget(agent_card)
+        layout.insertWidget(0, agent_card)
         layout.addStretch()
         self.refresh()
         self.network_load_timer = QTimer(self)
@@ -475,14 +534,45 @@ class SettingsWidget(QWidget):
     def _copy_network_info(self) -> None:
         QApplication.clipboard().setText(self.network_output.toPlainText())
 
-    def set_agent_bridge_status(self, matched: int, snapshots: int, path: str) -> None:
-        if snapshots == 0:
-            self.agent_status.setText("Kein lokaler Agentstatus gefunden")
+    def _choose_agent_directory(self) -> None:
+        directory = QFileDialog.getExistingDirectory(self, "Ordner mit den Agent-Statusdateien auswählen", self.agent_directory.text())
+        if directory:
+            self.agent_directory.setText(directory)
+            self.agent_directory.setModified(True)
+
+    def _choose_agent_json(self) -> None:
+        from pathlib import Path
+
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Die aktualisierte Agent-JSON auswählen", self.agent_directory.text(), "JSON-Dateien (*.json);;Alle Dateien (*)"
+        )
+        if filename:
+            self.agent_directory_requested.emit(str(Path(filename).parent))
+
+    def set_agent_report(self, report: str) -> None:
+        scrollbar = self.agent_report.verticalScrollBar()
+        position = scrollbar.value()
+        self.agent_report.setPlainText(report)
+        scrollbar.setValue(position)
+
+    def set_agent_bridge_status(self, matched: int, snapshots: int, path: str, errors: list[str] | None = None) -> None:
+        if errors and snapshots == 0:
+            self.agent_status.setText("Agent-Status konnte nicht gelesen werden")
+        elif snapshots == 0:
+            self.agent_status.setText("Keine Agent-Statusdatei gefunden")
+        elif matched == 0:
+            self.agent_status.setText(
+                f"{snapshots} Statusdatei(en) gefunden, aber keiner Maschine zugeordnet"
+            )
         else:
             self.agent_status.setText(
                 f"{matched} Maschine(n) aktualisiert · {snapshots} Statusdatei(en)"
             )
-        self.agent_path.setText(f"Statusordner: {path}")
+        self.agent_path.setText(f"Gelesener Statusordner: {path}")
+        if not self.agent_directory.isModified():
+            self.agent_directory.setText(path)
+        self.agent_errors.setText("\n".join((errors or [])[:5]))
+        self.agent_errors.setVisible(bool(errors))
 
 
 __all__ = ["AdministrationWidget", "SettingsWidget"]

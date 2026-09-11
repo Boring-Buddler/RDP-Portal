@@ -6,13 +6,11 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QLineEdit, QTextEdit, QPushButton, QFrame, QMessageBox
 )
-from PySide6.QtCore import Qt, Signal
 
 from portal_app.ui.design import Typography, Spacing
 from portal_app.models.workstation import Workstation
 from portal_app.models.user import User
 from shared.enums import ManualFlagType
-from portal_app.models.session import SessionEvent, EventType, EventSource
 
 
 class FlagDialog(QDialog):
@@ -154,7 +152,7 @@ class FlagDialog(QDialog):
         reason = self.reason_edit.toPlainText().strip()
         
         # Button is enabled if reason is not empty
-        self.set_btn.setEnabled(len(reason) > 0)
+        self.set_btn.setEnabled(0 < len(reason) <= 500)
     
     def _on_set_flag(self) -> None:
         """Handle set flag button click."""
@@ -166,12 +164,15 @@ class FlagDialog(QDialog):
         
         # Get reason
         reason = self.reason_edit.toPlainText().strip()
-        if not reason:
-            QMessageBox.warning(self, "Fehler", "Bitte geben Sie einen Grund ein.")
+        if not 0 < len(reason) <= 500:
+            QMessageBox.warning(self, "Fehler", "Bitte geben Sie einen Grund mit 1 bis 500 Zeichen ein.")
             return
         
         # Get project
         project = self.project_edit.text().strip()
+        if len(project) > 100:
+            QMessageBox.warning(self, "Fehler", "Der Projektname darf höchstens 100 Zeichen haben.")
+            return
         
         # Set the flag on the workstation
         self.workstation.manual_flag_type = flag_type
@@ -180,28 +181,10 @@ class FlagDialog(QDialog):
         self.workstation.manual_flag_set_by_object_id = self.user.object_id
         self.workstation.manual_flag_set_by_upn = self.user.upn
         self.workstation.manual_flag_set_at_utc = datetime.now()
+        self.workstation.manual_flag_expires_at_utc = None
         
-        # Record event
-        event = SessionEvent(
-            event_id=f"EVT-{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
-            timestamp_utc=datetime.now(),
-            event_type=EventType.MANUAL_FLAG_SET,
-            workstation_id=self.workstation.workstation_id,
-            workstation_hostname=self.workstation.hostname,
-            actor_upn=self.user.upn,
-            actor_entra_object_id=self.user.object_id,
-            reason=reason,
-            source=EventSource.PORTAL,
-        )
-        
-        # Close dialog
+        # Persistence and audit logging are handled by MainWindow.
         self.accept()
-        
-        QMessageBox.information(
-            self,
-            "Flag gesetzt",
-            f"Das Flag '{flag_type.value.replace('_', ' ')}' wurde erfolgreich gesetzt."
-        )
 
 
 __all__ = ["FlagDialog"]

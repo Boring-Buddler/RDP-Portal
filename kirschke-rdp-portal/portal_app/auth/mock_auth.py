@@ -2,7 +2,7 @@
 
 from typing import Optional
 from dataclasses import dataclass
-from portal_app.models.user import User, UserRole, MockUser
+from portal_app.models.user import User, MockUser
 
 
 @dataclass

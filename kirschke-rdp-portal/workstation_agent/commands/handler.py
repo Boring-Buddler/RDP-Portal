@@ -10,15 +10,13 @@ This module provides functionality to:
 
 from __future__ import annotations
 
-import os
-import json
 import logging
 import ctypes
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional, Any
 
-from shared.enums import CommandType, CommandStatus, EventResult
+from shared.enums import CommandType
 from shared.schemas import AdminCommandSchema
 
 logger = logging.getLogger(__name__)

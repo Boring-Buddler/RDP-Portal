@@ -16,7 +16,7 @@ $arguments = @(
     "-m", "PyInstaller",
     "--noconfirm",
     "--clean",
-    "--console",
+    "--windowed",
     "--name", "Kirschke-RDP-Agent",
     "--paths", $projectRoot,
     "--distpath", $outputRoot,
@@ -31,7 +31,27 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $target = Join-Path $outputRoot "Kirschke-RDP-Agent\Kirschke-RDP-Agent.exe"
-$installer = Join-Path $PSScriptRoot "install_agent.ps1"
-Copy-Item -LiteralPath $installer -Destination (Join-Path (Split-Path -Parent $target) "Install-Agent.ps1") -Force
+$installerSource = Join-Path $PSScriptRoot "install_agent.ps1"
+$installerDirectory = Split-Path -Parent $target
+$installer = Join-Path $installerDirectory "Install-Agent.ps1"
+# Windows PowerShell 5.1 needs a BOM to interpret German UI text as UTF-8.
+[System.IO.File]::WriteAllText($installer, [System.IO.File]::ReadAllText($installerSource, [System.Text.Encoding]::UTF8), [System.Text.UTF8Encoding]::new($true))
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Install-Agent.cmd") -Destination (Join-Path $installerDirectory "Install-Agent.cmd") -Force
 Write-Host "Build fertig: $target"
-Write-Host "Installer: $(Join-Path (Split-Path -Parent $target) 'Install-Agent.ps1')"
+Write-Host "Installer: $(Join-Path $installerDirectory 'Install-Agent.cmd')"
+
+# The setup is a single file. Its temporary payload stays alive until the GUI
+# installer has copied the agent to the user's permanent installation folder.
+$setupArguments = @(
+    "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
+    "--name", "Kirschke-RDP-Agent-Setup", "--uac-admin",
+    "--distpath", $outputRoot,
+    "--workpath", (Join-Path $workRoot "setup"),
+    "--specpath", $specRoot,
+    "--add-data", "$installerDirectory;payload",
+    "--add-data", "$installer;.",
+    (Join-Path $PSScriptRoot "agent_installer.py")
+)
+& python @setupArguments
+if ($LASTEXITCODE -ne 0) { throw "Der Setup-Build ist fehlgeschlagen: $LASTEXITCODE" }
+Write-Host "Setup-EXE: $(Join-Path $outputRoot 'Kirschke-RDP-Agent-Setup.exe')"

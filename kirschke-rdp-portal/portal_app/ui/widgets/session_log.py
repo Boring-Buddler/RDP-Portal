@@ -2,7 +2,6 @@
 
 import csv
 import json
-from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QDate, Qt, Signal
@@ -282,9 +281,6 @@ class SessionLogWidget(QWidget):
         date_from = self.date_from.date().toPython()
         date_to = self.date_to.date().toPython()
 
-        # Convert dates to datetime
-        from_date = datetime(date_from.year, date_from.month, date_from.day)
-        to_date = datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59)
 
         # Filter events
         self.filtered_events = []
@@ -307,7 +303,8 @@ class SessionLogWidget(QWidget):
                 continue
 
             # Date filter
-            if event.timestamp_utc < from_date or event.timestamp_utc > to_date:
+            local_timestamp = event.timestamp_utc.astimezone().replace(tzinfo=None)
+            if local_timestamp.date() < date_from or local_timestamp.date() > date_to:
                 continue
 
             self.filtered_events.append(event)
@@ -334,8 +331,10 @@ class SessionLogWidget(QWidget):
 
         for row, event in enumerate(sorted_events):
             # Timestamp
-            timestamp_str = event.timestamp_utc.strftime("%Y-%m-%d %H:%M:%S")
-            table.setItem(row, 0, self._create_cell(timestamp_str))
+            timestamp_str = event.timestamp_utc.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+            timestamp_cell = self._create_cell(timestamp_str)
+            timestamp_cell.setData(Qt.UserRole, event.event_id)
+            table.setItem(row, 0, timestamp_cell)
 
             # Event type
             type_cell = QTableWidgetItem(event.get_display_type())
@@ -394,8 +393,9 @@ class SessionLogWidget(QWidget):
     def _on_row_double_clicked(self, index) -> None:
         """Handle row double-clicked."""
         row = index.row()
-        if row < len(self.filtered_events):
-            event = self.filtered_events[row]
+        cell = self.table.item(row, 0)
+        event = next((event for event in self.filtered_events if cell and event.event_id == cell.data(Qt.UserRole)), None)
+        if event is not None:
             # Find the session log containing this event
             for log in self.session_logs:
                 if event.event_id in [e.event_id for e in log.events]:

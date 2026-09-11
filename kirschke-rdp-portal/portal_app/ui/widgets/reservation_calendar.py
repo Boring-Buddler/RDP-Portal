@@ -89,6 +89,10 @@ class ReservationDialog(QDialog):
         form.addRow("Bis", self.end)
         form.addRow("Farbe", self.color)
         root.addLayout(form)
+        note = QLabel("Während des Zeitraums ist der Rechner im Portal für den reservierenden Benutzer freigegeben. "
+                      "Windows-Anmelderechte bleiben erforderlich. Bestehende fremde Sitzungen werden nicht beendet.")
+        note.setWordWrap(True)
+        root.addWidget(note)
         actions = QHBoxLayout()
         if self.original:
             delete = QPushButton("Reservierung löschen")
@@ -98,6 +102,7 @@ class ReservationDialog(QDialog):
         actions.addStretch()
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText("Speichern")
+        buttons.button(QDialogButtonBox.Cancel).setText("Abbrechen")
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         actions.addWidget(buttons)
@@ -111,6 +116,9 @@ class ReservationDialog(QDialog):
         self.color.setCurrentIndex(max(0, self.color.findData(reservation.color)))
 
     def _accept(self) -> None:
+        if self.original and not self._can_edit():
+            QMessageBox.warning(self, "Fremde Reservierung", "Nur der reservierende Benutzer oder ein Administrator darf diese Buchung ändern.")
+            return
         start = self.start.dateTime().toPython()
         end = self.end.dateTime().toPython()
         if end <= start:
@@ -121,7 +129,7 @@ class ReservationDialog(QDialog):
             "title": self.title.text().strip() or "Reserviert",
             "start": start,
             "end": end,
-            "reserved_by": self.user.upn,
+            "reserved_by": self.original.reserved_by if self.original else self.user.upn,
             "color": self.color.currentData(),
         }
         if self.original:
@@ -130,9 +138,15 @@ class ReservationDialog(QDialog):
         self.accept()
 
     def _delete(self) -> None:
+        if not self._can_edit():
+            QMessageBox.warning(self, "Fremde Reservierung", "Diese Reservierung gehört einem anderen Benutzer.")
+            return
         if QMessageBox.question(self, "Reservierung löschen", "Diese Reservierung wirklich löschen?") == QMessageBox.Yes:
             self.delete_requested = True
             self.accept()
+
+    def _can_edit(self) -> bool:
+        return not self.original or self.user.is_admin or self.original.reserved_by.casefold() == self.user.upn.casefold()
 
 
 class ReservationCalendarWidget(QWidget):
@@ -289,6 +303,9 @@ class ReservationCalendarWidget(QWidget):
         )
 
     def _edit_reservation(self, reservation: Reservation) -> None:
+        if not self.user.is_admin and reservation.reserved_by.casefold() != self.user.upn.casefold():
+            QMessageBox.information(self, "Fremde Reservierung", f"Reserviert von {reservation.reserved_by}. Nur dieser Benutzer oder ein Administrator darf die Buchung ändern.")
+            return
         dialog = ReservationDialog(self.workstations, self.user, reservation=reservation, parent=self)
         if dialog.exec() != QDialog.Accepted:
             return
@@ -310,6 +327,9 @@ class ReservationCalendarWidget(QWidget):
     def _delete_selected_reservation(self) -> None:
         reservation = self._selected_reservation()
         if not reservation:
+            return
+        if not self.user.is_admin and reservation.reserved_by.casefold() != self.user.upn.casefold():
+            QMessageBox.warning(self, "Fremde Reservierung", "Nur der reservierende Benutzer oder ein Administrator darf diese Buchung löschen.")
             return
         answer = QMessageBox.warning(
             self,

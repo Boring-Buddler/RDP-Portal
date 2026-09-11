@@ -4,6 +4,17 @@ Diese Anleitung trennt bewusst zwischen Aufgaben im Portal, Aufgaben in Active
 Directory (AD) und Aufgaben auf den Zielrechnern. Zuerst mit **einer**
 Testmaschine und **einem** Testnutzer arbeiten.
 
+Stand 09.09.2026: Zuerst die [aktuelle Abnahmeliste](code-review-testbetrieb.md)
+bearbeiten. AD ist optional. Ohne ausdrücklich gewählten AD-Modus verwendet das
+Portal den lokalen Passwortzugang. Der Agent läuft im Pilot als Aufgabe bei der
+Benutzeranmeldung; Remote-Abmelden über den Agent ist deaktiviert.
+
+AD-Modus auf dem Portalrechner ausdrücklich aktivieren und das Portal neu starten:
+
+```powershell
+[Environment]::SetEnvironmentVariable("RDP_PORTAL_DIRECTORY_MODE", "active_directory", "User")
+```
+
 ## 1. Vorab klären
 
 - Ist das Firmennetz eine klassische Windows-Domäne mit Active Directory?
@@ -73,9 +84,10 @@ Organisationseinheit den Pfad vorher mit der IT abstimmen:
 5. Danach am Windows-Arbeitsplatz ab- und wieder anmelden, damit die neue
    Gruppenmitgliedschaft im Windows-Anmeldetoken vorhanden ist.
 
-Das Portal prüft diese Mitgliedschaft beim Öffnen des Admin-Reiters. Das
-Passwort `Kirschke` ist nur ein Test-Fallback und darf nicht als echte
-Sicherheitsgrenze betrachtet werden.
+Das Portal prüft diese Mitgliedschaft beim Öffnen des Admin-Reiters.
+Es gibt kein festes Standardpasswort. Der lokale Passwort-Fallback ist im
+AD-Modus standardmäßig aus. Lokale Passwortdateien schützen die Oberfläche;
+Windows- und Dateisystemberechtigungen müssen unabhängig davon stimmen.
 
 Nach erfolgreichem Pilot die Testfreigabe für den angemeldeten Portalrechner
 abschalten und das Portal neu starten:
@@ -85,8 +97,8 @@ abschalten und das Portal neu starten:
 ```
 
 Danach öffnet ausschließlich die Windows-Gruppe `RDP-Portal-Admins` den
-Admin-Reiter. Für die Rückkehr zur Testfreigabe den Wert wieder auf `true`
-setzen oder die Umgebungsvariable entfernen.
+Admin-Reiter. Ein expliziter Wert `true` aktiviert optional das individuell
+eingerichtete lokale Passwort. Entfernen der Variablen lässt den Fallback aus.
 
 ## 4. Zielrechner für RDP berechtigen
 
@@ -133,7 +145,7 @@ gpupdate /force
 | „Zugriff verweigert“ beim AD-Abgleich | Windows-Konto hat keine delegierten Gruppenrechte | Schritt 3 mit der IT prüfen. |
 | Portaladmin wird nicht erkannt | Neues Gruppentoken noch nicht geladen | Windows ab- und wieder anmelden. |
 | AD-Abgleich erfolgreich, RDP scheitert | Zielrechner-GPO fehlt oder ist noch nicht angewendet | Schritt 4 und `gpupdate /force` prüfen. |
-| Nur Passwort `Kirschke` öffnet Admin | AD-Gruppe ist noch nicht eingerichtet | Pilot nur kontrolliert fortsetzen, danach Test-Fallback deaktivieren. |
+| Lokales Passwort statt AD-Gruppe wird abgefragt | Lokaler Modus oder explizit aktivierter Fallback | `RDP_PORTAL_DIRECTORY_MODE` und Fallback-Einstellung prüfen. |
 
 ## 7. Abnahme vor breiter Nutzung
 

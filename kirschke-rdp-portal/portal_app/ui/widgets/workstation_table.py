@@ -3,17 +3,15 @@
 from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QHeaderView, QPushButton, QComboBox, QLineEdit, QFrame, QLabel,
-    QMessageBox, QMenu
+    QComboBox, QLineEdit, QFrame, QMessageBox, QMenu
 )
-from PySide6.QtCore import Qt, Signal, Slot, QSize, QSortFilterProxyModel
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 
-from portal_app.ui.design import DesignSystem, Colors, Typography, Spacing
+from portal_app.ui.design import DesignSystem, Colors, Spacing
 from portal_app.ui.widgets.connect_button import ConnectButton
 from portal_app.models.workstation import Workstation
-from portal_app.models.user import User, MockUser
-from portal_app.models.session import SessionEvent
+from portal_app.models.user import User
 from shared.enums import AgentStatus, ManualFlagType
 
 
@@ -402,7 +400,7 @@ class WorkstationTableWidget(QWidget):
         
         # Connect action
         connect_action = menu.addAction("Verbinden")
-        connect_action.setEnabled(ws.can_connect())
+        connect_action.setEnabled(ws.can_connect(self.user.get_rdp_username()) or ws.can_choose_session())
         connect_action.triggered.connect(lambda: self.connect_requested.emit(ws))
         
         menu.addSeparator()

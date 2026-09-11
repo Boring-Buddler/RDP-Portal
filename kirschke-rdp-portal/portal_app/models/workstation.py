@@ -43,6 +43,11 @@ class Workstation:
     resolution: Optional[str] = None
     allowed_entra_group_ids: list[str] = field(default_factory=list)
     rdp_access_users: list[str] = field(default_factory=list)
+    login_accounts: list[str] = field(default_factory=list)
+    # This choice belongs to the local portal user, not shared machine settings.
+    selected_login_account: Optional[str] = None
+    reservation_message: str = ""  # transient, evaluated for the current portal user
+    reservation_block_reason: str = ""
     
     # Manual Flag
     manual_flag_type: ManualFlagType = ManualFlagType.NONE
@@ -54,9 +59,13 @@ class Workstation:
     manual_flag_expires_at_utc: Optional[datetime] = None
     
     # Agent Status
+    agent_workstation_id: Optional[str] = None
+    agent_sessions: list[dict] = field(default_factory=list)  # transient snapshot data
+    agent_session_history: list[dict] = field(default_factory=list)
     agent_status: AgentStatus = AgentStatus.OFFLINE
     agent_last_seen_utc: Optional[datetime] = None
     agent_version: Optional[str] = None
+    agent_diagnostic: str = "Noch keine Agent-Prüfung"  # local display only
     
     # Current Session
     current_session_state: SessionState = SessionState.NONE
@@ -99,6 +108,7 @@ class Workstation:
             enabled=self.enabled,
             allowed_entra_group_ids=self.allowed_entra_group_ids,
             rdp_access_users=self.rdp_access_users,
+            login_accounts=self.login_accounts,
             username_hint=self.username_hint,
             entra_sso_enabled=self.entra_sso_enabled,
             trust_unverified_server=self.trust_unverified_server,
@@ -122,6 +132,7 @@ class Workstation:
             agent_status=self.agent_status,
             agent_last_seen_utc=self.agent_last_seen_utc,
             agent_version=self.agent_version,
+            agent_workstation_id=self.agent_workstation_id,
             current_session_state=self.current_session_state,
             current_session_user=self.current_session_user,
             current_windows_session_id=self.current_windows_session_id,
@@ -147,6 +158,7 @@ class Workstation:
             enabled=schema.enabled,
             allowed_entra_group_ids=schema.allowed_entra_group_ids,
             rdp_access_users=schema.rdp_access_users,
+            login_accounts=schema.login_accounts,
             username_hint=schema.username_hint,
             entra_sso_enabled=schema.entra_sso_enabled,
             trust_unverified_server=schema.trust_unverified_server,
@@ -168,6 +180,7 @@ class Workstation:
             agent_status=schema.agent_status,
             agent_last_seen_utc=schema.agent_last_seen_utc,
             agent_version=schema.agent_version,
+            agent_workstation_id=schema.agent_workstation_id,
             current_session_state=schema.current_session_state,
             current_session_user=schema.current_session_user,
             current_windows_session_id=schema.current_windows_session_id,
@@ -185,7 +198,7 @@ class Workstation:
             display_name=self.display_name,
             site=self.site,
             description=self.description,
-            username_hint=self.username_hint or default_username,
+            username_hint=self.selected_login_account or self.username_hint or default_username,
             entra_sso_enabled=self.entra_sso_enabled,
             trust_unverified_server=self.trust_unverified_server,
             gateway_hostname=self.gateway_hostname,
@@ -225,11 +238,45 @@ class Workstation:
             ManualFlagType.CALCULATION_RUNNING,
         ]
     
-    def can_connect(self) -> bool:
+    def session_accounts(self) -> list[str]:
+        from shared.login_accounts import validate_login_account
+        values = [item.get("full_username") or ((item.get("domain") + "\\") if item.get("domain") else "") + (item.get("username") or "")
+                  for item in self.agent_sessions if item.get("session_state") in ("connected", "disconnected", "reconnected", "logon")]
+        if self.has_active_session() and self.current_session_user:
+            values.append(self.current_session_user)
+        result = {}
+        for value in values:
+            try:
+                value = validate_login_account(value)
+                result.setdefault(value.casefold(), value)
+            except ValueError:
+                continue
+        return list(result.values())
+
+    def can_choose_session(self) -> bool:
+        return self.enabled and not self.is_blocked() and not self.reservation_block_reason and bool(self.session_accounts())
+
+    def matching_sessions(self, default_username: Optional[str] = None) -> list[dict]:
+        """UI account matching only; Windows remains responsible for authentication."""
+        account = (self.selected_login_account or self.username_hint or default_username or "").strip().casefold()
+        if not account:
+            return []
+        sessions = list(self.agent_sessions)
+        if not sessions and self.has_active_session():
+            sessions = [dict(session_id=self.current_windows_session_id,
+                             full_username=self.current_session_user,
+                             session_state=self.current_session_state.value)]
+        return [item for item in sessions
+                if item.get("session_state") in ("connected", "disconnected", "reconnected", "logon")
+                and (item.get("full_username") or
+                     ((item.get("domain") + "\\") if item.get("domain") else "") +
+                     (item.get("username") or "")).strip().casefold() == account]
+
+    def can_connect(self, default_username: Optional[str] = None) -> bool:
         """Check if connection is allowed."""
-        if not self.enabled:
+        if not self.enabled or self.reservation_block_reason:
             return False
-        return not self.is_blocked() and not self.has_active_session()
+        return not self.is_blocked() and (not self.has_active_session() or bool(self.matching_sessions(default_username)))
 
     def has_active_session(self) -> bool:
         """Treat connected and disconnected Windows sessions as occupied."""

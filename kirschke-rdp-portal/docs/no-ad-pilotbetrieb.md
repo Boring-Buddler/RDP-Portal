@@ -5,6 +5,10 @@ Portal organisiert Maschinen, Reservierungen, Verbindungsstarts und Logs; die
 eigentlichen Windows-RDP-Berechtigungen werden einmalig direkt auf den
 Zielrechnern eingerichtet.
 
+Die [aktuelle Abnahmeliste](code-review-testbetrieb.md) ergänzt diese Anleitung.
+Für gleichzeitige Änderungen einen gemeinsamen SMB-Speicher verwenden. Bei
+OneDrive zunächst nur eine Portalinstanz zum Schreiben verwenden.
+
 ## 1. Eine Testmaschine vorbereiten
 
 Auf der Zielmaschine:
@@ -30,14 +34,15 @@ kann keine eingehenden RDP-Sitzungen bereitstellen.
    ersetzt werden.
 3. Über **+ Maschine** die Testmaschine registrieren und IP/Hostname prüfen.
 4. In **Einstellungen** den RDP-Benutzernamen des Testkontos eintragen.
-5. SharePoint-/OneDrive-Ordner im Admin-Reiter kontrollieren, damit
+5. Gemeinsamen Speicherordner im Admin-Reiter kontrollieren, damit
    Maschinen, Reservierungen und Logs zwischen Portalinstallationen
    gemeinsam vorliegen.
 
 ## 3. Funktionstest
 
 1. In der Maschinenübersicht die **Ping**-Schaltfläche verwenden.
-2. Bei erfolgreichem Ping **Verbinden** wählen.
+2. **RDP-Diagnose** für TCP/3389 verwenden und anschließend **Verbinden** wählen.
+   Ein blockierter Ping allein schließt eine funktionierende RDP-Verbindung nicht aus.
 3. Das Kennwort wird von Windows beim RDP-Start abgefragt; das Portal speichert
    es nicht.
 4. Eine Reservierung anlegen und prüfen, ob sie auf einer zweiten

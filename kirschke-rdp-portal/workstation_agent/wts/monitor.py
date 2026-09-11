@@ -28,6 +28,7 @@ class WTS_INFO_CLASS(IntEnum):
     WTSClientName = 10
     WTSClientAddress = 14
     WTSClientProtocolType = 16
+    WTSSessionInfo = 24
 
 
 class WTS_CONNECTSTATE_CLASS(IntEnum):
@@ -56,6 +57,15 @@ class WTS_CLIENT_ADDRESS(ctypes.Structure):
         ("AddressFamily", wintypes.DWORD),
         ("Address", ctypes.c_ubyte * 20),
     ]
+
+
+class WTSINFOW(ctypes.Structure):
+    _fields_ = [("State", ctypes.c_int)] + [(name, wintypes.DWORD) for name in (
+        "SessionId", "IncomingBytes", "OutgoingBytes", "IncomingFrames", "OutgoingFrames",
+        "IncomingCompressedBytes", "OutgoingCompressedBytes",
+    )] + [("WinStationName", wintypes.WCHAR * 32), ("Domain", wintypes.WCHAR * 17),
+         ("UserName", wintypes.WCHAR * 21)] + [(name, ctypes.c_longlong) for name in (
+             "ConnectTime", "DisconnectTime", "LastInputTime", "LogonTime", "CurrentTime")]
 
 
 WTS_CURRENT_SERVER_HANDLE = wintypes.HANDLE(0)
@@ -269,7 +279,19 @@ class WTSMonitor:
         if station_name is None:
             station_name = self._query_text(session_id, WTS_INFO_CLASS.WTSWinStationName)
         console_session_id = int(kernel32.WTSGetActiveConsoleSessionId())
+        login_time = None
+        info_buffer = self._query_buffer(session_id, WTS_INFO_CLASS.WTSSessionInfo)
+        if info_buffer:
+            address, size = info_buffer
+            try:
+                if size >= ctypes.sizeof(WTSINFOW):
+                    ticks = ctypes.cast(address, ctypes.POINTER(WTSINFOW)).contents.LogonTime
+                    if ticks > 0:
+                        login_time = datetime.fromtimestamp(ticks / 10_000_000 - 11644473600, timezone.utc)
+            finally:
+                self._free_buffer(address)
         return WTSSessionInfo(
+            login_time=login_time,
             session_id=session_id,
             username=self._query_text(session_id, WTS_INFO_CLASS.WTSUserName),
             domain=self._query_text(session_id, WTS_INFO_CLASS.WTSDomainName),
@@ -300,7 +322,7 @@ class WTSMonitor:
         if not success:
             error = ctypes.WinError(ctypes.get_last_error())
             logger.error("Failed to enumerate WTS sessions: %s", error)
-            return []
+            raise error
 
         sessions: list[WTSSessionInfo] = []
         try:
@@ -324,6 +346,9 @@ class WTSMonitor:
 
     def get_rdp_sessions(self) -> list[WTSSessionInfo]:
         return [session for session in self.get_all_sessions() if session.is_rdp_session]
+
+    def get_user_sessions(self) -> list[WTSSessionInfo]:
+        return [session for session in self.get_all_sessions() if session.username and session.session_id != 0]
 
     def get_active_rdp_sessions(self) -> list[WTSSessionInfo]:
         return [

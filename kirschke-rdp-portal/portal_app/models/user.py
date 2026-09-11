@@ -2,14 +2,7 @@
 
 from typing import Optional
 from dataclasses import dataclass
-from enum import Enum
 from shared.enums import UserRole
-
-
-class UserRole(str, Enum):
-    """User roles in the system."""
-    USER = "user"
-    ADMIN = "admin"
 
 
 @dataclass

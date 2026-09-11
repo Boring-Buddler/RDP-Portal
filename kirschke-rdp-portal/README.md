@@ -1,6 +1,51 @@
 # Kirschke RDP Workstation Portal
 
-**Version:** 0.1.0 (Phase 1 - Local UI MVP)
+**Version:** 0.2.4 (lokaler Pilot, Review vom 10.09.2026)
+
+Unter **Einstellungen → Windows-Agent → Netzwerkzugriff einrichten …** verbindet
+das Portal eine vorhandene SMB-Freigabe und speichert auf Wunsch die Zugangsdaten
+in der Windows-Anmeldeinformationsverwaltung des aktuellen Benutzers.
+
+Agent 1.1.0 startet rechnerweit als SYSTEM über die Windows-Aufgabenplanung und
+erfasst RDP- und Konsolensitzungen mit Anmeldezeiten und einem begrenzten Verlauf.
+Für den Statusaustausch ohne angemeldeten Benutzer ist ein dauerhaft zugänglicher
+Netzwerkordner nötig; die benutzergebundene OneDrive-Synchronisierung genügt nicht.
+Das Testpaket enthält jetzt `Kirschke-RDP-Portal-Setup.exe` und
+`Kirschke-RDP-Agent-Setup.exe`, jeweils mit Deinstallation über Windows.
+
+**Schnellstart:** [Kurzanleitung für Client, Anmeldekonten und Agent-Setup](docs/testbetrieb-kurz.md).
+Den exakten Ordner mit den Agent-JSON-Dateien unter **Einstellungen → Windows-Agent**
+einstellen; es wird kein Unterordner angehängt. **Standard verwenden** setzt
+`%USERPROFILE%\Prof. Dr.-Ing. Dieter Kirschke GmbH & Co. KG\IB Kirschke - Dokumente\90\_K.I. Strategie\Testprogramme\RDP-Portal\remote\agenten-status`.
+Pro Maschinenkarte gibt es jetzt **Anmelden als** mit **+ Benutzer hinzufügen …**.
+**Agent-Diagnose** im Dashboard zeigt den gelesenen Ordner, Dateien und Zuordnungen.
+Bei abweichender Agent-ID unter **Maschine → Details → Agent zuordnen …** den
+passenden Agenten auswählen. Die Zuordnung bleibt im Inventar gespeichert.
+Mit **Agent-JSON auswählen …** lässt sich die tatsächliche Statusdatei auswählen;
+**Diagnose kopieren** kopiert den vollständigen Prüfbericht zur Fehlersuche.
+Die Agent-Setup-EXE enthält alle benötigten Agent-Dateien; auf dem Ziel-PC ist kein Python nötig.
+Nach dem Agent-Build: `dist-agent/Kirschke-RDP-Agent-Setup.exe`.
+Nach beiden Builds erstellt `python deployment/package_pilot.py` das vollständige
+Testpaket `dist/Kirschke-RDP-Testbetrieb.zip` einschließlich Kurzanleitung.
+
+Für den ersten Testbetrieb sind der [Prüfbericht und die Abnahmeliste](docs/code-review-testbetrieb.md)
+maßgeblich. Der aktive Programmstart verwendet lokale JSON-Dateien und optionale Agent-Statusdateien.
+Die vorhandenen Entra-/Graph-/Windows-Dienst-Module sind noch keine integrierte Betriebsvariante.
+Remote-Adminbefehle und die bisherigen Dienstinstallationsschalter sind im Pilot deaktiviert.
+
+Neue Installationen starten ohne Beispielmaschinen. Bestehende Inventare bleiben erhalten.
+Der lokale Adminzugang wird beim ersten Öffnen eingerichtet; es gibt kein Standardpasswort.
+Im optionalen AD-Modus ist der lokale Passwort-Fallback standardmäßig ausgeschaltet.
+Programmlogs liegen unter `%LOCALAPPDATA%\KirschkeRDPPortal\logs\portal.log` und werden rotiert.
+
+Vorprüfung ohne RDP-Anmeldung oder Datenänderung:
+
+```powershell
+python -m portal_app.preflight --storage "C:\Pilot\RDP-Portal" --json
+```
+
+Für parallele Schreibzugriffe denselben SMB-Ordner verwenden. OneDrive-Replikate bieten keine
+verteilte Transaktionssperre; dort zunächst nur eine schreibende Portalinstanz betreiben.
 
 A Windows application for managing office workstations with RDP connections, session tracking, and admin functions.
 
@@ -158,6 +203,11 @@ benutzerbasierten Pilotbetriebs sind in [docs/agent-installation.md](docs/agent-
 .\deployment\build_agent.cmd
 ```
 
+Im erzeugten Ordner `dist-agent\Kirschke-RDP-Agent\` startet `Install-Agent.cmd` einen geführten One-Click-Installer.
+Er fragt nur die nicht automatisch bestimmbare Maschinen-ID und den gemeinsamen `agent-status`-Ordner ab, prüft den
+Schreibzugriff und richtet den Autostart für den angemeldeten Benutzer ein. Administratorrechte werden dafür nicht
+benötigt.
+
 ## Active Directory (optional)
 
 Die Admin-Verwaltung kann gespeicherte RDP-Zugriffe nach Bestätigung mit AD-Gruppen
@@ -179,24 +229,21 @@ same change.
 
 ## Running with Different User Roles
 
-For testing admin features, you can modify the `app.py` file to use an admin user:
-
-```python
-# In RDPPortalApp.get_current_user():
-# return MockUser.create_admin()  # For admin testing
-# return MockUser.create_user()    # For regular user testing
-```
+Der aktive Start erkennt das angemeldete Windows-Konto. Den Adminbereich über die
+Oberfläche freischalten. Änderungen an `get_current_user()` in `app.py` konfigurieren
+den tatsächlich verwendeten `MainWindow`-Benutzer nicht.
 
 ## Configuration
 
 ### Environment Variables (Phase 2+)
 
-Create a `.env` file for configuration:
+Die Anwendung liest Umgebungsvariablen; `.env`-Dateien werden nicht automatisch geladen.
+Die folgenden Cloud-Einstellungen gelten nur für die noch nicht integrierten Cloud-Module:
 
 ```ini
 # Entra ID
 TENANT_ID=your-tenant-id
-CLIENT_ID=your-client-id
+PORTAL_CLIENT_ID=your-client-id
 AUTHORITY=https://login.microsoftonline.com/your-tenant-id
 
 # SharePoint
@@ -235,9 +282,8 @@ The application uses the Kirschke Corporate Design system as specified in the pr
 # Run all tests
 pytest
 
-# Run specific tests
-pytest tests/test_models.py
-pytest tests/test_rdp.py
+# Run pilot regression tests
+pytest tests/test_pilot_regressions.py
 
 # With coverage
 pytest --cov=portal_app --cov=shared
@@ -254,18 +300,22 @@ $env:WORKSTATION_ID="WS-001"
 python -m workstation_agent.service --run
 ```
 
+Im Portal unter **Einstellungen → Windows-Agent** den exakten Statusordner auswählen.
+Der Agent schreibt in seinen konfigurierten `status_directory`. Standard für beide ist
+`RDP-Portal\remote\agenten-status` in der SharePoint-Bibliothek unter `%USERPROFILE%`.
+
 The portal reads this local test status automatically every five seconds. A snapshot is matched by
 workstation ID or hostname. After 90 seconds without an update it is shown as stale and after five
-minutes as offline. Set `AGENT_STATUS_DIR` in both processes when they should use a custom shared
-test directory.
+minutes as offline. Set the exact directory in the portal's Windows-Agent settings and
+in the agent setup. The portal no longer inherits `AGENT_STATUS_DIR` from Windows.
 
 ## Known Limitations (Phase 1)
 
 1. **No actual authentication** - Uses mock users for development
 2. **No SharePoint integration** - Uses mock data
-3. **No remote agent transport yet** - The WTS agent detects real local sessions; sharing that status between separate workstations and the portal still requires the Phase 2 Microsoft Graph channel
+3. **Agent transport** - Statusdateien können über SMB oder einen synchronisierten Ordner gelesen werden. Vollständige Agent-Ereignisse werden noch nicht in das lokale Portal-Log übertragen.
 4. **Local process monitoring only** - The portal detects the lifetime of RDP clients it started; closing mstsc.exe does not prove that the remote Windows session logged off
-5. **Admin commands not executed** - Only shows confirmation dialogs
+5. **Remote admin commands disabled** - Das Portal kann eigene lokale RDP-Fenster schließen; ein entferntes Windows-Logoff ist im Pilot nicht freigegeben.
 
 These will be addressed in subsequent phases.
 

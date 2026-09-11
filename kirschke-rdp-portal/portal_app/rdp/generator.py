@@ -6,7 +6,6 @@ import tempfile
 import uuid
 from datetime import datetime
 from typing import Optional
-from pathlib import Path
 
 from shared.schemas import RDPProfileSchema
 from shared.validation import RDPProfileValidator, RDPValidationError
@@ -76,6 +75,17 @@ class RDPFileGenerator:
     
     def _validate_profile(self, profile: RDPProfileSchema) -> None:
         """Validate the RDP profile."""
+        # Check at the output boundary, also for profiles changed after validation.
+        for name in ("hostname", "fqdn", "ip_address", "username_hint", "display_name", "gateway_hostname"):
+            value = getattr(profile, name)
+            if value and any(ord(char) < 32 or char in "\x7f\x85\u2028\u2029" for char in value):
+                raise RDPValidationError("RDP values must not contain control characters", name)
+        if profile.screen_mode not in {None, "fullscreen", "windowed"}:
+            raise RDPValidationError("Invalid screen mode", "screen_mode")
+        if profile.resolution:
+            match = re.fullmatch(r"(\d+)\s*[x,]\s*(\d+)", profile.resolution.strip())
+            if not match or not all(200 <= int(part) <= 8192 for part in match.groups()):
+                raise RDPValidationError("Invalid resolution (200–8192 pixels)", "resolution")
         try:
             target, _ = profile.resolve_connection_target()
         except ValueError as exc:
@@ -96,6 +106,8 @@ class RDPFileGenerator:
         
         # Required: the selected IP, hostname or FQDN.
         target, _ = profile.resolve_connection_target()
+        if ":" in target and not target.startswith("["):
+            target = f"[{target}]"
         lines.append(f"full address:s:{target}")
         
         # Optional username. Passwords are deliberately left to Windows.
@@ -115,14 +127,15 @@ class RDPFileGenerator:
         # Gateway settings
         if profile.gateway_hostname:
             lines.append(f"gatewayhostname:s:{profile.gateway_hostname}")
-            lines.append("gatewayusemethod:i:1")  # Use gateway
+            lines.append("gatewayusagemethod:i:1")  # Use gateway
             lines.append("gatewaycredentialssource:i:4")  # Smart card or user entry
         
         # Display settings
         if profile.screen_mode:
             if profile.screen_mode.lower() == "fullscreen":
-                lines.append("winposstr:s:0,1,0,0,0,0")  # Fullscreen
+                lines.append("screen mode id:i:2")
             elif profile.screen_mode.lower() == "windowed":
+                lines.append("screen mode id:i:1")
                 # Use resolution if available
                 if profile.resolution:
                     width, height = self._parse_resolution(profile.resolution)
@@ -135,8 +148,8 @@ class RDPFileGenerator:
         # Redirection settings
         lines.append(f"redirectclipboard:i:{1 if profile.redirect_clipboard else 0}")
         lines.append(f"redirectprinters:i:{1 if profile.redirect_printers else 0}")
-        lines.append(f"redirectdrives:i:{1 if profile.redirect_drives else 0}")
-        lines.append(f"redirectaudio:i:{1 if profile.redirect_audio else 0}")
+        lines.append(f"drivestoredirect:s:{'*' if profile.redirect_drives else ''}")
+        lines.append(f"audiomode:i:{0 if profile.redirect_audio else 2}")
         
         # Performance settings (optimize for remote)
         lines.append("compress:i:1")

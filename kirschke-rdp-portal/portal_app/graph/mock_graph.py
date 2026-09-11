@@ -1,6 +1,6 @@
 """Mock Microsoft Graph client for Phase 1 development."""
 
-from typing import Optional, Any
+from typing import Optional
 from dataclasses import dataclass
 
 

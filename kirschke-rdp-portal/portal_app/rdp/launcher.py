@@ -240,13 +240,9 @@ class RDPSessionLauncher:
             if "full address:s:" not in content:
                 return False, "Fehlende Angabe 'full address'"
             
-            # Check for forbidden patterns
-            from shared.validation import FORBIDDEN_RDP_PATTERNS
-            import re
-            
-            for pattern in FORBIDDEN_RDP_PATTERNS:
-                if re.search(pattern, content, re.IGNORECASE):
-                    return False, f"RDP-Datei enthalt verbotene Muster: {pattern}"
+            from shared.validation import RDPProfileValidator
+
+            RDPProfileValidator.validate_rdp_content(content)
             
             return True, "RDP-Datei ist gueltig"
             

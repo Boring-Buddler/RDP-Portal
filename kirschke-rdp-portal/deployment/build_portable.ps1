@@ -48,3 +48,10 @@ $target = if ($OneFile) {
 }
 
 Write-Host "Build fertig: $target"
+if (-not $OneFile) {
+    $payload = Split-Path -Parent $target
+    $installer = Join-Path $payload 'Install-Portal.ps1'
+    [System.IO.File]::WriteAllText($installer, [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot 'install_portal.ps1'), [System.Text.Encoding]::UTF8), [System.Text.UTF8Encoding]::new($true))
+    & python -m PyInstaller --noconfirm --clean --onefile --windowed --name Kirschke-RDP-Portal-Setup --distpath $outputRoot --workpath (Join-Path $workRoot 'setup') --specpath $specRoot --add-data "$payload;payload" --add-data "$installer;." (Join-Path $PSScriptRoot 'portal_installer.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Portal-Setup-Build fehlgeschlagen.' }
+}

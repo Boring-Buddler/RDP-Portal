@@ -1,8 +1,10 @@
 """Main application for Kirschke RDP Workstation Portal."""
 
 import logging
+import os
 import sys
 from pathlib import Path
+from logging.handlers import RotatingFileHandler
 
 # A direct ``python portal_app/app.py`` start puts only ``portal_app`` on
 # sys.path.  Add the project directory first so absolute package imports work
@@ -12,26 +14,27 @@ if __package__ in {None, ""}:
     if project_directory not in sys.path:
         sys.path.insert(0, project_directory)
 
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QWidget, QMessageBox
 from PySide6.QtCore import QEvent
 from PySide6.QtGui import QPalette
 
-from portal_app.ui.design import DesignSystem, Colors, Typography
+from portal_app.ui.design import Colors, Typography
 from portal_app.ui.main_window import MainWindow
 from portal_app.ui.icons import kirschke_window_icon
 from portal_app.models.user import MockUser
 
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('rdp_portal.log'),
-    ]
-)
 logger = logging.getLogger(__name__)
+
+
+def configure_logging() -> None:
+    """Portable installations need a writable log outside the program folder."""
+    directory = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "KirschkeRDPPortal" / "logs"
+    directory.mkdir(parents=True, exist_ok=True)
+    handlers = [RotatingFileHandler(directory / "portal.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8")]
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler(sys.stderr))
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", handlers=handlers)
 
 
 class RDPPortalApp(QApplication):
@@ -58,7 +61,12 @@ class RDPPortalApp(QApplication):
         self.setFont(default_font)
         
         # Create and show main window
-        self.main_window = MainWindow()
+        try:
+            self.main_window = MainWindow()
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.exception("Portal startup failed")
+            QMessageBox.critical(None, "Portal konnte nicht gestartet werden", str(exc))
+            raise
         self.main_window.show()
         
         logger.info("RDP Workstation Portal started")
@@ -100,6 +108,7 @@ class RDPPortalApp(QApplication):
 
 def main():
     """Main entry point for the application."""
+    configure_logging()
     # Validate environment
     try:
         from shared.validation import validate_environment

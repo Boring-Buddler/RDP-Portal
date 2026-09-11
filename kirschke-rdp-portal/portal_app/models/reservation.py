@@ -19,6 +19,17 @@ class Reservation:
     color: str = "#5d86a4"
     reservation_id: str = field(default_factory=lambda: uuid4().hex)
 
+    def __post_init__(self) -> None:
+        # The calendar uses local wall time, including imported offset timestamps.
+        if self.start.tzinfo is not None:
+            self.start = self.start.astimezone().replace(tzinfo=None)
+        if self.end.tzinfo is not None:
+            self.end = self.end.astimezone().replace(tzinfo=None)
+        if self.end <= self.start:
+            raise ValueError("Das Reservierungsende muss nach dem Beginn liegen.")
+        if not self.workstation_id or not self.title.strip():
+            raise ValueError("Maschine und Titel sind erforderlich.")
+
     def overlaps_day(self, day_start: datetime, day_end: datetime) -> bool:
         return self.start < day_end and self.end > day_start
 

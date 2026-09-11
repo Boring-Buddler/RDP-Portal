@@ -1,12 +1,19 @@
 # Kirschke RDP-Agent installieren
 
+Stand 09.09.2026: Siehe [Prüfbericht und Pilotabnahme](code-review-testbetrieb.md).
+Der Installer startet den Agent über dieselbe geplante Aufgabe wie beim Anmelden,
+mit korrekt zitiertem Konfigurationspfad und ohne das standardmäßige 72-Stunden-Laufzeitlimit.
+Erlaubtes Aktualisierungsintervall: 5–60 Sekunden. Die alten Schalter für eine
+Windows-Dienstinstallation werden mit einer Fehlermeldung abgewiesen; dieser
+Bereitstellungsweg ist noch nicht betriebsbereit.
+
 Der Agent ist optional. Ohne Agent kann das Portal nur Erreichbarkeit (Ping), den RDP-Port und lokal gestartete
 `mstsc`-Fenster bewerten. Es kann ohne Remoteverwaltung nicht zuverlässig erkennen, wer auf einem Ziel-PC angemeldet
 ist oder ob die Sitzung nur getrennt wurde.
 
 Der portable Agent liest auf dem Ziel-PC die Windows-Remotedesktop-Sitzungen über die WTS-API und schreibt alle
-30 Sekunden eine kleine Statusdatei. Das Portal liest sie automatisch aus seinem gemeinsamen Speicherordner im
-Unterordner `agent-status` ein.
+30 Sekunden eine kleine Statusdatei. Das Portal liest sie aus dem unter
+**Einstellungen → Windows-Agent** gewählten exakten Statusordner ein.
 
 ## Voraussetzungen
 
@@ -33,54 +40,56 @@ Danach liegt die vollständige portable Ausgabe hier:
 dist-agent\Kirschke-RDP-Agent\
 ```
 
-Den kompletten Ordner auf den Ziel-PC kopieren. Er enthält die EXE und `Install-Agent.ps1`; Python muss dort nicht
-installiert sein.
+Zusätzlich entsteht `dist-agent\Kirschke-RDP-Agent-Setup.exe`. Diese einzelne Datei
+auf den Ziel-PC kopieren; sie enthält den Agenten und den grafischen Installer.
+Alternativ den kompletten portablen Ordner mit `Install-Agent.cmd` verwenden.
+Python muss auf dem Ziel-PC nicht installiert sein.
 
 ## 2. Gemeinsamen Statusordner bestimmen
 
-Im Portal unter **Einstellungen** den gemeinsamen Speicherort prüfen. Der Agent benötigt genau diesen Ordner mit
-angehängtem Unterordner `agent-status`, beispielsweise:
+Im Portal unter **Einstellungen → Windows-Agent** den Ordner mit den Agent-JSON-Dateien
+einstellen. Im Agent-Setup denselben synchronisierten Ordner auswählen. Es wird kein
+weiterer Unterordner angehängt. Der Standard ist:
 
 ```text
-C:\Users\becker\Prof. Dr.-Ing. Dieter Kirschke GmbH & Co. KG\IB Kirschke - Dokumente\90\_K.I. Strategie\Testprogramme\RDP-Portal\agent-status
+%USERPROFILE%\Prof. Dr.-Ing. Dieter Kirschke GmbH & Co. KG\IB Kirschke - Dokumente\90\_K.I. Strategie\Testprogramme\RDP-Portal\remote\agenten-status
 ```
 
 Auf jedem Ziel-PC muss dieser Pfad für den Benutzer erreichbar sein. Bei OneDrive/SharePoint bedeutet das: die
 Bibliothek muss dort synchronisiert sein. Ist der lokale OneDrive-Pfad anders, ist das in Ordnung – entscheidend ist,
 dass er in dieselbe Bibliothek und denselben Ordner schreibt.
 
-## 3. Agent installieren und sofort testen
+## 3. Agent mit einem Klick installieren
 
-Auf dem Ziel-PC PowerShell im kopierten Agentenordner öffnen und folgenden Befehl anpassen:
+Auf dem Ziel-PC `Kirschke-RDP-Agent-Setup.exe` doppelklicken (alternativ im vollständigen
+portablen Agentenordner `Install-Agent.cmd`). Der Installer startet ohne
+PowerShell-Eingaben und erklärt die zwei Angaben, die nicht sicher automatisch ermittelt werden können:
+
+1. **Maschinen-ID:** exakt die ID der registrierten Maschine im Portal, etwa `WS-001`. Der lokale Computername wird
+   als Vorschlag eingetragen.
+2. **Gemeinsamer Statusordner:** exakt den Ordner aus **Einstellungen → Windows-Agent**
+   auswählen. `%USERPROFILE%` wird automatisch aufgelöst. Bei OneDrive/SharePoint muss
+   die Bibliothek auf dem Ziel-PC synchronisiert sein.
+
+Mit **Jetzt installieren** prüft der Installer die Schreibberechtigung, kopiert den Agenten nach
+`%LOCALAPPDATA%\KirschkeRDPAgent`, erstellt die Konfiguration, richtet den Autostart beim Anmelden ein und startet
+den Agenten sofort. Das funktioniert im Benutzerkontext und benötigt keine Administratorrechte. Der Installer
+kann bei Bedarf wiederholt werden, etwa um den Agenten zu aktualisieren oder den Statusordner zu ändern.
+
+Für automatisierte Rollouts bleibt eine unbeaufsichtigte Installation möglich:
 
 ```powershell
-.\Install-Agent.ps1 `
-  -WorkstationId "WS-001" `
-  -SourceDirectory "C:\Temp\Kirschke-RDP-Agent" `
-  -StatusDirectory "C:\Users\becker\Prof. Dr.-Ing. Dieter Kirschke GmbH & Co. KG\IB Kirschke - Dokumente\90\_K.I. Strategie\Testprogramme\RDP-Portal\agent-status" `
-  -StartNow
-```
-
-`SourceDirectory` ist der Ordner, in dem direkt `Kirschke-RDP-Agent.exe` liegt. Das Skript kopiert ihn nach
-`%LOCALAPPDATA%\KirschkeRDPAgent`, schreibt dort `agent-config.json` und registriert einen Autostart für den aktuell
-angemeldeten Windows-Benutzer.
-
-Falls PowerShell Skripte sperrt, einmalig so starten:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\Install-Agent.ps1 -WorkstationId "WS-001" -SourceDirectory "C:\Temp\Kirschke-RDP-Agent" -StatusDirectory "C:\Pfad\zum\RDP-Portal\agent-status" -StartNow
+.\Install-Agent.ps1 -NoUi -WorkstationId "WS-001" -StatusDirectory "C:\Pfad\zum\RDP-Portal\remote\agenten-status"
 ```
 
 ## 4. Ergebnis prüfen
 
-Nach höchstens 30 Sekunden im Portal **Einstellungen** öffnen. Bei der Agent-Statusanzeige muss die Maschine gezählt
-werden. Zusätzlich kann auf dem Ziel-PC eine Einmaldiagnose laufen:
+Nach etwa 30–60 Sekunden im Portal **Einstellungen** öffnen. Bei der Agent-Statusanzeige
+muss die Maschine gezählt werden. Der Installer prüft bereits beim Start, ob der Agent
+eine neue Online-Statusdatei schreibt. Bei OneDrive kommt die Synchronisationszeit hinzu.
+Der gebaute Agent läuft ohne Konsolenfenster; die Diagnose erfolgt über Statusdatei und Log.
 
-```powershell
-& "$env:LOCALAPPDATA\KirschkeRDPAgent\Kirschke-RDP-Agent.exe" --config "$env:LOCALAPPDATA\KirschkeRDPAgent\agent-config.json" --status
-```
-
-Die Statusdatei heißt `<Maschinen-ID>.json` und liegt im oben gewählten `agent-status`-Ordner. Bei Problemen zuerst
+Die Statusdatei heißt `<Maschinen-ID>.json` und liegt direkt im gewählten Statusordner. Bei Problemen zuerst
 `%LOCALAPPDATA%\KirschkeRDPAgent\agent.log` und den OneDrive-Synchronisationsstatus prüfen.
 
 ## Deinstallieren
@@ -88,7 +97,7 @@ Die Statusdatei heißt `<Maschinen-ID>.json` und liegt im oben gewählten `agent
 Das entfernt nur den Autostart; Konfiguration und Log bleiben zur Diagnose erhalten:
 
 ```powershell
-.\Install-Agent.ps1 -WorkstationId "WS-001" -StatusDirectory "x" -SourceDirectory "x" -Uninstall
+.\Kirschke-RDP-Agent-Setup.exe --uninstall
 ```
 
 ## Wichtige Grenze des Pilotbetriebs

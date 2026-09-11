@@ -10,10 +10,8 @@ portal_app modules to avoid circular imports.
 
 from __future__ import annotations
 
-import os
 import json
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional, Any
 

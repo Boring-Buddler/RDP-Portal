@@ -1,12 +1,11 @@
 """Session and event models for Kirschke RDP Workstation Portal."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from dataclasses import dataclass, field
-from enum import Enum
 from shared.enums import EventType, EventResult, EventSource
 from shared.schemas import SessionEventSchema
-from shared.validation import generate_test_entra_id, generate_test_upn, generate_test_hostname
+from shared.validation import generate_test_entra_id, generate_test_upn
 
 
 @dataclass
@@ -33,6 +32,9 @@ class SessionEvent:
     
     def __post_init__(self):
         """Validate and initialize after creation."""
+        # Legacy local events were written as naive local time. Store new and
+        # loaded events uniformly with an explicit UTC offset.
+        self.timestamp_utc = self.timestamp_utc.astimezone(timezone.utc)
         if isinstance(self.event_type, str):
             self.event_type = EventType(self.event_type)
         if isinstance(self.result, str):

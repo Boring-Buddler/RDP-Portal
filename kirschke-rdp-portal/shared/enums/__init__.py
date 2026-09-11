@@ -4,7 +4,7 @@ These enums are used consistently across both the portal application
 and the workstation agent to ensure type safety and consistency.
 """
 
-from enum import Enum, auto
+from enum import Enum
 from typing import Final
 
 

@@ -14,14 +14,13 @@ import time
 import logging
 from typing import Optional, Any, TypeVar, Generic
 from dataclasses import dataclass, field
-from enum import Enum
-from urllib.parse import urljoin, urlencode
+from urllib.parse import urljoin
 from http import HTTPStatus
 
 import requests
 from requests.exceptions import RequestException, Timeout, JSONDecodeError
 
-from portal_app.auth.entra_auth import EntraAuthProvider, EntraAuthConfig
+from portal_app.auth.entra_auth import EntraAuthProvider
 
 logger = logging.getLogger(__name__)
 

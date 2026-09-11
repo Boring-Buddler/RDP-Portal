@@ -429,6 +429,7 @@ class AccessRuleSchema(BaseSchema):
 
 class WorkstationSchema(BaseSchema):
     """Complete schema for a workstation including all metadata."""
+    agent_workstation_id: Optional[str] = Field(default=None, max_length=100)
     
     workstation_id: str = Field(
         ...,
@@ -476,6 +477,14 @@ class WorkstationSchema(BaseSchema):
         default_factory=list,
         description="Allowed Entra group IDs"
     )
+    login_accounts: list[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("login_accounts")
+    @classmethod
+    def validate_login_accounts(cls, values: list[str]) -> list[str]:
+        from shared.login_accounts import normalize_login_accounts
+        return normalize_login_accounts(values)
+
     rdp_access_users: list[str] = Field(
         default_factory=list,
         description="Directory accounts assigned to this workstation's RDP access group",

@@ -1,6 +1,7 @@
 """Validation utilities for Kirschke RDP Workstation Portal."""
 
 import re
+import ipaddress
 from typing import Optional
 import uuid
 import sys
@@ -23,8 +24,8 @@ ALLOWED_RDP_OPTIONS = {
     "redirectprinters", "redirectcomports", "redirectsmartcards",
     "redirectdrives", "drivestoredirect", "audiomode",
     "redirectaudio", "use multimon", "selectedmonitors",
-    "username", "domain", "alternate shell",
-    "shell working directory", "gatewayhostname",
+    "username", "domain", "gatewayhostname",
+    "screen mode id", "authentication level", "gatewayusagemethod",
     "gatewayusemethod", "gatewaycredentialssource",
     "gatewayprofileusemethod", "promptcredentialonce",
     "enablerdsaadauth", "session bpp", "compresslevel",
@@ -58,13 +59,16 @@ class RDPProfileValidator:
         forbidden_chars = [";", "|", "&", "`", "$", ">", "<", "\\", "/"]
         if any(char in hostname for char in forbidden_chars):
             raise RDPValidationError("Hostname contains forbidden characters", "hostname", hostname)
-        for pattern in FORBIDDEN_RDP_PATTERNS:
-            if pattern.lower() in hostname.lower():
-                raise RDPValidationError("Hostname matches forbidden pattern", "hostname", hostname)
+        address = hostname[1:-1] if hostname.startswith("[") and hostname.endswith("]") else hostname
+        try:
+            ipaddress.ip_address(address)
+            return hostname
+        except ValueError:
+            if ":" in hostname or re.fullmatch(r"[0-9.]+", hostname):
+                raise RDPValidationError("Invalid IP address", "hostname", hostname) from None
         hostname_pattern = r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$"
         fqdn_pattern = r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$"
-        ip_pattern = r"^(\d{1,3}\.){3}\d{1,3}$"
-        if not (re.match(hostname_pattern, hostname) or re.match(fqdn_pattern, hostname) or re.match(ip_pattern, hostname)):
+        if not (re.fullmatch(hostname_pattern, hostname) or re.fullmatch(fqdn_pattern, hostname)):
             raise RDPValidationError("Hostname has invalid format", "hostname", hostname)
         return hostname
     
@@ -88,15 +92,23 @@ class RDPProfileValidator:
     def validate_rdp_content(content: str) -> str:
         if not content:
             raise RDPValidationError("RDP content cannot be empty", "content")
+        seen = set()
         for line in content.splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            if ":" not in line:
+            parts = line.split(":", 2)
+            if len(parts) != 3 or parts[1] not in {"s", "i"}:
                 raise RDPValidationError(f"Invalid RDP line: {line}", "content")
-            option_with_type, value = line.split(":", 1)
-            option_name = option_with_type.split(":")[0].strip()
+            option_name, value_type, value = parts
             RDPProfileValidator.validate_option_name(option_name)
+            if option_name in seen or (value_type == "i" and not re.fullmatch(r"-?\d+", value)):
+                raise RDPValidationError("Duplicate option or invalid integer", "content")
+            seen.add(option_name)
+            if option_name in {"full address", "gatewayhostname"}:
+                RDPProfileValidator.validate_hostname(value)
+        if "full address" not in seen:
+            raise RDPValidationError("Missing full address", "content")
         return content
 
 

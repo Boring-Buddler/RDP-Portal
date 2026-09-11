@@ -84,7 +84,7 @@ class EventLogConfig:
 class AgentSessionEvent:
     """Internal representation of a session event for the agent."""
     
-    event_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     event_type: EventType = EventType.LAUNCH_REQUESTED
     timestamp_utc: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     workstation_id: str = ""
@@ -196,7 +196,12 @@ class EventQueue:
                 with open(event_file, "r", encoding="utf-8") as f:
                     events_data = json.load(f)
                     for event_data in events_data:
-                        event = AgentSessionEvent(**event_data)
+                        schema = SessionEventSchema.model_validate(event_data)
+                        event = AgentSessionEvent(
+                            **schema.model_dump(),
+                            processed=bool(event_data.get("processed", False)),
+                            sent_to_portal=bool(event_data.get("sent_to_portal", False)),
+                        )
                         self._events.append(event)
                         self._event_history[event.event_id] = event
         except Exception as e:
@@ -210,8 +215,8 @@ class EventQueue:
         try:
             event_file = Path(self.config.log_directory) / "pending_events.json"
             events_data = [e.to_dict() for e in self._events]
-            with open(event_file, "w", encoding="utf-8") as f:
-                json.dump(events_data, f, indent=2)
+            from shared.file_io import write_json_atomic
+            write_json_atomic(event_file, events_data)
         except Exception as e:
             logger.warning(f"Failed to save persisted events: {e}")
     

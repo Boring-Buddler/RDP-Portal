@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 from threading import Lock
 
 import msal
-from msal import PublicClientApplication, ConfidentialClientApplication
+from msal import PublicClientApplication
 
 from shared.enums import UserRole
 from portal_app.models.user import User
@@ -305,8 +305,6 @@ class EntraAuthProvider:
             # Perform interactive login
             logger.info("Starting interactive login...")
             
-            # Build redirect URI
-            redirect_uri = self.config.redirect_uri
             
             # Perform device flow for CLI applications
             flow = self._app.initiate_device_flow(

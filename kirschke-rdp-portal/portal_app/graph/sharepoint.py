@@ -18,15 +18,12 @@ import os
 import json
 import logging
 from typing import Optional, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
 from portal_app.graph.client import (
     GraphClient,
-    GraphClientConfig,
-    GraphResponse,
-    PaginatedResponse,
     GraphAPIError,
     GraphNotFoundError,
 )

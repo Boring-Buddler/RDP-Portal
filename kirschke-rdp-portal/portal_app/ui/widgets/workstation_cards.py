@@ -25,6 +25,7 @@ from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
 from portal_app.ui.design import Colors, Typography
 from portal_app.ui.widgets.ping_tool import PingToolWidget
+from portal_app.ui.widgets.login_account_selector import LoginAccountSelector
 from shared.enums import AgentStatus, ManualFlagType, SessionState
 
 
@@ -53,7 +54,10 @@ class WorkstationCard(QFrame):
     """A workstation tile with its state and primary actions."""
 
     selected = Signal(Workstation)
+    ping_completed = Signal(str)
     connect_requested = Signal(Workstation)
+    account_selected = Signal(Workstation, str)
+    account_add_requested = Signal(Workstation)
 
     def __init__(
         self,
@@ -66,8 +70,9 @@ class WorkstationCard(QFrame):
         self.user = user
         self.ping_process: QProcess | None = None
         self.setObjectName("workstationCard")
+        self.setStyleSheet(f"QFrame#workstationCard {{ border: 3px solid {self._accent_color().name()}; }}")
         self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumSize(250, 224)
+        self.setMinimumSize(250, 306)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._create_ui()
 
@@ -95,6 +100,10 @@ class WorkstationCard(QFrame):
         hostname.setObjectName("cardMeta")
         title_box.addWidget(hostname)
         heading.addLayout(title_box, 1)
+        self.ping_result = QLabel("")
+        self.ping_result.setObjectName("cardMeta")
+        self.ping_result.setToolTip("Letztes ICMP-Ping-Ergebnis; unabhängig vom Agentstatus")
+        heading.addWidget(self.ping_result, 0, Qt.AlignTop | Qt.AlignRight)
         layout.addLayout(heading)
 
         layout.addSpacing(20)
@@ -113,17 +122,30 @@ class WorkstationCard(QFrame):
         status_dot.setStyleSheet(f"color: {self._accent_color().name()}; font-size: 12px;")
         status_row.addWidget(status_dot)
         status = QLabel(self._status_text())
+        status.setToolTip(self.workstation.agent_diagnostic)
         status.setObjectName("cardStatus")
         status_row.addWidget(status)
         status_row.addStretch()
         layout.addLayout(status_row)
 
         session = QLabel(self._session_text())
+        session.setToolTip(self.workstation.agent_diagnostic)
         session.setObjectName("cardMeta")
         session.setContentsMargins(20, 2, 0, 0)
         layout.addWidget(session)
+        if self.workstation.reservation_message:
+            reservation = QLabel(self.workstation.reservation_message)
+            reservation.setObjectName("cardStatus")
+            reservation.setWordWrap(True)
+            layout.addWidget(reservation)
         layout.addStretch()
 
+        layout.addSpacing(10)
+        self.account_selector = LoginAccountSelector(self.workstation, self.user, self)
+        self.account_selector.account_selected.connect(self.account_selected)
+        self.account_selector.add_requested.connect(self.account_add_requested)
+        layout.addWidget(self.account_selector)
+        layout.addSpacing(12)
         action_row = QHBoxLayout()
         action_row.setSpacing(8)
         details = QPushButton("Details")
@@ -135,11 +157,14 @@ class WorkstationCard(QFrame):
         self.ping_btn.setToolTip("Erreichbarkeit des konfigurierten RDP-Ziels pr\u00fcfen")
         self.ping_btn.clicked.connect(self._ping)
         action_row.addWidget(self.ping_btn)
-        connect = QPushButton("Verbinden")
+        connect = QPushButton("Wiederverbinden" if self.workstation.matching_sessions(self.user.get_rdp_username()) else "Verbinden")
         connect.setObjectName("cardPrimaryButton")
-        connect.setEnabled(self.workstation.can_connect())
-        if not self.workstation.can_connect():
-            connect.setText(self.workstation.get_status_display())
+        connect.setEnabled(self.workstation.can_connect(self.user.get_rdp_username()) or self.workstation.can_choose_session())
+        if not self.workstation.can_connect(self.user.get_rdp_username()):
+            connect.setText("Reserviert" if self.workstation.reservation_block_reason else self.workstation.get_status_display())
+            if self.workstation.can_choose_session():
+                connect.setText("Sitzung öffnen …")
+        connect.setToolTip(self.workstation.reservation_message)
         connect.clicked.connect(lambda: self.connect_requested.emit(self.workstation))
         action_row.addWidget(connect, 1)
         layout.addLayout(action_row)
@@ -166,7 +191,10 @@ class WorkstationCard(QFrame):
     def _on_ping_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         success = exit_code == 0 and exit_status == QProcess.NormalExit
         latency = self._ping_latency() if success else None
-        self.ping_btn.setText(f"{latency} ms" if latency else ("Erreichbar" if success else "Offline"))
+        result = f"{latency} ms" if latency else ("Antwort" if success else "Keine Ping-Antwort")
+        self.ping_result.setText(result)
+        self.ping_completed.emit(result)
+        self.ping_btn.setText("Ping")
         self.ping_btn.setProperty("pingOk", success)
         self.ping_btn.style().unpolish(self.ping_btn)
         self.ping_btn.style().polish(self.ping_btn)
@@ -174,7 +202,9 @@ class WorkstationCard(QFrame):
 
     def _on_ping_error(self, error: QProcess.ProcessError) -> None:
         if error == QProcess.FailedToStart:
-            self.ping_btn.setText("Nicht verf\u00fcgbar")
+            self.ping_result.setText("Ping nicht verfügbar")
+            self.ping_completed.emit("Ping nicht verfügbar")
+            self.ping_btn.setText("Ping")
             self.ping_btn.setProperty("pingOk", False)
             self._finish_ping()
 
@@ -184,8 +214,8 @@ class WorkstationCard(QFrame):
         output = bytes(self.ping_process.readAllStandardOutput()).decode(
             locale.getpreferredencoding(False), errors="replace"
         )
-        match = re.search(r"(?:zeit|time)[=<]\s*(\d+)\s*ms", output, re.IGNORECASE)
-        return match.group(1) if match else None
+        match = re.search(r"(?:zeit|time)([=<])\s*(\d+)\s*ms", output, re.IGNORECASE)
+        return (("<" if match.group(1) == "<" else "") + match.group(2)) if match else None
 
     def _finish_ping(self) -> None:
         self.ping_btn.setEnabled(True)
@@ -201,15 +231,15 @@ class WorkstationCard(QFrame):
             return Colors.error
         if ws.manual_flag_type == ManualFlagType.MAINTENANCE or ws.agent_status == AgentStatus.STALE:
             return Colors.warning
+        if ws.has_active_session():
+            return Colors.info
         if ws.manual_flag_type == ManualFlagType.CALCULATION_RUNNING:
             return Colors.info
         return Colors.success
 
     def _status_text(self) -> str:
         state = self.workstation.get_status_display()
-        if state == "Bereit":
-            return self.workstation.get_agent_status_display()
-        return f"{self.workstation.get_agent_status_display()} · {state}"
+        return f"Agent: {self.workstation.get_agent_status_display()} · {state}"
 
     def _session_text(self) -> str:
         user = self.workstation.get_session_user_display()
@@ -217,7 +247,11 @@ class WorkstationCard(QFrame):
             return f"Belegt von {user}"
         if self.workstation.current_session_state == SessionState.DISCONNECTED:
             return "Sitzung getrennt"
-        return "Frei und verfügbar"
+        if self.workstation.agent_status != AgentStatus.ONLINE:
+            if self.workstation.agent_last_seen_utc:
+                return "Agent-Meldung prüfen · siehe Diagnose"
+            return "Agentstatus fehlt · Ping = Netzwerk"
+        return "Keine Windows-Sitzung" if self.workstation.reservation_message else "Frei und verfügbar"
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton:
@@ -234,7 +268,7 @@ class AddWorkstationCard(QFrame):
         super().__init__(parent)
         self.setObjectName("addWorkstationCard")
         self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumSize(250, 224)
+        self.setMinimumSize(250, 306)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
@@ -263,8 +297,11 @@ class WorkstationCardsWidget(QWidget):
 
     workstation_selected = Signal(Workstation)
     connect_requested = Signal(Workstation)
+    account_selected = Signal(Workstation, str)
+    account_add_requested = Signal(Workstation)
     add_requested = Signal()
     refresh_requested = Signal()
+    agent_diagnostics_requested = Signal()
 
     def __init__(
         self,
@@ -284,6 +321,16 @@ class WorkstationCardsWidget(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(18)
+        agent_row = QHBoxLayout()
+        self.agent_channel_status = QLabel("Agent-Dateien werden geprüft …")
+        self.agent_channel_status.setObjectName("cardMeta")
+        self.agent_channel_status.setWordWrap(True)
+        agent_row.addWidget(self.agent_channel_status, 1)
+        self.agent_diagnostics_button = QPushButton("Agent-Diagnose")
+        self.agent_diagnostics_button.setObjectName("toolbarButton")
+        self.agent_diagnostics_button.clicked.connect(self.agent_diagnostics_requested)
+        agent_row.addWidget(self.agent_diagnostics_button)
+        root.addLayout(agent_row)
         toolbar = QHBoxLayout()
         toolbar.setSpacing(10)
         self.search = QLineEdit()
@@ -391,9 +438,12 @@ class WorkstationCardsWidget(QWidget):
         return result
 
     def _rebuild_grid(self) -> None:
+        if not hasattr(self, "_ping_results"):
+            self._ping_results: dict[str, str] = {}
         while self.grid.count():
             item = self.grid.takeAt(0)
             if item.widget():
+                item.widget().hide()
                 item.widget().deleteLater()
         self._cards.clear()
         columns = self._column_count()
@@ -401,8 +451,12 @@ class WorkstationCardsWidget(QWidget):
         items: list[QWidget] = []
         for workstation in self._filtered_workstations():
             card = WorkstationCard(workstation, self.user)
+            card.ping_result.setText(self._ping_results.get(workstation.workstation_id, ""))
+            card.ping_completed.connect(lambda result, key=workstation.workstation_id: self._ping_results.__setitem__(key, result))
             card.selected.connect(self.workstation_selected)
             card.connect_requested.connect(self.connect_requested)
+            card.account_selected.connect(self.account_selected)
+            card.account_add_requested.connect(self.account_add_requested)
             items.append(card)
         add_card = AddWorkstationCard()
         add_card.clicked.connect(self.add_requested)

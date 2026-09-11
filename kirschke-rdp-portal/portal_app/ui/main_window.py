@@ -30,10 +30,13 @@ from PySide6.QtWidgets import (
 from portal_app.models.reservation import Reservation
 from portal_app.models.session import SessionEvent
 from portal_app.models.user import MockUser
-from portal_app.models.workstation import Workstation, create_initial_workstations
+from portal_app.models.workstation import Workstation
 from portal_app.services.local_store import LocalStore, StoreConflictError
 from portal_app.services.local_identity import detect_initial_user
 from portal_app.services.agent_status import LocalAgentStatusService
+from portal_app.services.reservation_access import apply_reservations
+from shared.agent_paths import expand_directory
+from portal_app.version import PORTAL_VERSION
 from portal_app.services.directory_users import discover_windows_domain_accounts
 from portal_app.services.active_directory_sync import sync_rdp_group_members
 from portal_app.services.active_directory_sync import check_active_directory_readiness
@@ -50,7 +53,7 @@ from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
 from portal_app.ui.widgets.workstation_dialog import WorkstationDialog
 from portal_app.ui.widgets.machine_registration_wizard import MachineRegistrationWizard
 from portal_app.ui.widgets.rdp_access_dialog import RDPAccessDialog
-from shared.enums import EventResult, EventSource, EventType
+from shared.enums import EventResult, EventSource, EventType, ManualFlagType
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +73,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Kirschke · RDP Portal")
+        self.setWindowTitle(f"Kirschke · RDP Portal {PORTAL_VERSION}")
         self.logo_path = Path(__file__).resolve().parent / "assets" / "kirschke_logo.png"
         self.setWindowIcon(kirschke_window_icon())
         self.setMinimumSize(QSize(1080, 720))
@@ -79,13 +82,16 @@ class MainWindow(QMainWindow):
         self.store = LocalStore()
         self.directory_mode = directory_mode()
         self.local_admin_password_store = LocalAdminPasswordStore()
-        self.agent_status_service = LocalAgentStatusService(directory=self.store.directory / "agent-status")
+        self.agent_status_service = LocalAgentStatusService(
+            directory=self.store.agent_status_directory
+        )
         self.workstations: list[Workstation] = []
         self.reservations: list[Reservation] = []
         self.session_events: list[SessionEvent] = []
         self.current_user = detect_initial_user(MockUser.create_user())
         self.nav_buttons: list[QPushButton] = []
         self._admin_unlocked = False
+        self._pending_save = False
         self._current_rdp_notice_key: str | None = None
         self._dismissed_rdp_notice_key: str | None = None
         self._load_data()
@@ -109,7 +115,7 @@ class MainWindow(QMainWindow):
         self.shared_store_sync_timer.start()
 
     def _load_data(self) -> None:
-        fallback = create_initial_workstations()
+        fallback = []  # A new pilot must not offer fictitious targets as real PCs.
         self.workstations, self.current_user, self.reservations = self.store.load(fallback, self.current_user)
         self.session_events = self.store.load_events()
         self.directory_accounts = self.store.load_directory_accounts()
@@ -117,11 +123,9 @@ class MainWindow(QMainWindow):
         self.dark_mode = self._resolve_dark_mode()
         self._saved_workstations = deepcopy(self.workstations)
         self._saved_user = deepcopy(self.current_user)
-        try:
+        if not self.store.path.exists():
             self.store.save(self._saved_workstations, self._saved_user, self.reservations, self.store.theme_mode)
-            self.store.initialize_event_log()
-        except OSError as exc:
-            logger.warning("Could not initialize shared portal storage: %s", exc)
+        self.store.initialize_event_log()
 
     def _create_ui(self) -> None:
         central = QWidget(self)
@@ -151,7 +155,7 @@ class MainWindow(QMainWindow):
         self.logo_label.setFixedSize(285, 48)
         layout.addWidget(self.logo_label)
         self._update_logo()
-        product = QLabel("RDP PORTAL · TEST")
+        product = QLabel(f"RDP PORTAL · TEST {PORTAL_VERSION}")
         product.setObjectName("productName")
         layout.addWidget(product)
         layout.addStretch()
@@ -249,7 +253,7 @@ class MainWindow(QMainWindow):
         self.overview_view = WorkstationCardsWidget(self.workstations, self.current_user, self)
         self.stack.addWidget(self.overview_view)
         self.calendar_view = ReservationCalendarWidget(
-            self.workstations, self.reservations, self.current_user, self
+            self.workstations, list(self.reservations), self.current_user, self
         )
         self.stack.addWidget(self.calendar_view)
         self.session_log_view = SessionLogWidget([], self.current_user, self)
@@ -275,8 +279,11 @@ class MainWindow(QMainWindow):
         self.nav_group.buttonClicked.connect(self._on_navigation_clicked)
         self.overview_view.workstation_selected.connect(self.on_workstation_selected)
         self.overview_view.connect_requested.connect(self.on_connect_requested)
+        self.overview_view.account_selected.connect(self._select_login_account)
+        self.overview_view.account_add_requested.connect(self._add_login_account)
         self.overview_view.add_requested.connect(self._add_workstation)
         self.overview_view.refresh_requested.connect(self.on_refresh)
+        self.overview_view.agent_diagnostics_requested.connect(self._show_agent_diagnostics)
         self.admin_view.add_requested.connect(self._add_workstation)
         self.admin_view.edit_requested.connect(self._edit_workstation)
         self.admin_view.force_disconnect_requested.connect(self._force_disconnect_workstation)
@@ -288,14 +295,126 @@ class MainWindow(QMainWindow):
         self.admin_view.admin_password_change_requested.connect(self._change_local_admin_password)
         self.settings_view.edit_user_requested.connect(self._edit_user)
         self.settings_view.agent_refresh_requested.connect(self._poll_agent_status)
+        self.settings_view.agent_directory_requested.connect(self._change_agent_directory)
+        self.settings_view.share_setup_requested.connect(self._setup_share)
         self.settings_view.theme_changed.connect(self._set_theme_mode)
         self.calendar_view.reservations_changed.connect(self._on_reservations_changed)
         self.detail_view.back_requested.connect(self._show_machines)
         self.detail_view.edit_requested.connect(self._edit_workstation)
         self.detail_view.connect_requested.connect(self.on_connect_requested)
+        self.detail_view.logoff_requested.connect(self._logoff_session)
+        self.detail_view.live_status_requested.connect(self._query_live_status)
+        self.detail_view.account_selected.connect(self._select_login_account)
+        self.detail_view.account_add_requested.connect(self._add_login_account)
         self.detail_view.diagnostics_requested.connect(self._run_rdp_diagnostics)
+        self.detail_view.agent_assignment_requested.connect(self._assign_agent)
         self.detail_view.workstation_updated.connect(self._on_workstation_updated)
         self.workstation_selected.connect(self.detail_view.set_workstation)
+
+    @Slot(Workstation, str)
+    def _select_login_account(self, workstation: Workstation, account: str) -> None:
+        if account and account not in workstation.login_accounts + workstation.session_accounts():
+            return
+        try:
+            self.store.save_login_selection(workstation.workstation_id, account, self._saved_user)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Anmeldekonto nicht gespeichert", str(exc))
+        else:
+            workstation.selected_login_account = account or None
+        self._refresh_login_views(workstation)
+
+    def _refresh_login_views(self, workstation: Workstation) -> None:
+        self._refresh_workstation_views()
+        if self.detail_view.workstation and self.detail_view.workstation.workstation_id == workstation.workstation_id:
+            self.detail_view.set_workstation(workstation)
+
+    @Slot(Workstation)
+    def _add_login_account(self, workstation: Workstation) -> None:
+        from shared.login_accounts import normalize_login_accounts
+
+        account, accepted = QInputDialog.getText(
+            self, "Anmeldekonto hinzufügen",
+            f"Bestehendes Windows-Konto für {workstation.display_name}:\n"
+            "Zum Beispiel ZIELPC\\benutzer, DOMÄNE\\benutzer oder benutzer@firma.de.\n"
+            "Es wird nur der Kontoname hinterlegt; kein Windows-Konto angelegt und kein Kennwort gespeichert.",
+        )
+        if not accepted:
+            return
+        # A timer may have refreshed the inventory while the modal dialog was open.
+        workstation = next((ws for ws in self.workstations if ws.workstation_id == workstation.workstation_id), None)
+        if workstation is None:
+            QMessageBox.warning(self, "Maschine nicht mehr vorhanden", "Bitte die Maschinenübersicht aktualisieren.")
+            return
+        try:
+            accounts = normalize_login_accounts(workstation.login_accounts + [account])
+            if len(accounts) > 100:
+                raise ValueError("Pro Maschine können höchstens 100 Anmeldekonten hinterlegt werden.")
+        except ValueError as exc:
+            QMessageBox.warning(self, "Ungültiges Anmeldekonto", str(exc))
+            return
+        previous = list(workstation.login_accounts)
+        saved_before = deepcopy(self._saved_workstations)
+        workstation.login_accounts = accounts
+        saved = next((ws for ws in self._saved_workstations if ws.workstation_id == workstation.workstation_id), None)
+        if saved is None:
+            QMessageBox.warning(self, "Maschine zuerst speichern", "Bitte die Maschinenstammdaten zuerst speichern.")
+            workstation.login_accounts = previous
+            return
+        saved.login_accounts = accounts
+        if not self._persist():
+            workstation.login_accounts = previous
+            self._saved_workstations = saved_before
+            self._refresh_login_views(workstation)
+            return
+        selected = next(value for value in accounts if value.casefold() == account.strip().casefold())
+        self._select_login_account(workstation, selected)
+
+    @Slot(Workstation)
+    def _assign_agent(self, workstation: Workstation) -> None:
+        from shared.agent_snapshot import load_agent_snapshots
+
+        try:
+            snapshots = load_agent_snapshots(self.store.agent_status_directory)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Agent-Zuordnung", str(exc))
+            return
+        newest = {}
+        for snapshot in snapshots:
+            key = snapshot.workstation_id.strip().casefold()
+            if key not in newest or snapshot.observed_at_utc > newest[key].observed_at_utc:
+                newest[key] = snapshot
+        choices = {"Automatisch über Maschinen-ID / Hostname": None}
+        for snapshot in sorted(newest.values(), key=lambda item: item.workstation_id.casefold()):
+            choices[f"{snapshot.workstation_id} · {snapshot.hostname} · Meldung {snapshot.observed_at_utc.astimezone():%d.%m. %H:%M:%S}"] = snapshot.workstation_id.strip()
+        current = next((i for i, value in enumerate(choices.values())
+                        if value and value.casefold() == (workstation.agent_workstation_id or "").casefold()), 0)
+        choice, accepted = QInputDialog.getItem(
+            self, f"Agent für {workstation.display_name} zuordnen",
+            "Den Agenten dieses Zielrechners auswählen.\nDie RDP-Adresse und bestehende Reservierungen bleiben erhalten.",
+            list(choices), current, False,
+        )
+        if not accepted:
+            return
+        workstation = next((ws for ws in self.workstations if ws.workstation_id == workstation.workstation_id), None)
+        if workstation is None:
+            return
+        selected = choices[choice]
+        expected = (selected or workstation.workstation_id).casefold()
+        if any(ws is not workstation and (ws.agent_workstation_id or ws.workstation_id).strip().casefold() == expected
+               for ws in self.workstations):
+            QMessageBox.warning(self, "Agent bereits zugeordnet", "Dieser Agent ist bereits einer anderen Maschine zugeordnet.")
+            return
+        saved = next((ws for ws in self._saved_workstations if ws.workstation_id == workstation.workstation_id), None)
+        if saved is None:
+            QMessageBox.warning(self, "Maschine zuerst speichern", "Bitte zuerst die Maschinenstammdaten speichern.")
+            return
+        previous, saved_previous = workstation.agent_workstation_id, saved.agent_workstation_id
+        workstation.agent_workstation_id = saved.agent_workstation_id = selected
+        if not self._persist():
+            workstation.agent_workstation_id, saved.agent_workstation_id = previous, saved_previous
+            return
+        self._poll_agent_status()
+        self.detail_view.set_workstation(workstation)
 
     @Slot()
     def _dismiss_rdp_warning(self) -> None:
@@ -353,19 +472,48 @@ class MainWindow(QMainWindow):
     @Slot()
     def _poll_agent_status(self) -> None:
         """Merge locally published WTS status into matching test workstations."""
-        changed = self.agent_status_service.apply(self.workstations)
+        reservation_changed = apply_reservations(self.workstations, self.reservations, self.current_user.upn)
+        if reservation_changed:
+            self._refresh_workstation_views()
+        try:
+            self.agent_status_service.set_directory(self.store.agent_status_directory)
+            changed = self.agent_status_service.apply(self.workstations)
+        except (OSError, ValueError) as exc:
+            self._update_storage_status(f"Agent-Status nicht lesbar: {exc}")
+            self.settings_view.agent_status.setText(f"Agent-Status nicht lesbar: {exc}")
+            self.settings_view.set_agent_report(f"RDP-Portal {PORTAL_VERSION}\nKonfiguration: {self.store.agent_config_path}\nFehler: {exc}")
+            self.overview_view.agent_channel_status.setText("Agent-Status nicht lesbar · Agent-Diagnose öffnen")
+            return
         self.settings_view.set_agent_bridge_status(
             self.agent_status_service.last_match_count,
             self.agent_status_service.last_snapshot_count,
             str(self.agent_status_service.directory),
+            self.agent_status_service.last_errors,
         )
-        if not changed:
+        service = self.agent_status_service
+        self.settings_view.set_agent_report(service.last_report + f"\nPortalprogramm: {Path(sys.executable).resolve()}\nInventar: {self.store.path}\nKonfiguration: {self.store.agent_config_path}")
+        checked = service.last_checked_at.astimezone().strftime("%H:%M:%S")
+        result = f"{service.last_file_count} JSON · {service.last_snapshot_count} gültig · {service.last_match_count}/{len(self.workstations)} Maschinen zugeordnet"
+        if service.last_errors:
+            result += " · Lesefehler"
+        self.overview_view.agent_channel_status.setText(f"Agent-Prüfung {checked}: {result}")
+        self.overview_view.agent_channel_status.setToolTip(str(service.directory))
+        if not changed and not reservation_changed:
             return
-        self._saved_workstations = deepcopy(self.workstations)
-        self._persist()
+        # Heartbeats are transient. They must not save unsaved form changes or
+        # cause competing writes to the shared machine configuration.
         self._refresh_workstation_views()
         if self.detail_view.workstation is not None:
-            self.detail_view.set_workstation(self.detail_view.workstation)
+            selected = next((ws for ws in self.workstations if ws.workstation_id == self.detail_view.workstation.workstation_id), None)
+            if selected is not None:
+                self.detail_view.set_workstation(selected)
+
+    @Slot()
+    def _show_agent_diagnostics(self) -> None:
+        self.nav_buttons[self.PAGE_SETTINGS].setChecked(True)
+        self._on_navigation_clicked(self.nav_buttons[self.PAGE_SETTINGS])
+        self.settings_view.scroll.verticalScrollBar().setValue(0)
+        self._poll_agent_status()
 
     def _on_navigation_clicked(self, button: QPushButton) -> None:
         page_index = int(button.property("pageIndex"))
@@ -406,21 +554,6 @@ class MainWindow(QMainWindow):
             )
             return False
         return self._request_local_admin_access()
-        password, accepted = QInputDialog.getText(
-            self,
-            "Admin-Zugang (Test-Fallback)",
-            "Passwort für den Administrationsbereich:",
-            QLineEdit.Password,
-        )
-        if not accepted:
-            return False
-        if not self._is_admin_password_valid(password):
-            QMessageBox.warning(self, "Zugriff verweigert", "Das eingegebene Admin-Passwort ist nicht korrekt.")
-            return False
-        self._admin_unlocked = True
-        self.admin_view.set_access_status(True, "Admin-Testfreigabe aktiv")
-        self.nav_buttons[self.PAGE_ADMIN].setText("Admin · offen")
-        return True
 
     def _request_local_admin_access(self) -> bool:
         if not self.local_admin_password_store.is_configured():
@@ -461,7 +594,7 @@ class MainWindow(QMainWindow):
             return False
         try:
             self.local_admin_password_store.set_password(password)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             QMessageBox.warning(self, "Admin-Passwort ungültig", str(exc))
             return False
         self._unlock_admin("Lokales Admin-Passwort eingerichtet")
@@ -502,7 +635,7 @@ class MainWindow(QMainWindow):
             return
         try:
             self.local_admin_password_store.set_password(new_password)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             QMessageBox.warning(self, "Admin-Passwort ungültig", str(exc))
             return
         QMessageBox.information(self, "Admin-Passwort geändert", "Das lokale Admin-Passwort wurde aktualisiert.")
@@ -529,13 +662,40 @@ class MainWindow(QMainWindow):
         self.admin_view.set_active_directory_status(readiness.message)
 
     @Slot(str)
-    def _change_storage_directory(self, directory: str) -> None:
+    def _change_agent_directory(self, directory: str) -> None:
         try:
-            self.store.relocate(Path(directory), move_files=True)
-            self.agent_status_service.set_directory(self.store.directory / "agent-status")
+            target = self.store.set_agent_status_directory(directory)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Agent-Statusordner nicht gespeichert", str(exc))
+            return
+        self.settings_view.agent_directory.setText(str(target))
+        self._poll_agent_status()
+
+    def _setup_share(self) -> None:
+        from portal_app.ui.widgets.share_setup_dialog import ShareSetupDialog
+        dialog = ShareSetupDialog(self.settings_view.agent_directory.text(), self)
+        self.agent_poll_timer.stop()
+        try:
+            if dialog.exec() == QDialog.Accepted:
+                self._change_agent_directory(dialog.connected_path)
+        finally:
+            self.agent_poll_timer.start()
+            dialog.deleteLater()
+
+    @Slot(str)
+    def _change_storage_directory(self, directory: str) -> None:
+        target = expand_directory(directory)
+        if target.name.casefold() in {"agent-status", "agenten-status"}:
+            self._change_agent_directory(str(target))
+            self._update_storage_status("Agent-Statusordner eingestellt; Inventar-Speicherort unverändert")
+            return
+        try:
+            self.store.relocate(target, move_files=True)
+            self.agent_status_service.set_directory(self.store.agent_status_directory)
             self.admin_view.set_storage_directory(str(self.store.directory))
             self._persist()
             self._update_storage_status("Speicherort gewechselt")
+            self._poll_agent_status()
         except (OSError, ValueError) as exc:
             QMessageBox.critical(
                 self,
@@ -611,10 +771,17 @@ class MainWindow(QMainWindow):
 
     @Slot(Workstation)
     def _on_workstation_updated(self, workstation: Workstation) -> None:
+        previous = next((ws for ws in self._saved_workstations if ws.workstation_id == workstation.workstation_id), None)
+        flag_changed = previous is not None and (
+            previous.manual_flag_type != workstation.manual_flag_type
+            or previous.manual_flag_set_at_utc != workstation.manual_flag_set_at_utc
+        )
         self._refresh_workstation_views()
         self.detail_view.set_workstation(workstation)
         self._commit_workstation(workstation)
-        self._persist()
+        if self._persist() and flag_changed:
+            event_type = EventType.MANUAL_FLAG_CLEARED if workstation.manual_flag_type == ManualFlagType.NONE else EventType.MANUAL_FLAG_SET
+            self._record_event(workstation, event_type, EventResult.SUCCESS, workstation.manual_flag_reason)
 
     @Slot(Workstation)
     def _force_disconnect_workstation(self, workstation: Workstation) -> None:
@@ -707,7 +874,7 @@ class MainWindow(QMainWindow):
             if reservation.workstation_id != workstation.workstation_id
         ]
         self._saved_workstations = deepcopy(self.workstations)
-        self.calendar_view.reservations = self.reservations
+        self.calendar_view.reservations = list(self.reservations)
         self._refresh_workstation_views()
         if (
             self.detail_view.workstation is not None
@@ -717,10 +884,15 @@ class MainWindow(QMainWindow):
         self._persist()
 
     def _refresh_workstation_views(self) -> None:
+        apply_reservations(self.workstations, self.reservations, self.current_user.upn)
         self.overview_view.set_workstations(self.workstations)
         self.calendar_view.set_workstations(self.workstations)
         self.admin_view.set_workstations(self.workstations)
         self._update_summary()
+        if self.detail_view.workstation is not None:
+            selected = next((ws for ws in self.workstations if ws.workstation_id == self.detail_view.workstation.workstation_id), None)
+            if selected is not None:
+                self.detail_view.set_workstation(selected)
 
     def _edit_user(self) -> None:
         dialog = UserSettingsDialog(self.current_user, self)
@@ -755,7 +927,8 @@ class MainWindow(QMainWindow):
         workstation.rdp_access_users = dialog.selected_members
         self._commit_workstation(workstation)
         self._refresh_workstation_views()
-        self._persist()
+        if not self._persist():
+            return
         for account in granted:
             self._record_event(
                 workstation,
@@ -871,8 +1044,24 @@ class MainWindow(QMainWindow):
 
     @Slot(list)
     def _on_reservations_changed(self, reservations: list[Reservation]) -> None:
-        self.reservations = reservations
-        self._persist()
+        previous = self.reservations
+        self.reservations = list(reservations)
+        if not self._persist():
+            self.reservations = previous
+        self.calendar_view.reservations = list(self.reservations)
+        self._refresh_workstation_views()
+
+    def _check_reservation_access(self, workstation: Workstation) -> bool:
+        try:
+            reservations = self.store.read_reservations()
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            QMessageBox.warning(self, "Reservierungen nicht prüfbar", f"Der gemeinsame Reservierungsstand ist nicht lesbar. Bitte aktualisieren.\n{exc}")
+            return False
+        apply_reservations([workstation], reservations, self.current_user.upn)
+        if workstation.reservation_block_reason:
+            QMessageBox.warning(self, "Rechner reserviert", workstation.reservation_block_reason)
+            return False
+        return True
 
     def _record_event(
         self,
@@ -889,7 +1078,7 @@ class MainWindow(QMainWindow):
             event_type=event_type,
             workstation_id=workstation.workstation_id,
             workstation_hostname=workstation.hostname or workstation.fqdn,
-            session_user_upn=self.current_user.get_rdp_username(),
+            session_user_upn=workstation.get_rdp_profile(self.current_user.get_rdp_username()).username_hint,
             actor_entra_object_id=self.current_user.object_id,
             actor_upn=self.current_user.upn,
             result=result,
@@ -912,6 +1101,9 @@ class MainWindow(QMainWindow):
     def on_connect_requested(self, workstation: Workstation) -> None:
         from portal_app.rdp import has_active_rdp_session, launch_rdp_session
 
+        if not self._check_reservation_access(workstation):
+            return
+
         if has_active_rdp_session(workstation.workstation_id):
             QMessageBox.warning(
                 self,
@@ -920,17 +1112,19 @@ class MainWindow(QMainWindow):
                 "Ein zweiter Start wurde verhindert.",
             )
             return
-        if workstation.has_active_session():
-            QMessageBox.warning(
-                self,
-                "Zugang durch Sitzung belegt",
-                f"{workstation.display_name} ist durch eine Windows-Sitzung belegt "
-                f"({workstation.get_status_display()}, {workstation.get_session_user_display()}).\n\n"
-                "Auch eine getrennte Sitzung kann angemeldet bleiben und den Zugang blockieren. "
-                "Bitte zuerst vollständig abmelden.",
-            )
-            return
-        if not workstation.can_connect():
+        if workstation.has_active_session() and not workstation.matching_sessions(self.current_user.get_rdp_username()):
+            if not workstation.can_choose_session():
+                QMessageBox.warning(self, "Sitzung nicht verfügbar", "Kein eindeutig gemeldetes Sitzungskonto oder die Maschine ist gesperrt.")
+                return
+            account, accepted = QInputDialog.getItem(self, "Eigene Sitzung wieder öffnen",
+                "Wähle das Konto deiner bestehenden Sitzung. Windows fragt dessen Anmeldung ab.\n"
+                "Der angezeigte Windows-Name kann von deiner E-Mail-Adresse abweichen.",
+                workstation.session_accounts(), 0, False)
+            if not accepted:
+                return
+            workstation.selected_login_account = account
+            self._refresh_login_views(workstation)
+        if not workstation.can_connect(self.current_user.get_rdp_username()):
             QMessageBox.warning(
                 self,
                 "Verbindung nicht möglich",
@@ -956,20 +1150,19 @@ class MainWindow(QMainWindow):
             if not profile.trust_unverified_server:
                 confirmation = QMessageBox(self)
                 confirmation.setIcon(QMessageBox.Warning)
-                confirmation.setWindowTitle("ServeridentitÃ¤t bestÃ¤tigen")
+                confirmation.setWindowTitle("Serveridentität bestätigen")
                 confirmation.setText(
-                    f"Windows kann die IdentitÃ¤t von {workstation.display_name} ({target}) nicht bestÃ¤tigen."
+                    f"Für {workstation.display_name} ({target}) wurde die Serveridentität vom Portal noch nicht geprüft."
                 )
                 confirmation.setInformativeText(
-                    "PrÃ¼fen Sie vor dem Fortfahren, ob diese Zieladresse zur gewÃ¼nschten Maschine gehÃ¶rt. "
-                    "Sie kÃ¶nnen die Windows-Warnung einmalig anzeigen lassen oder diese Maschine bewusst "
-                    "als Ausnahme speichern. Bei einer Ausnahme prÃ¼ft Windows die ServeridentitÃ¤t nicht mehr."
+                    "Windows prüft beim Verbindungsaufbau das Serverzertifikat. "
+                    "Eine gespeicherte Ausnahme schaltet diese Prüfung für diese Maschine ab."
                 )
                 show_warning = confirmation.addButton(
                     "Windows-Warnung anzeigen", QMessageBox.ActionRole
                 )
                 trust_server = confirmation.addButton(
-                    "Vertrauen und kÃ¼nftig Ã¼berspringen", QMessageBox.AcceptRole
+                    "Vertrauen und künftig überspringen", QMessageBox.AcceptRole
                 )
                 confirmation.addButton(QMessageBox.Cancel)
                 confirmation.setDefaultButton(show_warning)
@@ -982,6 +1175,8 @@ class MainWindow(QMainWindow):
                     profile = workstation.get_rdp_profile(self.current_user.get_rdp_username())
                 elif confirmation.clickedButton() != show_warning:
                     return
+            if not self._check_reservation_access(workstation):
+                return
             success, message = launch_rdp_session(
                 profile,
                 workstation.workstation_id,
@@ -1002,6 +1197,55 @@ class MainWindow(QMainWindow):
             logger.exception("Failed to launch RDP")
             self._record_event(workstation, EventType.LAUNCH_REQUESTED, EventResult.FAILED, str(exc))
             QMessageBox.critical(self, "Fehler", f"Die Verbindung konnte nicht gestartet werden: {exc}")
+
+    @Slot(Workstation)
+    def _query_live_status(self, workstation: Workstation) -> None:
+        from portal_app.ui.widgets.live_status_dialog import LiveStatusDialog
+        try:
+            route = workstation.get_connection_target()
+            target, _ = route
+        except ValueError as exc:
+            QMessageBox.warning(self, "Ziel fehlt", str(exc))
+            return
+        dialog = LiveStatusDialog(target, self)
+        dialog.exec()
+        if dialog.snapshot is not None:
+            current = next((ws for ws in self.workstations if ws.workstation_id == workstation.workstation_id), None)
+            try:
+                if current is not None and current.get_connection_target() == route:
+                    self.agent_status_service.accept_live_snapshot(current, dialog.snapshot, dialog.elapsed)
+                    self._poll_agent_status()
+            except ValueError as exc:
+                QMessageBox.warning(self, "Agent-Zuordnung", str(exc))
+        dialog.deleteLater()
+
+    @Slot(Workstation)
+    def _logoff_session(self, workstation: Workstation) -> None:
+        from portal_app.ui.widgets.session_logoff_dialog import SessionLogoffDialog
+
+        sessions = workstation.matching_sessions(self.current_user.get_rdp_username())
+        sessions = [item for item in sessions if type(item.get("session_id")) is int
+                    and item["session_id"] > 0 and item.get("login_time")]
+        if not sessions:
+            QMessageBox.warning(self, "Keine passende Sitzung", "Wähle das Konto deiner Sitzung und warte auf eine aktuelle Agent-Meldung mit Anmeldezeitpunkt.")
+            return
+        if len(sessions) > 1:
+            labels = [f"Sitzung {item['session_id']} · {item.get('session_state')} · {item['login_time']}" for item in sessions]
+            label, accepted = QInputDialog.getItem(self, "Sitzung auswählen", "Welche Sitzung abmelden?", labels, 0, False)
+            if not accepted:
+                return
+            session = sessions[labels.index(label)]
+        else:
+            session = sessions[0]
+        try:
+            target, _ = workstation.get_connection_target()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Ziel fehlt", str(exc))
+            return
+        dialog = SessionLogoffDialog(target, workstation.display_name, dict(session), self)
+        dialog.exec()
+        dialog.deleteLater()
+        self._poll_agent_status()
 
     @Slot(Workstation)
     def _run_rdp_diagnostics(self, workstation: Workstation) -> None:
@@ -1057,16 +1301,22 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Entfernen fehlgeschlagen", detail)
 
     def on_refresh(self) -> None:
-        self.workstations, self.current_user, self.reservations = self.store.load(
-            self.workstations, self.current_user
-        )
+        try:
+            loaded = self.store.load(self.workstations, self.current_user)
+        except OSError as exc:
+            self._update_storage_status(f"Aktualisierung fehlgeschlagen: {exc}")
+            logger.warning("Could not refresh portal storage: %s", exc)
+            return
+        self.workstations, self.current_user, self.reservations = loaded
+        self._pending_save = False
+        self._poll_agent_status()
         self.session_events = self.store.load_events()
         self.directory_accounts = self.store.load_directory_accounts()
         self.theme_mode = self.store.theme_mode
         self.dark_mode = self._resolve_dark_mode()
         self._saved_workstations = deepcopy(self.workstations)
         self._saved_user = deepcopy(self.current_user)
-        self.calendar_view.reservations = self.reservations
+        self.calendar_view.reservations = list(self.reservations)
         self.session_log_view.set_events(self.session_events)
         self.admin_view.set_storage_directory(str(self.store.directory))
         self._update_storage_status("Gemeinsame Änderungen übernommen")
@@ -1077,14 +1327,23 @@ class MainWindow(QMainWindow):
         self._update_user_header()
         self._apply_theme()
         self._refresh_workstation_views()
+        if self.detail_view.workstation is not None:
+            selected_id = self.detail_view.workstation.workstation_id
+            selected = next((ws for ws in self.workstations if ws.workstation_id == selected_id), None)
+            if selected is not None:
+                self.detail_view.set_workstation(selected)
+            else:
+                self._show_machines()
 
     def _sync_shared_store(self) -> None:
         """Reload an updated OneDrive/SharePoint mirror after another portal saves."""
+        if self._pending_save:
+            return
         if not self.store.has_external_changes():
             return
         self.on_refresh()
 
-    def _persist(self) -> None:
+    def _persist(self) -> bool:
         try:
             self.store.save(
                 self._saved_workstations,
@@ -1093,14 +1352,19 @@ class MainWindow(QMainWindow):
                 theme_mode=self.theme_mode,
             )
             self._update_storage_status("Gemeinsamer Stand gespeichert")
+            self._pending_save = False
+            return True
         except StoreConflictError as exc:
             QMessageBox.warning(
                 self,
                 "Paralleländerung erkannt",
                 f"Die gemeinsame SharePoint-Konfiguration wurde auf einem anderen Portal geändert.\n\n{exc}",
             )
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Speichern fehlgeschlagen", f"Die lokalen Testdaten konnten nicht gespeichert werden: {exc}")
+        self._update_storage_status("Änderungen NICHT gespeichert – bitte erneut speichern oder aktualisieren")
+        self._pending_save = True
+        return False
 
     def _update_storage_status(self, action: str) -> None:
         """Expose the shared storage state without claiming OneDrive server delivery."""
@@ -1248,7 +1512,8 @@ class MainWindow(QMainWindow):
             QFrame#filterBar { background: #eef3f6; border: 1px solid #cad6de; border-radius: 8px; }
             QTableWidget#calendarTable { gridline-color: #ffffff; }
             QTableWidget#calendarTable::item { padding: 6px; }
-            QTableView, QTableWidget { background: #ffffff; alternate-background-color: #f8fafb; border: 1px solid #d6dfe5; border-radius: 8px; gridline-color: #e6ebee; selection-background-color: #dceaf3; selection-color: #1e3545; }
+            QTableView, QTableWidget { background: #ffffff; color: #17212b; alternate-background-color: #f8fafb; border: 1px solid #d6dfe5; border-radius: 8px; gridline-color: #e6ebee; selection-background-color: #dceaf3; selection-color: #1e3545; }
+            QTableCornerButton::section { background: #e8eff3; border: 1px solid #cbd7df; }
             QHeaderView::section { background: #e8eff3; color: #365466; border: none; border-bottom: 1px solid #cbd7df; padding: 9px 10px; font-weight: 600; }
             QDialog { background: #f7f9fa; }
             QDialog QLabel, QDialog QCheckBox, QDialog QRadioButton, QDialog QGroupBox {
@@ -1346,6 +1611,7 @@ class MainWindow(QMainWindow):
             QFrame#addWorkstationCard:hover { background: #213743; border-color: #8eb8cf; }
             QLabel#addCardPlus, QLabel#addCardTitle { color: #d9ebf5; }
             QTableView, QTableWidget { background: #1a2a35; color: #f0f5f8; alternate-background-color: #203440; border-color: #456172; gridline-color: #35505f; selection-background-color: #3a6884; selection-color: #ffffff; }
+            QTableCornerButton::section { background: #263b48; border: 1px solid #456172; }
             QDialog QListWidget { background: #1a2a35; color: #f0f5f8; border: 1px solid #456172; border-radius: 7px; selection-background-color: #3a6884; selection-color: #ffffff; }
             QDialog QListWidget::item { padding: 6px 9px; }
             QDialog QListWidget::item:hover { background: #263f4e; }

@@ -33,6 +33,7 @@ from portal_app.ui.widgets.management_pages import AdministrationWidget, Setting
 from portal_app.ui.widgets.reservation_calendar import ReservationCalendarWidget, ReservationDialog
 from portal_app.ui.widgets.session_log import event_to_export_row
 from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
+from portal_app.ui.widgets.workstation_cards import WorkstationCard
 from portal_app.ui.widgets.workstation_dialog import WorkstationDialog
 from portal_app.ui.widgets.machine_registration_wizard import MachineRegistrationWizard
 from portal_app.ui.widgets.rdp_access_dialog import RDPAccessDialog
@@ -384,6 +385,8 @@ def test_windows_admin_authorization_matches_domain_group(monkeypatch):
 
 def test_test_admin_password_can_be_disabled_for_production(monkeypatch):
     monkeypatch.delenv("RDP_PORTAL_ALLOW_TEST_ADMIN_PASSWORD", raising=False)
+    assert not is_test_password_fallback_allowed()
+    monkeypatch.setenv("RDP_PORTAL_ALLOW_TEST_ADMIN_PASSWORD", "true")
     assert is_test_password_fallback_allowed()
     monkeypatch.setenv("RDP_PORTAL_ALLOW_TEST_ADMIN_PASSWORD", "false")
     assert not is_test_password_fallback_allowed()
@@ -498,13 +501,14 @@ def test_dark_theme_has_high_contrast_palette():
     assert "QComboBox QAbstractItemView" in style
 
 
-def test_main_window_starts_with_two_machines_and_persists_theme(tmp_path, monkeypatch, qtbot):
+def test_main_window_starts_without_demo_targets_and_persists_theme(tmp_path, monkeypatch, qtbot):
     store = LocalStore(tmp_path / "state.json")
     monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
     window = MainWindow()
     qtbot.addWidget(window)
 
-    assert [workstation.site for workstation in window.workstations] == ["München", "Ettlingen"]
+    assert window.workstations == []
+    assert json.loads(store.path.read_text(encoding="utf-8"))["workstations"] == []
     window._set_dark_mode(True)
 
     assert window.dark_mode
@@ -843,7 +847,8 @@ def test_detail_warns_for_disconnected_session(qtbot):
 
     detail.set_workstation(workstation)
 
-    assert not detail.connect_btn.isEnabled()
+    assert detail.connect_btn.isEnabled()
+    assert detail.connect_btn.text() == "Sitzung öffnen …"
     assert not detail.session_warning.isHidden()
     assert "Getrennt" in detail.session_warning_text.text()
 
@@ -891,7 +896,7 @@ def test_workstation_agent_publishes_real_session_shape(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_STATUS_DIR", str(tmp_path))
 
     class FakeMonitor:
-        def get_rdp_sessions(self):
+        def get_user_sessions(self):
             return [
                 WTSSessionInfo(
                     session_id=23,
@@ -910,7 +915,7 @@ def test_workstation_agent_publishes_real_session_shape(tmp_path, monkeypatch):
     config = AgentConfig(
         workstation_id="WS-AGENT-TEST",
         hostname="agent-test",
-        log_file="",
+        log_file=str(tmp_path / "agent.log"),
         publish_local_status=True,
     )
     agent = WorkstationAgent(config)
@@ -976,6 +981,26 @@ def test_free_ping_rejects_command_options(qtbot):
 
     assert tool.process is None
     assert tool.result.text() == "Ungültiges Ziel"
+
+
+def test_dashboard_labels_agent_status_separately_from_network_reachability(qtbot):
+    workstation = create_test_workstation()
+    workstation.agent_status = AgentStatus.OFFLINE
+    workstation.agent_last_seen_utc = None
+    card = WorkstationCard(workstation, MockUser.create_user())
+    qtbot.addWidget(card)
+
+    assert card._status_text() == "Agent: Offline · Bereit"
+    assert card._session_text() == "Agentstatus fehlt · Ping = Netzwerk"
+
+
+def test_settings_explain_missing_or_unmatched_agent_status(qtbot):
+    settings = SettingsWidget(MockUser.create_user())
+    qtbot.addWidget(settings)
+    settings.set_agent_bridge_status(0, 0, r"C:\\Pilot\\agent-status")
+    assert settings.agent_status.text() == "Keine Agent-Statusdatei gefunden"
+    settings.set_agent_bridge_status(0, 1, r"C:\\Pilot\\agent-status")
+    assert "keiner Maschine zugeordnet" in settings.agent_status.text()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="ipconfig is a Windows system program")

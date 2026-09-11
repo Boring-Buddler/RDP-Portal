@@ -21,7 +21,6 @@ from threading import Lock
 from collections import deque
 
 from shared.schemas import SessionEventSchema
-from shared.enums import EventType, EventResult, EventSource
 
 logger = logging.getLogger(__name__)
 
@@ -542,16 +541,10 @@ class TransmissionHandler:
                             logger.warning(f"Event transmission failed: {item.item_id}")
                     
                     elif item.item_type == "command_result":
-                        # Update command status
-                        command_id = item.data.get("command_id")
-                        result_message = item.data.get("result_message", "")
-                        status = item.data.get("success", False)
-                        
-                        # For now, just mark as transmitted
-                        # The actual command status update would go here
-                        self.outbox.mark_item_transmitted(item.item_id)
-                        successful += 1
-                        logger.debug(f"Command result transmitted: {item.item_id}")
+                        self.outbox.mark_item_failed(
+                            item.item_id, "Command result transmission is not implemented"
+                        )
+                        failed += 1
                     
                     elif item.item_type == "status_update":
                         # Update workstation status
