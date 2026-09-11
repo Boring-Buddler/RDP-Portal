@@ -4,7 +4,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from deployment.agent_installer import bundle_paths, installer_command
+from deployment.agent_installer import (
+    bundle_payload,
+    normalize_status_directory,
+    validate_workstation_id,
+)
 from portal_app.models.user import MockUser
 from portal_app.models.workstation import Workstation
 from portal_app.rdp.generator import RDPFileGenerator
@@ -21,7 +25,7 @@ def account_window(tmp_path, monkeypatch, qtbot):
                      login_accounts=["TARGET\\alice"], trust_unverified_server=True)
     store.save([ws], MockUser.create_user(), [])
     monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
-    window = MainWindow()
+    window = MainWindow(automatic_live_status=False)
     qtbot.addWidget(window)
     return window
 
@@ -100,15 +104,30 @@ def test_setup_bundle_check_and_paths_with_spaces(tmp_path):
     payload = root / "payload"
     payload.mkdir(parents=True)
     (payload / "Kirschke-RDP-Agent.exe").write_bytes(b"test payload")
-    script = root / "Install-Agent.ps1"
-    script.write_text("# fixture", encoding="utf-8")
-    assert bundle_paths(root) == (script, payload)
-    command = installer_command(script, payload)
-    assert command[command.index("-File") + 1] == str(script)
-    assert command[command.index("-SourceDirectory") + 1] == str(payload)
-    assert "-NoUi" not in command
+    assert bundle_payload(root) == payload
 
 
 def test_setup_rejects_missing_payload(tmp_path):
     with pytest.raises(FileNotFoundError):
-        bundle_paths(tmp_path)
+        bundle_payload(tmp_path)
+
+
+@pytest.mark.parametrize("value", ["WS-004", "NB12KI", "host.name_2"])
+def test_native_setup_accepts_safe_workstation_ids(value):
+    assert validate_workstation_id(value) == value
+
+
+@pytest.mark.parametrize("value", ["", "-bad", "bad name", "bad/arg", "äöü"])
+def test_native_setup_rejects_unsafe_workstation_ids(value):
+    with pytest.raises(ValueError):
+        validate_workstation_id(value)
+
+
+def test_native_setup_requires_absolute_status_path():
+    with pytest.raises(ValueError):
+        normalize_status_directory("status")
+
+
+def test_setup_code_does_not_launch_powershell():
+    source = Path(__file__).parents[1] / "deployment" / "agent_installer.py"
+    assert "powershell.exe" not in source.read_text(encoding="utf-8").casefold()

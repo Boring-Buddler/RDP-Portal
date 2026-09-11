@@ -77,6 +77,19 @@ def test_local_preferences_are_not_written_to_shared_portal_state(tmp_path):
     assert "theme_mode" not in shared_data
     assert preferences["theme_mode"] == "dark"
     assert preferences["user"]["upn"] == user.upn
+    assert preferences["status_refresh_interval"] == 5
+
+
+def test_status_refresh_interval_is_local_and_bounded(tmp_path):
+    store = LocalStore(tmp_path / "portal-state.json")
+    user = MockUser.create_user()
+    store.save([create_test_workstation()], user, [])
+    assert store.save_status_refresh_interval(12, user) == 12
+    reloaded = LocalStore(store.path)
+    reloaded.load([], user)
+    assert reloaded.status_refresh_interval == 12
+    with pytest.raises(ValueError):
+        store.save_status_refresh_interval(1, user)
 
 
 def test_shared_state_merges_independent_machine_changes(tmp_path):
@@ -246,7 +259,8 @@ def test_ad_group_sync_uses_current_windows_context_without_passwords(monkeypatc
     assert result.success
     assert result.added == ["becker"]
     assert result.removed == ["altuser"]
-    assert captured["args"][:4] == ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy"]
+    assert captured["args"][:3] == ["powershell.exe", "-NoProfile", "-NonInteractive"]
+    assert "-ExecutionPolicy" not in captured["args"]
     assert "Import-Module ActiveDirectory" in captured["args"][-1]
     assert "password" not in captured["args"][-1].casefold()
 
@@ -341,6 +355,7 @@ def test_initial_user_uses_whoami_for_default(monkeypatch):
     assert user.display_name == "alex"
     assert user.upn == "KIRSCHKE\\alex"
     assert user.get_rdp_username() == "KIRSCHKE\\alex"
+    assert user.windows_identity == "KIRSCHKE\\alex"
 
 
 def test_initial_workstations_are_munich_and_ettlingen():
@@ -359,6 +374,7 @@ def test_admin_actions_include_disconnect_and_delete(qtbot):
 
     assert admin.force_disconnect.text() == "Trennen"
     assert admin.force_disconnect.isEnabled()
+    assert not admin.force_logoff.isEnabled()
     assert admin.delete_workstation.isEnabled()
     assert admin.rdp_access.isEnabled()
     admin.set_directory_mode("local")
@@ -504,10 +520,11 @@ def test_dark_theme_has_high_contrast_palette():
 def test_main_window_starts_without_demo_targets_and_persists_theme(tmp_path, monkeypatch, qtbot):
     store = LocalStore(tmp_path / "state.json")
     monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
-    window = MainWindow()
+    window = MainWindow(automatic_live_status=False)
     qtbot.addWidget(window)
 
     assert window.workstations == []
+    assert not hasattr(window, "rdp_warning_banner")
     assert json.loads(store.path.read_text(encoding="utf-8"))["workstations"] == []
     window._set_dark_mode(True)
 

@@ -22,6 +22,7 @@ from portal_app.ui.design import Colors, Typography
 from portal_app.ui.main_window import MainWindow
 from portal_app.ui.icons import kirschke_window_icon
 from portal_app.models.user import MockUser
+from portal_app.version import PORTAL_VERSION
 
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ class RDPPortalApp(QApplication):
         
         # Set application metadata
         self.setApplicationName("Kirschke RDP Workstation Portal")
-        self.setApplicationVersion("0.1.0")
+        self.setApplicationVersion(PORTAL_VERSION)
         self.setOrganizationName("Prof. Kirschke")
         self.setOrganizationDomain("prof-kirschke.de")
         self.portal_icon = kirschke_window_icon()
@@ -108,6 +109,10 @@ class RDPPortalApp(QApplication):
 
 def main():
     """Main entry point for the application."""
+    if len(sys.argv) >= 2 and sys.argv[1] == "--session-logoff-helper":
+        from portal_app.session_logoff_helper import main as helper_main
+
+        raise SystemExit(helper_main(sys.argv[2:]))
     configure_logging()
     # Validate environment
     try:

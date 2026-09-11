@@ -18,7 +18,7 @@ class LiveStatusWorker(QThread):
             self.result.emit(snapshot, elapsed)
         except Exception as exc:
             code = getattr(exc, "winerror", None) or type(exc).__name__
-            self.failure.emit(f"Live-Abfrage fehlgeschlagen ({code}). Agent 1.2.0 muss auf dem Zielrechner laufen. "
+            self.failure.emit(f"Live-Abfrage fehlgeschlagen ({code}). Agent 1.2.1 muss auf dem Zielrechner laufen. "
                 "Die Windows-Netzwerkverbindung muss mit dessen lokalem Lesekonto PortalLeser bestehen. "
                 "Prüfe die Netzwerkfreigabe im Konfigurator. Der bisherige Status wurde nicht als aktuell bestätigt.")
 

@@ -8,7 +8,6 @@ from typing import Mapping
 
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -20,6 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 
 from portal_app.models.workstation import Workstation
 from shared.enums import ConnectionTargetMode

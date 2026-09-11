@@ -1,6 +1,240 @@
 # Codeprüfung und erster Testbetrieb
 
-Stand: 10.09.2026, Portal 0.2.4 / Agent 1.2.0.
+Stand: 11.09.2026, Portal 0.2.12 / Agent 1.3.0.
+
+## Nachtrag: zielseitig autorisierte Agent-Abmeldung
+
+Portal 0.2.12 und Agent 1.3.0 ersetzen den auf Entra-/Arbeitsgruppenrechnern mit
+Windows-Fehler 5 abgewiesenen Remote-WTS-Aufruf. Der SYSTEM-Agent prüft lokal die
+exakte Sitzung und führt die Abmeldung lokal aus. Eigentümeranfragen sind zusätzlich
+an den vom Agenten beobachteten RDP-Client gebunden. Administrative Anforderungen
+werden nur akzeptiert, wenn Windows die Pipe-Verbindung auf dem Ziel als Mitglied
+der lokalen Administratorengruppe authentifiziert. Zeitfenster und Vorgangs-ID
+schützen gegen Wiederholung; das Ziel-Admin-Kennwort wird nicht gespeichert.
+
+## Nachtrag: natives Agent-Setup ohne PowerShell-Abhängigkeit
+
+Agent 1.2.2 ersetzt im Ein-Datei-Setup den bisherigen internen Aufruf von
+`Install-Agent.ps1` durch eine native Python-/Windows-Implementierung. Das Setup
+prüft weiterhin Administratorrechte und Statusordner, kopiert die eingebetteten
+Agentdateien, schützt `%ProgramData%\KirschkeRDPAgent`, schreibt die Konfiguration,
+registriert die SYSTEM-Aufgabe über die Windows-Aufgabenplanung und bestätigt eine
+frische Statusdatei. Die Deinstallation wird ebenfalls von der installierten
+Setup-EXE ausgeführt.
+
+Für eine neue Maschine erstellt dasselbe Setup nun auch das lokale Konto
+`PortalLeser`, ein vom Administrator zweimal eingegebenes, nicht ablaufendes
+Kennwort sowie die Freigabe `RDP-Status`. Auf NTFS- und Freigabeebene erhält das
+Konto nur Lesen; SYSTEM und lokale Administratoren erhalten Vollzugriff. Das
+Kennwort wird nur im Arbeitsspeicher an die native Windows-Benutzerverwaltung
+übergeben und nicht protokolliert, gespeichert oder in einer Befehlszeile verwendet.
+Vollständig bestehende Objekte werden unverändert wiederverwendet; Teilbestände und
+abweichende Freigabeziele führen zum sicheren Abbruch.
+
+Dadurch hängt die normale Installation nicht mehr von der PowerShell-
+Ausführungsrichtlinie ab. Das Setup setzt keine Richtlinie und verwendet weder
+`ExecutionPolicy Bypass` noch einen anderen Skriptumgehungsweg. Eine Windows-
+Anwendungssteuerung kann die unsignierte EXE unabhängig davon weiterhin sperren;
+das erfordert eine reguläre IT-Freigabe. Statuskanal und Rechte von `PortalLeser`
+bleiben unverändert; es wurden keine echten Benutzer abgemeldet.
+
+Der vollständige Prüflauf umfasst 216 bestandene Tests. Agent und Ein-Datei-Setup
+wurden erfolgreich gebaut; die Agent-EXE 1.2.2 beendete den read-only Aufruf
+`--status` mit Exitcode 0. Die finale Setup-EXE bestand `--check` mit Exitcode 0 und
+öffnete ihren echten Installationsdialog; der Testdialog wurde geschlossen, ohne
+**Jetzt installieren** auszulösen. Ein früherer Zwischenbuild war zunächst von der
+Windows-Anwendungssteuerung blockiert. Die Richtlinie wurde nicht verändert.
+Zusätzlich bestätigte die Archivprüfung: Agent-Payload vorhanden, kein eingebettetes
+`Install-Agent.ps1`. Die Setup-Oberfläche wurde auf Lesbarkeit, Abstände und
+Schaltflächenzustände geprüft. Build-Erfolg und tatsächlicher EXE-Start bleiben
+getrennt ausgewiesen.
+
+## Nachtrag: getrennte RDP- und Agentstatusziele
+
+Portal 0.2.11 leitet das Ziel der read-only Liveabfrage aus dem Serveranteil des
+expliziten maschinenspezifischen UNC-Fallbacks ab. Ein RDP-Profil kann dadurch eine
+funktionierende IP-Adresse verwenden, während Named Pipe und Statusbestätigung dieselbe
+Windows-SMB-Identität wie `\\RECHNER\RDP-Status` verwenden. Der native WTS-Aufruf
+bleibt auf das RDP-Ziel beschränkt. Tests sichern ab, dass Statusprüfungen vor und nach
+der Abmeldung den SMB-Server verwenden, der Hilfsprozess aber die RDP-IP erhält. Es
+wurde keine reale Sitzung abgemeldet. Der zuvor entfernte globale RDP-Hinweis ist im
+0.2.11-Paket nicht mehr enthalten.
+
+## Nachtrag: WTS-Handle im Abmelde-Hilfsprozess
+
+Der gemeldete Prozesscode `3221226356` entspricht `0xC0000374`
+(`STATUS_HEAP_CORRUPTION`). `win32ts.WTSOpenServer` liefert einen selbstverwalteten
+PyWin32-Handle. Der bisherige direkte Aufruf von `win32ts.WTSCloseServer(handle)`
+schloss zwar den nativen Handle, markierte den Python-Wrapper aber nicht als geschlossen;
+beim Zerstören des Wrappers konnte derselbe Handle erneut geschlossen werden. Der
+Hilfsprozess verwendet jetzt `handle.Close()`, sodass PyWin32 den Handle schließt und
+seinen internen Wert gleichzeitig löscht. Regressionstests decken den Erfolgs- und
+Fehlerpfad ab, ohne eine reale Sitzung abzumelden. Der `STATUS/1`-Kanal und die Rechte
+von `PortalLeser` bleiben unverändert.
+
+Das gelbe globale Banner für aktive oder geschlossene lokale RDP-Fenster wurde auf
+Wunsch entfernt. Beendete `mstsc`-Prozesse werden weiterhin als lokales Ereignis
+erfasst, beeinflussen die Oberfläche aber nicht mehr. Die sichtbare Belegung stammt
+weiterhin aus dem Live-Agentstatus beziehungsweise dem Datei-Fallback.
+
+## Nachtrag: maschinenspezifische Fallbacks und Statuspriorität
+
+Portal 0.2.9 speichert den Datei-Fallback clientlokal pro Maschinen-ID. Die
+Eingabe befindet sich in den jeweiligen Maschinendetails und verbindet vorhandene
+SMB-Freigaben weiterhin ausschließlich mit dem Lesekonto. Ein früherer globaler
+Ordner wird bei einem Update als kompatibler Alt-Standard verwendet, bis eine
+Maschine einen eigenen Pfad erhält. Unterschiedliche Fallbackordner werden getrennt
+gelesen; eine Datei kann nur innerhalb des Ordners ihrer Maschine zugeordnet werden.
+
+Eine erfolgreiche Liveantwort bleibt auch bei fehlender oder nicht lesbarer
+Fallbackfreigabe maßgeblich. Ohne bestätigten Live- oder Dateistatus bleibt die
+Karte bewusst grau; Ping allein bestätigt keinen Agenten. Farbige Karten verwenden
+einen 4-Pixel-Rahmen, graue einen 2-Pixel-Rahmen. Das Dashboard sortiert grüne,
+freie Maschinen vor blauen, belegten Maschinen; Warn-/Fehlerzustände folgen und
+unbestätigte graue Karten stehen zuletzt. Das Qt-gezeichnete Rechnersymbol wird bei
+Statusänderungen nun ebenfalls neu eingefärbt.
+
+Der Agent bleibt bei 1.2.1. Der aktualisierte Agent-Installer verwendet als Vorgabe
+den lokalen SYSTEM-Pfad `C:\RDP-Portal-Daten\agenten-status` und erklärt den
+separaten Portalpfad `\\ZIELRECHNER\RDP-Status`. Installer, Starter und AD-Helfer
+fordern keine `ExecutionPolicy Bypass` mehr an. Eine Richtlinienblockade wird nicht
+umgangen und muss organisatorisch freigegeben werden. Der Statuskanal bleibt auf
+`STATUS/1` beschränkt; `PortalLeser` erhält keine Abmeldeberechtigung. Kein echter
+Benutzer wurde für die Prüfung abgemeldet.
+
+Der vollständige Prüflauf umfasst 197 bestandene Tests; Syntax- und Ruff-Prüfung
+sind ebenfalls fehlerfrei.
+
+Portal-, Agent- und beide Setup-Builds wurden erfolgreich erzeugt. Die eingebauten
+`--check`-Prüfungen beider Setup-EXE-Dateien endeten mit Exitcode 0. Der tatsächliche
+Start der finalen Portal-EXE 0.2.11 war erfolgreich; sie lief im Kurztest weiter und
+wurde danach regulär als Testprozess beendet. Der Statusaufruf der unveränderten
+Agent-EXE wurde auf diesem Entwicklungsrechner dagegen von der Windows-
+Anwendungssteuerungsrichtlinie blockiert. Das ist getrennt vom Build-Erfolg zu
+bewerten. Die Richtlinie wurde weder verändert noch umgangen; für blockierte Dateien
+ist weiterhin eine reguläre Freigabe/Signierung nötig. Der Python-/Qt-Stand wurde
+separat gerendert und visuell geprüft.
+
+## Nachtrag: isolierter WTS-Aufruf und Erfolgsbestätigung
+
+Nach dem Vor-Ort-Bericht, dass beim Abmeldeversuch die Portaloberfläche beendet
+wurde, die Zielsession aber bestehen blieb, führt Portal 0.2.8 den nativen
+`WTSLogoffSession`-Aufruf nicht mehr im Qt-Prozess aus. Ein kurzlebiger Hilfsprozess
+mit demselben Windows-Token führt ausschließlich den bereits zweimal per Live-Status
+geprüften Aufruf aus und wartet auf dessen Ende. Ein nativer Fehler bleibt dadurch
+vom Portalprozess isoliert; die Windows-Berechtigungsentscheidung ändert sich nicht.
+
+Nach einem Exitcode 0 liest das Portal `STATUS/1` nochmals frisch. Nur wenn die
+konkret geprüfte Kombination aus Sitzungsnummer, Benutzer und Anmeldezeit nicht
+mehr aktiv ist, wird Erfolg gemeldet. Andernfalls bleibt die Belegung sichtbar und
+der Fehler sagt ausdrücklich, dass Windows den Aufruf beendet, der Agent dieselbe
+Sitzung aber weiterhin gemeldet hat. Der Statuskanal akzeptiert weiterhin nur
+Statusanfragen; kein Agent- oder SMB-Abmeldebefehl wurde hinzugefügt. Automatisierte
+Tests verwenden ausschließlich Attrappen und melden keinen echten Benutzer ab.
+Der vollständige Prüflauf umfasst nun 190 bestandene Tests.
+
+## Nachtrag: eindeutige Sitzung und Zielrechner ohne Intune
+
+Portal 0.2.7 überspringt beim Wiederverbinden den Kontodialog, wenn der Agent genau
+ein aktives Sitzungskonto meldet. Der gemeldete Name wird nur als RDP-Benutzerhinweis
+verwendet; die Windows-Authentifizierung und Berechtigungsprüfung bleiben unverändert.
+Bei mehreren Sitzungskonten bleibt die explizite Auswahl erhalten. Regressionstests
+decken beide Zweige ab.
+
+Die Kurzanleitung trennt nun ausdrücklich Intune-Verwaltung, Entra-Gerätebeitritt,
+Portal-Inventar, Agent-Status und Windows-RDP-Anmeldung. Ein Zielrechner wird manuell
+im Portal angelegt. Für weitere Arbeitsgruppen-/Entra-Rechner dokumentiert sie den
+erforderlichen Parameter `-ExpectedComputerName` bei der lokalen Statusfreigabe.
+Agent und Statuskonto erzeugen keine RDP-Benutzer und erteilen keine
+Remoteanmelderechte. Agent 1.2.1 bleibt unverändert.
+
+## Nachtrag: eigene getrennte Entra-Sitzung und Live-Vorprüfung
+
+Portal 0.2.6 trennt die beim Programmstart erkannte Windows-Prozessidentität vom
+frei wählbaren RDP-Anmeldekonto. Dadurch wird eine getrennte eigene Sitzung wie
+`AzureAD\Benutzer` auch dann als eigene Sitzung dargestellt, wenn im Dropdown
+„Standard · Windows-Anmeldung“ steht oder für RDP ein abweichender Entra-UPN
+verwendet wird. Die Karte zeigt dann wie vorgesehen **Wiederverbinden** und den
+roten Knopf **Abmelden**. Eine Dropdown-Auswahl allein erklärt eine fremde Sitzung
+weiterhin nicht zur eigenen; vor der Ausführung bleibt die native SID-Prüfung
+maßgeblich.
+
+Der Vor-Ort-Test zeigte außerdem, dass Remote-Ettlingen die zusätzliche direkte
+WTS-Informationsabfrage mit Windows-Fehler 5 verweigert, während der authentifizierte
+Agent-Livestatus funktioniert. Die Sicherheitsprüfung liest Benutzer,
+Sitzungsnummer und Anmeldezeit deshalb jetzt zweimal frisch über den bestehenden
+reinen `STATUS/1`-Kanal. Der Kanal erhält weiterhin keinen Abmeldebefehl. Erst danach
+ruft das Portal separat `WTSLogoffSession` auf; Windows entscheidet mit den Rechten
+des Portalprozesses über Annahme oder Ablehnung. Der Status wird nicht vorzeitig
+auf frei gesetzt. Fehler unterscheiden nun fehlenden Livestatus, anderen Agenten,
+verschwundene Sitzung, geänderten Benutzer und geänderte Anmeldezeit.
+
+187 Tests bestanden. Kein echter Benutzer wurde während der automatisierten oder
+manuellen Diagnose abgemeldet.
+
+## Nachtrag: automatische Statuspflege und getrennte Abmeldungen
+
+Das Maschinendashboard startet beim Öffnen sofort eine direkte Agentabfrage und
+wiederholt sie im lokal gespeicherten Intervall. Unter **Einstellungen →
+Statusaktualisierung** sind 2 bis 60 Sekunden einstellbar; der Standard beträgt
+5 Sekunden. Ein eigener Threadpool begrenzt die Parallelität auf vier Zielrechner.
+Pro Rechner ist höchstens eine Anfrage gleichzeitig aktiv. Fehler eines Rechners
+halten andere Abfragen nicht auf; nach Fehlern wird dessen Wiederholung schrittweise
+bis höchstens 60 Sekunden verzögert. Die vorhandenen Pipe- und I/O-Zeitgrenzen
+bleiben wirksam.
+
+Karten zeigen Statusquelle und Alter, zum Beispiel „Live · vor 3 Sekunden“ oder
+„Datei-Fallback · vor 45 Sekunden“. Scheitert Live, wird eine neuere Agent-JSON
+verwendet; eine ältere Datei überschreibt keinen neueren Live-Stand. Solange der
+letzte Live-Stand neuer ist, wird er ausdrücklich als nicht erreichbar/veraltet
+gekennzeichnet und nicht als aktuelle Erreichbarkeit gewertet. Die nächste
+erfolgreiche Direktabfrage schaltet automatisch auf Live zurück. Statusänderungen
+werden in vorhandene Karten übernommen, sodass Scrollposition, Kontenauswahl und
+geöffnete Auswahlmenüs erhalten bleiben.
+
+Die Hauptaktionen unterscheiden freie Rechner, eigene verbundene Sitzungen,
+eigene getrennte Sitzungen sowie fremde Sitzungen und Reservierungen. Die eigene
+rote **Abmelden**-Aktion prüft den Windows-Kontonamen, die Sitzungsnummer, den
+Anmeldezeitpunkt und die SID frisch und unmittelbar vor `WTSLogoffSession` erneut.
+Danach wird sofort neu abgefragt; erst ein bestätigtes Sitzungsende macht die
+Maschine frei. Bei einer getrennten eigenen Sitzung bleiben **Wiederverbinden**
+und **Abmelden** nebeneinander verfügbar. Fremde Belegungen bieten diese normale
+Aktion nicht an.
+
+Im freigeschalteten Adminbereich gibt es davon getrennt **Notfall-Abmeldung …**.
+Sie prüft Benutzer, Sitzungsnummer und Anmeldezeit ebenfalls zweimal und übergibt
+die Anforderung direkt an Windows. Maßgeblich sind die tatsächlichen Windows-Rechte
+des Portalprozesses auf dem Zielrechner. Das Lesekonto `PortalLeser` erhält weder
+Administrator- noch Abmelderechte; der Agentkanal akzeptiert weiterhin ausschließlich
+`STATUS/1` und keine administrativen Befehle. Gerade beim dauerhaft laufenden,
+Entra-joined und nicht AD-domain-joined Ziel Remote-Ettlingen ist die Autorisierung
+vor Ort zu prüfen.
+
+Die Oberfläche verwendet die Windows-/Qt-Systemschrift und skalierbare Punktgrößen.
+Fließtext, Eingaben und Schaltflächen wurden vereinheitlicht. Geschlossene
+Auswahllisten verändern sich beim Mausrad nicht und geben das Scrollen an die Seite
+weiter; nach bewusstem Öffnen funktionieren Mausrad und Tastatur normal.
+
+186 Tests bestanden. Hinzu kamen Prüfungen für Intervallgrenzen und Persistenz,
+parallele/nicht überlappende Liveabfragen, Rückstau nach Fehlern, Fallback und
+automatische Rückkehr, veraltete Quellen, Kartenaktionen, verweigerte Abmeldungen,
+Admin-WTS-Neuprüfung sowie geschlossenes/geöffnetes Dropdown-Verhalten. Es wurde
+kein echter Benutzer abgemeldet. Karten, Details, Einstellungen und Adminansicht
+wurden in Hell/Dunkel bei 100 %, 125 % und 150 % Skalierung nativ gerendert und
+auf Lesbarkeit geprüft.
+
+Portal- und Agent-Installer wurden erfolgreich mit PyInstaller gebaut. Die lokalen
+PowerShell-Buildwrapper waren durch die vorhandene Ausführungsrichtlinie gesperrt;
+die Richtlinie wurde nicht verändert oder umgangen. Stattdessen wurden die in den
+Skripten dokumentierten PyInstaller-Aufrufe direkt ausgeführt. Build-Erfolg und
+Programmstart wurden getrennt geprüft: Die Portal-EXE 0.2.6 startete und blieb bis
+zum kontrollierten Ende der Testinstanz aktiv. Die Agent-EXE 1.2.1 beendete
+`--status` mit Exitcode 0, und beide Setup-Selbstprüfungen `--check` endeten beim
+finalen Build mit Exitcode 0. Ein vorheriger Start des Portal-Setups wurde auf
+demselben Rechner noch von der lokalen Anwendungssteuerungsrichtlinie blockiert
+(bekanntes Fehlerbild 4551). Die Richtlinie wurde weder verändert noch umgangen;
+die unterschiedliche Richtlinienentscheidung ist daher keine Rolloutgarantie.
+Installation und Notfall-Abmeldung auf Remote-Ettlingen bleiben bewusste Vor-Ort-Tests.
 
 ## Nachtrag: Reservierung, Sitzungsauswahl und Live-Abfrage
 
@@ -290,9 +524,10 @@ abgeglichen, insbesondere `screen mode id`, `audiomode`, `drivestoredirect` und
    Es schützt die Oberfläche im jeweiligen Benutzerprofil, nicht die gemeinsamen
    JSON-Dateien. AD nur nach separater Einrichtung und Prüfung aktivieren.
 6. **Agent optional installieren:** auf dem Ziel-PC `Kirschke-RDP-Agent-Setup.exe`
-   starten. Exakte Maschinen-ID und denselben synchronisierten Statusordner wie
-   im Portal unter **Windows-Agent** angeben.
-   Nach Installation und nach erneuter Anmeldung eine frische Statusdatei prüfen.
+   starten. Exakte Maschinen-ID und den lokalen Ordner
+   `C:\RDP-Portal-Daten\agenten-status` angeben. Danach in den Details dieser
+   Portalmaschine deren `\\ZIELRECHNER\RDP-Status`-Fallback verbinden.
+   Nach Installation und nach einem Neustart eine frische Statusdatei prüfen.
 7. **Vorprüfung ausführen:** `python -m portal_app.preflight --storage "C:\Pilot\RDP-Portal" --json`.
    Exitcode 1 bedeutet einen gefundenen Fehler. Warnungen erfordern die folgenden
    praktischen Checks; Exitcode 0 ist keine vollständige Betriebsfreigabe.

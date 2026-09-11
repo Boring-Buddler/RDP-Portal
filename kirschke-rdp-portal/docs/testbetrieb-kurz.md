@@ -13,10 +13,204 @@ Das Testpaket vollständig in einen neuen Ordner entpacken. Das alte Portal schl
 und im neuen Ordner die Datei `Client\Kirschke-RDP-Portal.exe` starten.
 Den gesamten Client-Ordner zusammenlassen. Python ist auf dem Test-PC nicht erforderlich.
 Das vorhandene Inventar bleibt erhalten.
-Im Kopf des geöffneten Portals muss **TEST 0.2.4** stehen. Falls dort eine ältere
+Im Kopf des geöffneten Portals muss **TEST 0.2.12** stehen. Falls dort eine ältere
 Version steht, die Verknüpfung auf die EXE im frisch entpackten Client-Ordner ändern.
 
 Aus dem Quellcode: im Projektordner `python3.13 -m portal_app.app` ausführen.
+
+## Update 0.2.12 / Agent 1.3.0: Abmeldung auf dem Ziel-Agenten
+
+Die Abmeldung wird nicht mehr durch eine remote WTS-Anforderung des Portal-PCs
+ausgeführt. Stattdessen prüft der Agent die aktuelle Sitzung lokal und meldet sie als
+SYSTEM ab. Bei einer normalen Abmeldung müssen Sitzungskonto, Sitzungsnummer,
+Anmeldezeit und der vom Ziel gemeldete RDP-Clientrechner zur Anfrage passen.
+
+Die administrative Notfall-Abmeldung verlangt zusätzlich ein echtes
+Windows-Administratorkonto des Zielrechners. Das Portal verwendet die eingegebenen
+Zugangsdaten nur im Hintergrundthread für diese eine Verbindung und speichert das
+Kennwort nicht. Portal-Adminfreischaltung oder `PortalLeser` allein reichen nicht.
+Anfragen sind 30 Sekunden gültig und können nicht wiederholt werden. Für diese
+Funktion müssen **Portal und Agent aktualisiert** werden.
+
+## Agent 1.2.2: Installation ohne internes PowerShell-Skript
+
+Die Agent-Setup-EXE führt Installation, Konfiguration, Aufgabenregistrierung und
+Deinstallation jetzt selbst aus. Sie startet intern kein `Install-Agent.ps1` mehr.
+Damit scheitert das Setup nicht mehr an einer PowerShell-Ausführungsrichtlinie, die
+Skripte auf dem Ziel-PC sperrt. Die Richtlinie wird weder verändert noch umgangen.
+
+Bei einer neuen Maschine richtet das Setup außerdem den lokalen Benutzer
+`PortalLeser`, dessen ausschließlich lesbare Freigabe `RDP-Status` und die nötigen
+Ordnerrechte ein. Das Kennwort wird im Setup zweimal selbst vergeben und muss für
+den späteren Portalzugriff im Passwortmanager aufbewahrt werden. Es wird nicht in
+Konfiguration, Log oder Befehlszeile geschrieben. Bei einem Update mit bereits
+vollständig vorhandener Freigabe bleiben die Kennwortfelder leer.
+
+Zum Installieren ausschließlich die neue Datei
+`Kirschke-RDP-Agent-Setup.exe` als Administrator starten, Maschinen-ID, lokalen
+Statusordner und bei der ersten Einrichtung das neue Lesekennwort eintragen und
+**Jetzt installieren** wählen. Eine eventuell vorhandene
+Anwendungssteuerung kann die unsignierte EXE weiterhin separat blockieren; dann ist
+eine reguläre IT-Freigabe erforderlich. `Statusfreigabe-einrichten.ps1` bleibt ein
+separates Hilfsskript und benötigt, falls es verwendet wird, eine reguläre
+Skriptfreigabe. Für die normale Neueinrichtung wird dieses Skript nicht mehr benötigt.
+
+216 automatisierte Tests bestanden. Der Agent-Build und der Setup-Build waren
+erfolgreich; die Agent-EXE 1.2.2 startete für eine reine Statusabfrage. Die finale
+Setup-EXE bestand ihren Selbsttest und öffnete den Installationsdialog, ohne dass
+eine Installation ausgelöst wurde. Ein vorheriger Zwischenbuild war von der
+Windows-Anwendungssteuerung blockiert; die Richtlinie wurde nicht verändert. Der
+Paketinhalt enthält kein PowerShell-Installationsskript.
+
+## Update 0.2.11: getrennte Ziele für RDP und Agentstatus
+
+Verwendet RDP wegen fehlender Namensauflösung eine IP-Adresse, kann der
+maschinenspezifische SMB-Fallback weiterhin unter dem Windows-Rechnernamen verbunden
+sein. Das Portal verwendet für Liveabfrage sowie Vor- und Nachprüfung einer Abmeldung
+jetzt exakt den Servernamen aus dem ausdrücklich eingerichteten UNC-Fallbackpfad. Der
+eigentliche WTS-Abmeldeaufruf verwendet weiterhin das konfigurierte RDP-Ziel. Damit
+bleibt die Windows-SMB-Anmeldung gültig, ohne das RDP-Ziel umzuschreiben. Der gelbe
+Hinweis zu lokalen RDP-Fenstern ist in diesem ausgelieferten Stand ebenfalls entfernt.
+
+## Update 0.2.10: Absturz des Abmelde-Hilfsprozesses behoben
+
+Der von PyWin32 gelieferte WTS-Serverhandle wird nun über sein eigenes `Close`
+geschlossen. Zuvor konnte ein zusätzlicher direkter `WTSCloseServer`-Aufruf denselben
+Handle beim Aufräumen ein zweites Mal schließen. Der isolierte Hilfsprozess endete
+dann mit `3221226356` (`0xC0000374`), ohne die Sitzung abzumelden. Der Portalprozess
+blieb zwar geschützt, die gewünschte Aktion schlug jedoch fehl. Erfolg und Windows-
+Fehlerpfad sind jetzt per Regressionstest abgedeckt; echte Sitzungen wurden dabei
+nicht abgemeldet. Windows prüft die Berechtigung auf dem Zielrechner weiterhin selbst.
+Das bisherige gelbe Banner zu aktiven oder geschlossenen lokalen RDP-Fenstern wurde
+entfernt. Das Portal protokolliert ein geschlossenes `mstsc`-Fenster weiterhin intern;
+für die sichtbare Sitzungsbelegung ist der Agentstatus maßgeblich.
+
+## Update 0.2.9: eigener Fallback und klare Kartenreihenfolge
+
+Jede Maschine besitzt jetzt ihren eigenen, clientlokal gespeicherten Datei-Fallback.
+Er wird unter **Maschinen → Details → Datei-Fallback einrichten …** verbunden.
+Für NB12KI sind das beispielsweise `\\NB12KI\RDP-Status` und
+`NB12KI\PortalLeser`. Ein früherer globaler Statusordner bleibt nach dem Update nur
+als Alt-Standard aktiv, bis für die jeweilige Maschine ein eigener Pfad gespeichert
+wurde. Die Einstellungen-Seite zeigt nur noch die gemeinsame Diagnose.
+
+Ein fehlender Datei-Fallback stuft eine erfolgreiche Liveantwort nicht herab. Nur
+ein bestätigter Live- oder Dateistatus erhält eine Zustandsfarbe; Ping allein gilt
+nicht als Agentnachweis. Farbige Karten haben einen 4-Pixel-Rahmen, unbestätigte
+graue Karten einen 2-Pixel-Rahmen. Das Dashboard sortiert verfügbare grüne Maschinen
+zuerst, danach belegte blaue, besondere Warn-/Fehlerzustände und zuletzt graue.
+Auch das Monitor-Symbol wird bei einem Statuswechsel aktualisiert.
+
+Der Agent bleibt bei Version 1.2.1. Sein Setup bezeichnet den empfohlenen Pfad nun
+eindeutig als lokalen Zielrechnerordner. Installer und Hilfsskripte setzen keine
+`ExecutionPolicy Bypass`; eine blockierende Richtlinie muss regulär durch die IT
+freigegeben werden.
+
+Der automatisierte Prüflauf umfasst 197 bestandene Tests. Dabei wurde keine echte
+Windows-Sitzung abgemeldet.
+
+Die finalen Portal-, Agent- und Setup-Builds waren erfolgreich; beide Setup-
+Selbstprüfungen (`--check`) lieferten Exitcode 0. Die finale Portal-EXE 0.2.11 startete
+auf dem Entwicklungsrechner erfolgreich und lief im Kurztest weiter. Der Statusaufruf
+der unveränderten Agent-EXE wurde dagegen von der vorhandenen Windows-
+Anwendungssteuerungsrichtlinie blockiert. Diese Richtlinie wurde nicht umgangen.
+Build-Erfolg und tatsächlicher EXE-Start werden deshalb getrennt bewertet; die
+Python-/Qt-Oberfläche wurde zusätzlich gerendert und visuell geprüft.
+
+## Update 0.2.8: absturzgeschützte und bestätigte Abmeldung
+
+Der native Windows-WTS-Aufruf läuft nun in einem kurzlebigen Hilfsprozess mit
+demselben Windows-Benutzertoken. Ein Fehler dieser Windows-Schnittstelle kann damit
+nicht mehr den laufenden Portalprozess beenden. Der Hilfsprozess wartet auf den
+Abschluss des Windows-Aufrufs. Anschließend fragt das Portal den reinen `STATUS/1`-
+Kanal frisch ab und meldet nur dann Erfolg, wenn die exakt geprüfte alte Sitzung
+nicht mehr aktiv ist. Wird sie weiterhin gemeldet, bleibt die Maschine belegt und
+der Dialog nennt dies ausdrücklich. Der Agentkanal erhält weiterhin keinen
+Abmeldebefehl. Agent 1.2.1 bleibt unverändert.
+
+## Update 0.2.7: eindeutige Sitzung ohne Kontodialog
+
+Meldet der Agent genau ein bestehendes Windows-Sitzungskonto, verwendet das Portal
+diesen Namen beim Wiederverbinden direkt und zeigt keinen inhaltslosen Auswahldialog
+mehr. Der Name wird lediglich in die RDP-Datei eingetragen; Windows prüft weiterhin
+Kennwort, Identität und Remoteanmelderecht. Nur bei mehreren gemeldeten Konten ist
+weiterhin eine bewusste Auswahl erforderlich. Dieses Update betrifft nur das Portal;
+Agent 1.2.1 bleibt unverändert.
+
+## Update 0.2.6: eigene getrennte Entra-Sitzung
+
+Dieses Update betrifft nur das Portal; Agent 1.2.1 muss dafür nicht erneut
+installiert werden. Das Portal verwendet für die Anzeige einer eigenen Sitzung
+die beim Programmstart erkannte Windows-Identität und nicht das frei wählbare
+RDP-Anmeldekonto. Bei einer eigenen getrennten Sitzung erscheinen deshalb auch
+mit „Standard · Windows-Anmeldung“ sowohl **Wiederverbinden** als auch der rote
+Knopf **Abmelden**.
+
+Vor einer Abmeldung fragt das Portal den Agentstatus zweimal frisch ab und prüft
+Sitzungsnummer, Windows-Benutzer und Anmeldezeit. Der Agentkanal bleibt dabei ein
+reiner Statuskanal. Anschließend fordert das Portal die Abmeldung getrennt über
+Windows WTS an; Windows kann sie weiterhin wegen fehlender Rechte ablehnen. Erst
+eine neue Agentmeldung ohne diese Sitzung zeigt die Maschine als frei.
+
+## Update 0.2.5 / Agent 1.2.1: automatische Aktualisierung und Abmelden
+
+Für diesen Stand **beide Setups aktualisieren**: Portal auf dem Arbeitsplatz und
+Agent auf Remote-Ettlingen. Der Agent läuft weiterhin als SYSTEM. Freigabe,
+Statusordner und das lokale Lesekonto `PortalLeser` bleiben unverändert.
+
+Beim Öffnen des Maschinendashboards fragt das Portal alle Zielrechner sofort direkt
+ab. Unter **Einstellungen → Statusaktualisierung** lässt sich das Intervall von
+2 bis 60 Sekunden einstellen; Vorgabe sind 5 Sekunden. Mehrere Rechner werden mit
+begrenzter Parallelität unabhängig voneinander abgefragt. Eine noch laufende
+Abfrage desselben Rechners wird nicht doppelt gestartet; nach Fehlern wartet das
+Portal dort länger, höchstens 60 Sekunden.
+
+Unter dem Agentstatus steht nun immer Quelle und Alter:
+
+- **Live · vor …**: aktuelle direkte Antwort des Agents;
+- **Datei-Fallback · vor …**: direkte Abfrage fehlgeschlagen, neuere Agent-JSON wird verwendet;
+- **Live nicht erreichbar · letzter Stand …**: der neuere Live-Stand bleibt sichtbar,
+  gilt aber ausdrücklich nicht als aktuelle Erreichbarkeit.
+
+Eine ältere Datei verdrängt keine neuere Live-Meldung. Sobald der direkte Kanal
+wieder antwortet, wechselt die Anzeige automatisch zurück. Karten werden dabei
+an Ort und Stelle aktualisiert; Scrollposition, gewähltes Anmeldekonto und ein
+geöffnetes Menü bleiben erhalten.
+
+Die rote Abmeldeaktion ist absichtlich zustandsabhängig:
+
+- frei und zugelassen: **Verbinden**;
+- eigene verbundene Sitzung: **Abmelden**;
+- eigene getrennte Sitzung: **Wiederverbinden** und zusätzlich **Abmelden**;
+- fremde Sitzung oder fremde Reservierung: Belegung anzeigen, keine normale Abmeldung.
+
+Vor der eigenen Abmeldung prüft das Portal Windows-Benutzerkennung, Kontonamen,
+Sitzungsnummer und Anmeldezeit erneut. Die Bestätigung nennt Rechner und Benutzer
+und warnt vor dem Verlust ungespeicherter Arbeit. Windows entscheidet über die
+Berechtigung. Anschließend fragt das Portal sofort neu ab und zeigt den Rechner
+erst nach bestätigtem Sitzungsende als frei.
+
+Eine fremde Sitzung lässt sich nur über die getrennte rote Aktion **Notfall-Abmeldung …**
+im freigeschalteten Adminbereich auswählen. Auch dort werden Benutzer, Sitzungsnummer
+und Anmeldezeit frisch geprüft. Portal-Adminfreischaltung allein reicht nicht:
+Der laufende Portalprozess braucht tatsächliche Windows-Rechte für die
+Sitzungsverwaltung auf Remote-Ettlingen. `PortalLeser` bleibt reines Lesekonto;
+der Agentkanal akzeptiert ausschließlich Statusanfragen und keine Abmeldebefehle.
+Auf dem dauerhaft laufenden, Entra-joined und nicht AD-domain-joined Ziel muss die
+IT diese Windows-Autorisierung vor Ort prüfen.
+
+Geschlossene Auswahllisten ändern beim Darüberrollen weder Zustand noch Auswahl;
+das Mausrad scrollt stattdessen die Seite. Erst nach bewusstem Öffnen bedienen
+Mausrad und Tastatur die Liste. Schriftgrößen folgen der Windows-Skalierung; geprüft
+wurde die Oberfläche bei 100 %, 125 % und 150 %.
+
+Bei einem früheren Zwischenstand starteten Portal-EXE und Agent-EXE; beide damaligen
+Setup-Prüfungen endeten erfolgreich. Ein vorheriger Start des Portal-Setups war
+auf demselben Rechner trotz erfolgreichen Builds noch von der vorhandenen
+Anwendungssteuerungsrichtlinie blockiert (Fehlerbild 4551). Die Richtlinie wurde
+nicht verändert oder umgangen. Die spätere erfolgreiche Selbstprüfung ist keine
+Freigabe für andere Geräte; bei erneuter Blockierung sind eine reguläre IT-Freigabe
+beziehungsweise geeignete Signierung erforderlich.
 
 ## 2. Agent-Statusordner einstellen
 
@@ -25,8 +219,8 @@ In 0.2.1 konnte nach erfolgreicher Verbindung die allgemeine Meldung „Verbindu
 fehlgeschlagen“ erscheinen. Als Übergang kann dort ohne Speichern verbunden werden;
 für dauerhafte Windows-Zugangsdaten das Portal auf 0.2.2 aktualisieren.
 
-**Einmalige Freigabeeinrichtung auf Remote-Ettlingen:** Das Paket enthält
-`Statusfreigabe-einrichten.ps1`. Diese Datei auf Remote-Ettlingen kopieren und dort
+**Einmalige Freigabeeinrichtung auf dem Zielrechner:** Das Paket enthält
+`Statusfreigabe-einrichten.ps1`. Diese Datei auf den Zielrechner kopieren und dort
 in PowerShell **als Administrator** ausführen. Das Skript prüft den Rechnernamen,
 fragt ein Kennwort verdeckt ab und erstellt:
 
@@ -34,6 +228,18 @@ fragt ein Kennwort verdeckt ab und erstellt:
 - lokales Lesekonto `PortalLeser` (kein Administrator-/RDP-Gruppeneintrag);
 - Freigabe `\\Remote-Ettlingen\RDP-Status`;
 - Ordnerrechte: SYSTEM/Administratoren Vollzugriff, PortalLeser Lesen.
+
+Für einen anderen Rechner als Remote-Ettlingen muss dessen tatsächlicher kurzer
+Windows-Computername ausdrücklich angegeben werden, zum Beispiel:
+
+```powershell
+.\Statusfreigabe-einrichten.ps1 -ExpectedComputerName "ZIELPC"
+```
+
+Das ist keine Intune-Registrierung. Es richtet nur den lokalen Statusordner, das
+reine Lesekonto und die SMB-Freigabe für diesen Zielrechner ein. Blockiert die
+Unternehmensrichtlinie das Skript oder die unsignierte Setup-EXE, muss die IT sie
+regulär freigeben; die Richtlinie nicht umgehen.
 
 Vorhandene gleichnamige Konten, Freigaben und Statusordner führen zum Abbruch,
 damit keine Kennwörter oder vorhandenen Berechtigungen überschrieben werden.
@@ -54,8 +260,8 @@ Parameter `-AllowedRemoteAddress` auf ausdrücklich angegebene IPv4-Adressen/Net
 beschränken. Dafür müssen die tatsächlichen Portal-Netze bekannt sein. Eine vorhandene
 Regel wird nicht überschrieben; bestehende weiter gefasste Regeln werden nicht eingeschränkt.
 
-**Netzwerkzugriff direkt im Portal einrichten (ab 0.2.1):** Unter
-**Einstellungen → Windows-Agent → Netzwerkzugriff einrichten …** den Netzwerkpfad,
+**Netzwerkzugriff pro Maschine einrichten (ab 0.2.9):** Unter
+**Maschinen → Details → Datei-Fallback einrichten …** den Netzwerkpfad,
 z. B. `\\Remote-Ettlingen\RDP-Status`, sowie `Remote-Ettlingen\PortalLeser` und dessen
 Kennwort eingeben. **Verbinden, prüfen und übernehmen** prüft den Zugriff im Hintergrund
 und übernimmt den Statusordner. Voraussetzung: Freigabe und Konto bestehen bereits.
@@ -73,49 +279,22 @@ Dialog den Konflikt und trennt keine anderen Verbindungen. Die Zugriffsprüfung
 bestätigt die Lesbarkeit, bei bestehenden SMB-Sitzungen aber nicht unabhängig
 die Gültigkeit eines neu eingegebenen Kennworts.
 
-**Für Dauerbetrieb ohne Benutzeranmeldung:** Einen gemeinsamen UNC-Ordner wie
-`\\SERVER\RDP-Portal\agenten-status` verwenden. Das SYSTEM-Konto des Agenten greift
-in einer Windows-Domäne als Computerkonto zu, z. B. `DOMÄNE\NB05$`. Dieses benötigt
-Schreib-/Änderungsrechte im Share und auf dem Dateisystem; Portalbenutzer benötigen
-Leserechte auf den Statusordner. Bei reinen Entra-/Arbeitsgruppen-PCs muss die IT
-zuerst einen passenden authentifizierten Übertragungsweg einrichten.
-Keine Netzlaufwerksbuchstaben verwenden. Ein lokaler Ordner funktioniert nur lokal
-oder wenn er zusätzlich für das Portal freigegeben wird.
-
-Der bisherige SharePoint-Pfad bleibt als Vorgabe erhalten, ist aber **kein
-benutzerunabhängiger Übertragungsweg**: Nach Abmeldung läuft die OneDrive-App nicht
-weiter. Ein SYSTEM-Agent allein behebt das nicht. Die direkte Übertragung über
-Microsoft Graph ist in dieser Version nicht integriert.
-
-Im Portal unter **Einstellungen → Windows-Agent** auf **Standard verwenden** klicken.
-Der Standard für Portal und Agent ist:
-
-```text
-%USERPROFILE%\Prof. Dr.-Ing. Dieter Kirschke GmbH & Co. KG\IB Kirschke - Dokumente\90\_K.I. Strategie\Testprogramme\RDP-Portal\remote\agenten-status
-```
-
-Alternativ den exakten Ordner mit den Agent-JSON-Dateien eingeben oder auswählen
-und **Statusordner übernehmen** klicken. Das Portal liest direkt aus diesem Ordner;
-es hängt nichts an. %USERPROFILE% wird zum Benutzerverzeichnis aufgelöst.
-Unter **Gelesener Statusordner** steht der tatsächlich verwendete Pfad.
-Am einfachsten: **Agent-JSON auswählen …** anklicken und die vom Agenten
-aktualisierte JSON auf diesem Portal-PC auswählen. Deren Ordner wird sofort
-übernommen und auch nach einem Portal-Neustart verwendet.
-
-Im Agent-Setup denselben synchronisierten Ordner auswählen. Die lokalen Benutzernamen
-und damit die lokalen Pfade dürfen sich unterscheiden; beide müssen in dieselbe
-SharePoint-Bibliothek und denselben Ordner zeigen. Bei SharePoint/OneDrive zunächst
-nur eine schreibende Portalinstanz betreiben. Für parallele Portal-Schreibzugriffe
-einen gemeinsamen SMB-Ordner verwenden.
+**Für Dauerbetrieb ohne Benutzeranmeldung:** Der Agent verwendet auf jedem
+Zielrechner den lokalen Pfad `C:\RDP-Portal-Daten\agenten-status`; SYSTEM benötigt
+dort Schreibrechte. Das Freigabeskript stellt denselben Ordner als
+`\\ZIELRECHNER\RDP-Status` für das reine Lesekonto `PortalLeser` bereit. Im Portal
+wird diese UNC-Freigabe ausschließlich der betreffenden Maschine zugeordnet. Keine
+Netzlaufwerksbuchstaben und keinen benutzergebundenen OneDrive-Pfad für den
+SYSTEM-Agenten verwenden.
 
 Der Inventar-Speicherort im Adminbereich ist eine separate Einstellung für Maschinen
-und Reservierungen. Zur Behebung einer fehlenden Agent-Anzeige genügt die Einstellung
-unter **Windows-Agent**. Bestehende Statusordner mit den Namen agent-status oder
-agenten-status werden ohne zusätzlich angehängten Unterordner erkannt.
+und Reservierungen. **Einstellungen → Windows-Agent** enthält nur noch Aktualisierung
+und Diagnose; den Fallbackpfad immer in den Details der betroffenen Maschine ändern.
 
 ## 3. Zielrechner und Konto eintragen
 
-**Maschine hinzufügen** wählen, Hostname/IP eingeben und Registrierung abschließen.
+**Maschine hinzufügen** wählen, Hostname/FQDN oder IP eingeben und Registrierung
+abschließen. Das Portal sucht weder Intune noch das lokale Netzwerk automatisch ab.
 Die **Maschinen-ID** aus den Details für den Agent notieren.
 Auf der Karte **Anmelden als → + Benutzer hinzufügen …** wählen und ein vorhandenes
 Windows-Konto wie ZIELPC\tester oder FIRMA\benutzer eintragen.
@@ -124,7 +303,11 @@ Das Portal legt keine Windows-Konten an, erteilt keine RDP-Rechte und speichert 
 Kennwörter. Windows fragt das Kennwort bei der Verbindung ab.
 
 Auf dem Ziel-PC müssen Remotedesktop und die RDP-Berechtigung für das Konto eingerichtet
-sein. Bei Problemen die **RDP-Diagnose** öffnen.
+sein. Der Agent legt kein Anmeldekonto an und erteilt keine RDP-Rechte. Ist der
+Zielrechner nicht Microsoft-Entra-joined, ist ein `@prof-kirschke.de`-Konto dort
+nicht automatisch vorhanden; dann ein vorhandenes lokales Konto als
+`ZIELPC\benutzer` oder ein erreichbares AD-Domänenkonto verwenden. Bei Problemen
+die **RDP-Diagnose** öffnen.
 
 ## 4. Agent installieren oder Pfad ändern
 
@@ -172,9 +355,10 @@ Windows-Ereigniszeit. Sitzungen, die vollständig zwischen zwei Abfragen liegen,
 können fehlen. „Nicht mehr gemeldet“ kann auch eine Änderung während einer Agent-
 Unterbrechung bedeuten. Verlauf und Anmeldezeiten werden auch für Konsolensitzungen erfasst.
 
-Im Dashboard **Agent-Diagnose** öffnen und auf **Agentstatus jetzt einlesen** klicken.
-Das Portal liest automatisch alle fünf Sekunden; die SharePoint-Synchronisierung
-kann zusätzliche Zeit benötigen.
+Im Dashboard **Agent-Diagnose** öffnen und auf **Agentstatus jetzt einlesen** klicken,
+wenn die Dateiquelle gezielt geprüft werden soll. Das Dashboard fragt den direkten
+Livekanal automatisch im eingestellten Intervall ab; bei Fehlern wertet es die
+Agent-JSON als Fallback aus. Dateisynchronisierung kann zusätzliche Zeit benötigen.
 
 Das Dashboard zeigt die Anzahl gefundener JSON-Dateien, gültiger Meldungen und
 zugeordneter Maschinen. Unter **Diagnose anzeigen** stehen je Datei Maschinen-ID,
@@ -215,18 +399,19 @@ Inventar und Benutzereinstellungen bleiben erhalten. Alternativ:
 Das Schließen des RDP-Fensters trennt nur die Verbindung: Programme und Anmeldung
 bleiben auf dem Zielrechner bestehen. Die Maschine bleibt deshalb blau/belegt.
 
-1. Unter **Anmelden als** exakt das Konto der gemeldeten Sitzung auswählen,
-   beispielsweise `AzureAD\ChristianBecker`. Fehlt es, mit **+ Benutzer hinzufügen**
-   diesen Kontonamen hinterlegen. Unterschiedliche Schreibweisen wie E-Mail-Adresse
-   und Windows-Kurzname werden nicht automatisch als dieselbe Identität behandelt.
+1. Meldet der Agent genau eine Sitzung, verwendet das Portal deren Windows-Kontonamen
+   beim Wiederverbinden automatisch. Bei mehreren Sitzungen das richtige Konto
+   auswählen. Unterschiedliche Schreibweisen wie E-Mail-Adresse und Windows-Kurzname
+   werden nicht automatisch als dieselbe Identität behandelt.
 2. **Wiederverbinden** öffnet RDP mit diesem Konto. Windows prüft die Anmeldung
    und entscheidet über die Wiederaufnahme der Sitzung. Ein bereits geöffnetes,
    vom Portal gestartetes RDP-Fenster wird weiterhin nicht doppelt gestartet.
-3. Für eine vollständige Abmeldung: **Details → Sitzung abmelden …**. Bei mehreren
-   passenden Sitzungen die Sitzungsnummer auswählen. Die Bestätigung beendet die
+3. Für eine vollständige Abmeldung den roten **Abmelden**-Knopf auf der Karte oder
+   in den Details wählen. Bei mehreren passenden Sitzungen die Sitzungsnummer
+   auswählen. Die Bestätigung beendet die
    Programme dieser Sitzung; nicht gespeicherte Arbeit kann verloren gehen.
 4. Die Anzeige wird erst frei, wenn der Agent das Ende der Sitzung bestätigt.
-   Die normale Agentabfrage erfolgt alle 30 Sekunden, das Portal liest alle 5 Sekunden.
+   Direkt danach startet das Portal eine neue Liveabfrage.
 
 Die direkte Abmeldung verwendet die Windows-Sitzungsverwaltung und ist auf das
 Windows-Konto beschränkt, unter dem das Portal läuft. Sitzungsnummer, Kontoname,

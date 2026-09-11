@@ -1,107 +1,105 @@
 # Kirschke RDP-Agent installieren
 
-Stand 09.09.2026: Siehe [Prüfbericht und Pilotabnahme](code-review-testbetrieb.md).
-Der Installer startet den Agent über dieselbe geplante Aufgabe wie beim Anmelden,
-mit korrekt zitiertem Konfigurationspfad und ohne das standardmäßige 72-Stunden-Laufzeitlimit.
-Erlaubtes Aktualisierungsintervall: 5–60 Sekunden. Die alten Schalter für eine
-Windows-Dienstinstallation werden mit einer Fehlermeldung abgewiesen; dieser
-Bereitstellungsweg ist noch nicht betriebsbereit.
+Stand 11.09.2026: Portal 0.2.12, Agent 1.3.0. Siehe auch
+[Prüfbericht und Pilotabnahme](code-review-testbetrieb.md).
 
-Der Agent ist optional. Ohne Agent kann das Portal nur Erreichbarkeit (Ping), den RDP-Port und lokal gestartete
-`mstsc`-Fenster bewerten. Es kann ohne Remoteverwaltung nicht zuverlässig erkennen, wer auf einem Ziel-PC angemeldet
-ist oder ob die Sitzung nur getrennt wurde.
-
-Der portable Agent liest auf dem Ziel-PC die Windows-Remotedesktop-Sitzungen über die WTS-API und schreibt alle
-30 Sekunden eine kleine Statusdatei. Das Portal liest sie aus dem unter
-**Einstellungen → Windows-Agent** gewählten exakten Statusordner ein.
+Der Agent liest auf dem Ziel-PC die Windows-Sitzungen über die WTS-API. Er läuft
+rechnerweit als SYSTEM in einer geplanten Aufgabe, startet beim Hochfahren und
+benötigt keinen angemeldeten Benutzer. Der direkte Kanal akzeptiert Statusabfragen
+und eng geprüfte Abmeldungen einer exakt identifizierten aktuellen Sitzung.
 
 ## Voraussetzungen
 
-- Der Ziel-PC läuft mit Windows und darf Remotedesktop-Sitzungen annehmen.
-- Der angemeldete Benutzer kann den gemeinsamen Portalordner erreichen, etwa über die synchronisierte
-  SharePoint-Bibliothek.
-- Die Maschinen-ID im Portal steht fest, zum Beispiel `WS-001`.
-- Für den Pilotbetrieb genügt ein normaler Benutzer. Der Autostart erfolgt beim Anmelden dieses Benutzers.
+- Windows-Zielrechner mit aktiviertem Remotedesktop;
+- lokale Administratorrechte für die Installation;
+- feste Maschinen-ID im Portal, zum Beispiel `WS-004`;
+- lokaler Statuspfad, standardmäßig `C:\RDP-Portal-Daten\agenten-status`.
 
-Die Dateien enthalten nur Verbindungsstatus, Windows-Sitzungs-ID und den bei Windows sichtbaren Anmeldenamen – keine
-Kennwörter und keine RDP-Dateien.
+Das Agent-Setup erstellt bei der ersten Installation standardmäßig:
 
-## 1. Standalone-Agenten bauen
+- `C:\RDP-Portal-Daten\agenten-status` für den SYSTEM-Agenten;
+- `\\ZIELRECHNER\RDP-Status` als lesbare Freigabe;
+- das lokale reine Lesekonto `ZIELRECHNER\PortalLeser`.
 
-Auf dem Entwicklungs-PC im Projektordner ausführen:
+Das Setup verleiht `PortalLeser` weder Administrator- noch RDP-Rechte. Wenn eine
+Unternehmensrichtlinie Skripte oder unsignierte EXE-Dateien blockiert, ist eine
+reguläre IT-Freigabe erforderlich. Setup und Hilfsskripte setzen keine
+`ExecutionPolicy Bypass`.
 
-```powershell
-.\deployment\build_agent.cmd
-```
+Agent 1.3.0 führt die eigentliche Installation nativ aus. Die Setup-EXE startet
+intern kein `Install-Agent.ps1` mehr und funktioniert daher auch bei einer
+PowerShell-Ausführungsrichtlinie, die lokale Skripte sperrt. Administratorrechte
+und eine mögliche Freigabe der unsignierten Setup-EXE durch die
+Anwendungssteuerung bleiben erforderlich. Das Setup verändert keine Richtlinie.
+`Statusfreigabe-einrichten.ps1` bleibt nur als separates Werkzeug für eine
+administrativ vorab eingerichtete Freigabe im Testpaket enthalten.
 
-Danach liegt die vollständige portable Ausgabe hier:
+## Agent installieren
 
-```text
-dist-agent\Kirschke-RDP-Agent\
-```
+`Kirschke-RDP-Agent-Setup.exe` auf den Zielrechner kopieren, als Administrator
+starten und eintragen:
 
-Zusätzlich entsteht `dist-agent\Kirschke-RDP-Agent-Setup.exe`. Diese einzelne Datei
-auf den Ziel-PC kopieren; sie enthält den Agenten und den grafischen Installer.
-Alternativ den kompletten portablen Ordner mit `Install-Agent.cmd` verwenden.
-Python muss auf dem Ziel-PC nicht installiert sein.
+1. **Maschinen-ID im Portal:** exakt die ID der Portalmaschine, z. B. `WS-004`.
+2. **Lokaler Statusordner auf diesem Zielrechner:**
+   `C:\RDP-Portal-Daten\agenten-status`.
+3. **SMB-Fallback und Lesekonto einrichten:** aktiviert lassen.
+4. **Kennwort für PortalLeser:** bei der ersten Einrichtung ein neues, ausreichend
+   komplexes Kennwort zweimal eingeben und im Passwortmanager aufbewahren.
+5. **Aktualisierung:** normalerweise 30 Sekunden.
 
-## 2. Gemeinsamen Statusordner bestimmen
+Mit **Jetzt installieren** prüft das Setup die Schreibberechtigung, installiert
+nach `%ProgramFiles%\KirschkeRDPAgent`, speichert Konfiguration und Verlauf unter
+`%ProgramData%\KirschkeRDPAgent`, ersetzt bekannte Altinstallationen und startet
+die Aufgabe `Kirschke RDP Agent - Machine` als SYSTEM.
 
-Im Portal unter **Einstellungen → Windows-Agent** den Ordner mit den Agent-JSON-Dateien
-einstellen. Im Agent-Setup denselben synchronisierten Ordner auswählen. Es wird kein
-weiterer Unterordner angehängt. Der Standard ist:
+Bei der ersten Einrichtung erzeugt es zusätzlich das lokale Konto
+`ZIELRECHNER\PortalLeser`, setzt dessen Kennwort als nicht ablaufend und erstellt
+`\\ZIELRECHNER\RDP-Status`. Auf Freigabe und Ordner besitzt PortalLeser nur
+Leserechte; SYSTEM und lokale Administratoren besitzen Vollzugriff. Das Kennwort
+wird weder in der Agent-Konfiguration noch in einer Befehlszeile gespeichert.
 
-```text
-%USERPROFILE%\Prof. Dr.-Ing. Dieter Kirschke GmbH & Co. KG\IB Kirschke - Dokumente\90\_K.I. Strategie\Testprogramme\RDP-Portal\remote\agenten-status
-```
+Sind Konto und passende Freigabe bei einem Update bereits vollständig vorhanden,
+bleiben die Kennwortfelder leer und beide Objekte werden unverändert weiterverwendet.
+Ein nur teilweise vorhandener oder auf einen anderen Ordner zeigender Bestand wird
+bewusst nicht automatisch überschrieben.
 
-Auf jedem Ziel-PC muss dieser Pfad für den Benutzer erreichbar sein. Bei OneDrive/SharePoint bedeutet das: die
-Bibliothek muss dort synchronisiert sein. Ist der lokale OneDrive-Pfad anders, ist das in Ordnung – entscheidend ist,
-dass er in dieselbe Bibliothek und denselben Ordner schreibt.
-
-## 3. Agent mit einem Klick installieren
-
-Auf dem Ziel-PC `Kirschke-RDP-Agent-Setup.exe` doppelklicken (alternativ im vollständigen
-portablen Agentenordner `Install-Agent.cmd`). Der Installer startet ohne
-PowerShell-Eingaben und erklärt die zwei Angaben, die nicht sicher automatisch ermittelt werden können:
-
-1. **Maschinen-ID:** exakt die ID der registrierten Maschine im Portal, etwa `WS-001`. Der lokale Computername wird
-   als Vorschlag eingetragen.
-2. **Gemeinsamer Statusordner:** exakt den Ordner aus **Einstellungen → Windows-Agent**
-   auswählen. `%USERPROFILE%` wird automatisch aufgelöst. Bei OneDrive/SharePoint muss
-   die Bibliothek auf dem Ziel-PC synchronisiert sein.
-
-Mit **Jetzt installieren** prüft der Installer die Schreibberechtigung, kopiert den Agenten nach
-`%LOCALAPPDATA%\KirschkeRDPAgent`, erstellt die Konfiguration, richtet den Autostart beim Anmelden ein und startet
-den Agenten sofort. Das funktioniert im Benutzerkontext und benötigt keine Administratorrechte. Der Installer
-kann bei Bedarf wiederholt werden, etwa um den Agenten zu aktualisieren oder den Statusordner zu ändern.
-
-Für automatisierte Rollouts bleibt eine unbeaufsichtigte Installation möglich:
+Das entpackte Agentpaket enthält für verwaltete, bereits freigegebene
+PowerShell-Umgebungen weiterhin die optionale unbeaufsichtigte Installation:
 
 ```powershell
-.\Install-Agent.ps1 -NoUi -WorkstationId "WS-001" -StatusDirectory "C:\Pfad\zum\RDP-Portal\remote\agenten-status"
+.\Install-Agent.ps1 -NoUi -WorkstationId "WS-004" `
+  -StatusDirectory "C:\RDP-Portal-Daten\agenten-status" `
+  -SourceDirectory "C:\Pfad\zum\Agent-Paket" -StartNow
 ```
 
-## 4. Ergebnis prüfen
+Ist die Skriptausführung gesperrt, nicht mit einer Umgehungsoption starten, sondern
+die neue Setup-EXE verwenden oder die Richtlinie regulär durch die IT freigeben lassen.
 
-Nach etwa 30–60 Sekunden im Portal **Einstellungen** öffnen. Bei der Agent-Statusanzeige
-muss die Maschine gezählt werden. Der Installer prüft bereits beim Start, ob der Agent
-eine neue Online-Statusdatei schreibt. Bei OneDrive kommt die Synchronisationszeit hinzu.
-Der gebaute Agent läuft ohne Konsolenfenster; die Diagnose erfolgt über Statusdatei und Log.
+## Portal pro Maschine verbinden
 
-Die Statusdatei heißt `<Maschinen-ID>.json` und liegt direkt im gewählten Statusordner. Bei Problemen zuerst
-`%LOCALAPPDATA%\KirschkeRDPAgent\agent.log` und den OneDrive-Synchronisationsstatus prüfen.
+Im Portal die betreffende Maschine öffnen und **Details → Datei-Fallback
+einrichten …** wählen. Für NB12KI beispielsweise:
+
+- Netzwerkordner: `\\NB12KI\RDP-Status`
+- Freigabebenutzer: `NB12KI\PortalLeser`
+- Kennwort: das bei der Freigabeeinrichtung gesetzte Kennwort
+
+Der Pfad gilt nur für diese Maschine und wird clientlokal gespeichert. Das
+Kennwort verbleibt auf Wunsch in der Windows-Anmeldeinformationsverwaltung und
+wird nicht in Portaldateien geschrieben. Die Liveabfrage bleibt vorrangig; die
+JSON dient nur bei einem Ausfall des direkten Kanals als Fallback.
+
+Nach der Verbindung muss die Karte **Live** oder **Datei-Fallback** mit Alter
+anzeigen. Eine grüne Karte ist online und frei, eine blaue online und belegt. Grau
+bedeutet, dass kein aktueller Agentstatus bestätigt ist; ein erfolgreicher Ping
+allein genügt nicht.
 
 ## Deinstallieren
-
-Das entfernt nur den Autostart; Konfiguration und Log bleiben zur Diagnose erhalten:
 
 ```powershell
 .\Kirschke-RDP-Agent-Setup.exe --uninstall
 ```
 
-## Wichtige Grenze des Pilotbetriebs
-
-Der Autostart läuft im Kontext des angemeldeten Benutzers. Meldet sich dieser vollständig ab, beendet Windows auch den
-Agenten. Ein dauerhafter Windows-Dienst wäre möglich, benötigt ohne AD/verwaltetes Dienstkonto aber eine bewusst
-eingerichtete Berechtigung auf den gemeinsamen Speicher. Das ist deshalb nicht automatisch aktiviert.
+Die Deinstallation entfernt Aufgabe, Programmdateien und Konfiguration. Konto,
+Freigabe und Statusdaten bleiben zum Schutz vorhandener Zugänge und Daten bestehen.
+Statusdaten werden nicht als Fernbefehl verarbeitet oder zur Abmeldung verwendet.

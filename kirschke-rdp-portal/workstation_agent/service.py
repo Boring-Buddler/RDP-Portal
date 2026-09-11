@@ -50,7 +50,7 @@ class AgentConfig:
     hostname: str = socket.gethostname()
     
     # Agent settings
-    agent_version: str = os.getenv("AGENT_VERSION", "1.2.0")
+    agent_version: str = os.getenv("AGENT_VERSION", "1.3.0")
     poll_interval: int = 30  # environment is parsed safely in from_env
     
     # Microsoft Entra ID settings
@@ -125,7 +125,7 @@ class AgentConfig:
         return cls(
             workstation_id=workstation_id,
             hostname=socket.gethostname(),
-            agent_version=configured_value("agent_version", "AGENT_VERSION", "1.2.0"),
+            agent_version=configured_value("agent_version", "AGENT_VERSION", "1.3.0"),
             poll_interval=configured_integer("poll_interval", "AGENT_POLL_INTERVAL", 30),
             tenant_id=tenant_id,
             client_id=configured_value("client_id", "AGENT_CLIENT_ID"),
@@ -414,6 +414,7 @@ class WorkstationAgent:
         self._last_rdp_sessions = []
         self._session_history = None
         self._status_server = None
+        self._session_controller = None
         
         # Service control
         self._running = False
@@ -540,7 +541,16 @@ class WorkstationAgent:
         self._publish_local_snapshot()
         if self.config.live_status_enabled:
             from workstation_agent.status_server import StatusServer
-            self._status_server = StatusServer(self._live_snapshot, self.config.live_status_reader)
+            from workstation_agent.session_control import AgentSessionController
+            self._session_controller = AgentSessionController(
+                self.config.workstation_id,
+                self._after_agent_logoff,
+            )
+            self._status_server = StatusServer(
+                self._live_snapshot,
+                self.config.live_status_reader,
+                logoff_handler=self._session_controller.handle,
+            )
             self._status_server.start()
         
         # Run initial sync
@@ -557,6 +567,7 @@ class WorkstationAgent:
         if self._status_server is not None:
             self._status_server.stop()
             self._status_server = None
+            self._session_controller = None
         self.state.status = AgentStatus.OFFLINE
         self._publish_local_snapshot()
 
@@ -623,6 +634,11 @@ class WorkstationAgent:
             current_session_user=primary.full_username if primary else None,
             current_windows_session_id=primary.session_id if primary else None,
             rdp_sessions=[item.to_dict() for item in sessions])
+
+    def _after_agent_logoff(self) -> None:
+        """Publish the confirmed post-logoff state without waiting for the poll interval."""
+        self._refresh_session_state()
+        self._publish_local_snapshot()
 
     def _refresh_session_state(self) -> None:
         """Refresh the primary occupied session from the local WTS API."""

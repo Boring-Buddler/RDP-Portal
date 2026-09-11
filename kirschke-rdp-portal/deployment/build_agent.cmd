@@ -1,2 +1,2 @@
 @echo off
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0build_agent.ps1"
+powershell.exe -NoProfile -File "%~dp0build_agent.ps1"

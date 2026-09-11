@@ -37,6 +37,7 @@ def detect_initial_user(fallback: MockUser | None = None) -> MockUser:
         role=UserRole.USER,
         rdp_username=username,
         rdp_domain=domain,
+        windows_identity=identity,
     )
 
 

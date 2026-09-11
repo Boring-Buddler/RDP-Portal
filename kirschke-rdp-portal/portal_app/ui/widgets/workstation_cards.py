@@ -8,7 +8,6 @@ import re
 from PySide6.QtCore import QProcess, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
-    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -20,6 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
@@ -36,6 +36,11 @@ class WorkstationGlyph(QWidget):
         super().__init__(parent)
         self.color = color
         self.setFixedSize(42, 42)
+
+    def set_color(self, color: QColor) -> None:
+        if color != self.color:
+            self.color = color
+            self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
@@ -56,6 +61,7 @@ class WorkstationCard(QFrame):
     selected = Signal(Workstation)
     ping_completed = Signal(str)
     connect_requested = Signal(Workstation)
+    logoff_requested = Signal(Workstation)
     account_selected = Signal(Workstation, str)
     account_add_requested = Signal(Workstation)
 
@@ -70,9 +76,9 @@ class WorkstationCard(QFrame):
         self.user = user
         self.ping_process: QProcess | None = None
         self.setObjectName("workstationCard")
-        self.setStyleSheet(f"QFrame#workstationCard {{ border: 3px solid {self._accent_color().name()}; }}")
+        self._apply_card_accent()
         self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumSize(250, 306)
+        self.setMinimumSize(250, 372)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._create_ui()
 
@@ -83,22 +89,23 @@ class WorkstationCard(QFrame):
 
         heading = QHBoxLayout()
         heading.setSpacing(12)
-        heading.addWidget(WorkstationGlyph(self._accent_color()))
+        self.glyph = WorkstationGlyph(self._accent_color())
+        heading.addWidget(self.glyph)
 
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
-        name = QLabel(self.workstation.display_name)
-        name.setObjectName("cardTitle")
-        name.setFont(Typography.get_font(16, Typography.FONT_WEIGHT_SEMIBOLD))
-        title_box.addWidget(name)
-        hostname = QLabel(
+        self.name_label = QLabel(self.workstation.display_name)
+        self.name_label.setObjectName("cardTitle")
+        self.name_label.setFont(Typography.heading_3())
+        title_box.addWidget(self.name_label)
+        self.hostname_label = QLabel(
             self.workstation.hostname
             or self.workstation.fqdn
             or self.workstation.ip_address
             or "Kein Verbindungsziel"
         )
-        hostname.setObjectName("cardMeta")
-        title_box.addWidget(hostname)
+        self.hostname_label.setObjectName("cardMeta")
+        title_box.addWidget(self.hostname_label)
         heading.addLayout(title_box, 1)
         self.ping_result = QLabel("")
         self.ping_result.setObjectName("cardMeta")
@@ -107,37 +114,41 @@ class WorkstationCard(QFrame):
         layout.addLayout(heading)
 
         layout.addSpacing(20)
-        location = QLabel(
+        self.location_label = QLabel(
             f"{self.workstation.site or 'Ohne Standort'}  ·  "
             f"{self.workstation.description or 'Workstation'}"
         )
-        location.setObjectName("cardMeta")
-        location.setWordWrap(True)
-        layout.addWidget(location)
+        self.location_label.setObjectName("cardMeta")
+        self.location_label.setWordWrap(True)
+        layout.addWidget(self.location_label)
         layout.addSpacing(14)
 
         status_row = QHBoxLayout()
         status_row.setSpacing(8)
-        status_dot = QLabel("●")
-        status_dot.setStyleSheet(f"color: {self._accent_color().name()}; font-size: 12px;")
-        status_row.addWidget(status_dot)
-        status = QLabel(self._status_text())
-        status.setToolTip(self.workstation.agent_diagnostic)
-        status.setObjectName("cardStatus")
-        status_row.addWidget(status)
+        self.status_dot = QLabel("●")
+        self.status_dot.setStyleSheet(f"color: {self._accent_color().name()}; font-size: 12px;")
+        status_row.addWidget(self.status_dot)
+        self.status_label = QLabel(self._status_text())
+        self.status_label.setToolTip(self.workstation.agent_diagnostic)
+        self.status_label.setObjectName("cardStatus")
+        status_row.addWidget(self.status_label)
         status_row.addStretch()
         layout.addLayout(status_row)
 
-        session = QLabel(self._session_text())
-        session.setToolTip(self.workstation.agent_diagnostic)
-        session.setObjectName("cardMeta")
-        session.setContentsMargins(20, 2, 0, 0)
-        layout.addWidget(session)
-        if self.workstation.reservation_message:
-            reservation = QLabel(self.workstation.reservation_message)
-            reservation.setObjectName("cardStatus")
-            reservation.setWordWrap(True)
-            layout.addWidget(reservation)
+        self.source_label = QLabel(self.workstation.get_agent_source_display())
+        self.source_label.setObjectName("cardMeta")
+        self.source_label.setContentsMargins(20, 1, 0, 0)
+        layout.addWidget(self.source_label)
+        self.session_label = QLabel(self._session_text())
+        self.session_label.setToolTip(self.workstation.agent_diagnostic)
+        self.session_label.setObjectName("cardMeta")
+        self.session_label.setContentsMargins(20, 2, 0, 0)
+        layout.addWidget(self.session_label)
+        self.reservation_label = QLabel(self.workstation.reservation_message)
+        self.reservation_label.setObjectName("cardStatus")
+        self.reservation_label.setWordWrap(True)
+        self.reservation_label.setVisible(bool(self.workstation.reservation_message))
+        layout.addWidget(self.reservation_label)
         layout.addStretch()
 
         layout.addSpacing(10)
@@ -146,28 +157,87 @@ class WorkstationCard(QFrame):
         self.account_selector.add_requested.connect(self.account_add_requested)
         layout.addWidget(self.account_selector)
         layout.addSpacing(12)
-        action_row = QHBoxLayout()
-        action_row.setSpacing(8)
+        secondary_row = QHBoxLayout()
+        secondary_row.setSpacing(8)
         details = QPushButton("Details")
         details.setObjectName("cardSecondaryButton")
         details.clicked.connect(lambda: self.selected.emit(self.workstation))
-        action_row.addWidget(details)
+        secondary_row.addWidget(details, 1)
         self.ping_btn = QPushButton("Ping")
         self.ping_btn.setObjectName("cardSecondaryButton")
         self.ping_btn.setToolTip("Erreichbarkeit des konfigurierten RDP-Ziels pr\u00fcfen")
         self.ping_btn.clicked.connect(self._ping)
-        action_row.addWidget(self.ping_btn)
-        connect = QPushButton("Wiederverbinden" if self.workstation.matching_sessions(self.user.get_rdp_username()) else "Verbinden")
-        connect.setObjectName("cardPrimaryButton")
-        connect.setEnabled(self.workstation.can_connect(self.user.get_rdp_username()) or self.workstation.can_choose_session())
-        if not self.workstation.can_connect(self.user.get_rdp_username()):
-            connect.setText("Reserviert" if self.workstation.reservation_block_reason else self.workstation.get_status_display())
-            if self.workstation.can_choose_session():
-                connect.setText("Sitzung öffnen …")
-        connect.setToolTip(self.workstation.reservation_message)
-        connect.clicked.connect(lambda: self.connect_requested.emit(self.workstation))
-        action_row.addWidget(connect, 1)
+        secondary_row.addWidget(self.ping_btn, 1)
+        layout.addLayout(secondary_row)
+        layout.addSpacing(8)
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
+        self.connect_btn = QPushButton()
+        self.connect_btn.setObjectName("cardPrimaryButton")
+        self.connect_btn.clicked.connect(lambda: self.connect_requested.emit(self.workstation))
+        action_row.addWidget(self.connect_btn, 1)
+        self.logoff_btn = QPushButton("Abmelden")
+        self.logoff_btn.setObjectName("dangerButton")
+        self.logoff_btn.setToolTip("Windows prüft Sitzung, Anmeldezeit und Benutzerkennung vor der Abmeldung.")
+        self.logoff_btn.clicked.connect(lambda: self.logoff_requested.emit(self.workstation))
+        action_row.addWidget(self.logoff_btn)
         layout.addLayout(action_row)
+        self.refresh_status()
+
+    def set_workstation(self, workstation: Workstation, user: User) -> None:
+        self.workstation = workstation
+        self.user = user
+        self.name_label.setText(workstation.display_name)
+        self.hostname_label.setText(
+            workstation.hostname or workstation.fqdn or workstation.ip_address or "Kein Verbindungsziel"
+        )
+        self.location_label.setText(
+            f"{workstation.site or 'Ohne Standort'}  ·  {workstation.description or 'Workstation'}"
+        )
+        self.account_selector.set_workstation(workstation, user)
+        self.refresh_status()
+
+    def refresh_status(self) -> None:
+        accent = self._accent_color().name()
+        self._apply_card_accent()
+        self.glyph.set_color(self._accent_color())
+        self.status_dot.setStyleSheet(f"color: {accent}; font-size: 12px;")
+        self.status_label.setText(self._status_text())
+        self.status_label.setToolTip(self.workstation.agent_diagnostic)
+        self.source_label.setText(self.workstation.get_agent_source_display())
+        self.source_label.setToolTip(self.workstation.agent_diagnostic)
+        self.session_label.setText(self._session_text())
+        self.session_label.setToolTip(self.workstation.agent_diagnostic)
+        self.reservation_label.setText(self.workstation.reservation_message)
+        self.reservation_label.setVisible(bool(self.workstation.reservation_message))
+
+        owned = self.workstation.owned_sessions(self.user.windows_identity)
+        may_logoff = bool(owned) and not self.workstation.reservation_block_reason
+        connected_own = any(
+            item.get("session_state") in ("connected", "reconnected", "logon")
+            for item in owned
+        )
+        connected_own = connected_own and may_logoff
+        disconnected_own = may_logoff and not connected_own
+        can_connect = self.workstation.can_connect(
+            self.user.get_rdp_username(),
+            self.user.windows_identity,
+        )
+        self.logoff_btn.setVisible(connected_own or disconnected_own)
+        self.connect_btn.setVisible(not connected_own)
+        if connected_own:
+            return
+        self.connect_btn.setText("Wiederverbinden" if disconnected_own else "Verbinden")
+        self.connect_btn.setEnabled(can_connect or self.workstation.can_choose_session())
+        if not can_connect:
+            self.connect_btn.setText(
+                "Reserviert"
+                if self.workstation.reservation_block_reason
+                else self.workstation.get_status_display()
+            )
+            if self.workstation.can_choose_session():
+                self.connect_btn.setText("Sitzung öffnen …")
+        self.connect_btn.setToolTip(self.workstation.reservation_message)
 
     def _ping(self) -> None:
         """Ping the same target that the RDP profile will use."""
@@ -225,7 +295,11 @@ class WorkstationCard(QFrame):
 
     def _accent_color(self) -> QColor:
         ws = self.workstation
-        if not ws.enabled or ws.agent_status == AgentStatus.OFFLINE:
+        if (
+            not ws.enabled
+            or ws.agent_status == AgentStatus.OFFLINE
+            or ws.agent_status_source == "none"
+        ):
             return Colors.text_muted
         if ws.manual_flag_type == ManualFlagType.BLOCKED or ws.agent_status == AgentStatus.ERROR:
             return Colors.error
@@ -236,6 +310,13 @@ class WorkstationCard(QFrame):
         if ws.manual_flag_type == ManualFlagType.CALCULATION_RUNNING:
             return Colors.info
         return Colors.success
+
+    def _apply_card_accent(self) -> None:
+        accent = self._accent_color()
+        width = 2 if accent == Colors.text_muted else 4
+        self.setStyleSheet(
+            f"QFrame#workstationCard {{ border: {width}px solid {accent.name()}; }}"
+        )
 
     def _status_text(self) -> str:
         state = self.workstation.get_status_display()
@@ -297,6 +378,7 @@ class WorkstationCardsWidget(QWidget):
 
     workstation_selected = Signal(Workstation)
     connect_requested = Signal(Workstation)
+    logoff_requested = Signal(Workstation)
     account_selected = Signal(Workstation, str)
     account_add_requested = Signal(Workstation)
     add_requested = Signal()
@@ -435,26 +517,66 @@ class WorkstationCardsWidget(QWidget):
             if session_user and workstation.current_session_user != session_user:
                 continue
             result.append(workstation)
-        return result
+        return sorted(
+            result,
+            key=lambda ws: (
+                self._visual_priority(ws),
+                ws.display_name.casefold(),
+                ws.workstation_id.casefold(),
+            ),
+        )
+
+    @staticmethod
+    def _visual_priority(workstation: Workstation) -> int:
+        """Order available green, occupied blue, alerts, then unconfirmed grey."""
+        if (
+            not workstation.enabled
+            or workstation.agent_status == AgentStatus.OFFLINE
+            or workstation.agent_status_source == "none"
+        ):
+            return 3
+        if (
+            workstation.manual_flag_type in {ManualFlagType.BLOCKED, ManualFlagType.MAINTENANCE}
+            or workstation.agent_status in {AgentStatus.ERROR, AgentStatus.STALE}
+        ):
+            return 2
+        if (
+            workstation.has_active_session()
+            or workstation.manual_flag_type == ManualFlagType.CALCULATION_RUNNING
+        ):
+            return 1
+        return 0
 
     def _rebuild_grid(self) -> None:
         if not hasattr(self, "_ping_results"):
             self._ping_results: dict[str, str] = {}
+        filtered = self._filtered_workstations()
+        columns = self._column_count()
+        existing_cards = [item for item in self._cards if isinstance(item, WorkstationCard)]
+        if (
+            self._columns == columns
+            and [item.workstation.workstation_id for item in existing_cards]
+            == [item.workstation_id for item in filtered]
+        ):
+            for card, workstation in zip(existing_cards, filtered):
+                card.set_workstation(workstation, self.user)
+            return
+        scroll_position = self.scroll.verticalScrollBar().value()
         while self.grid.count():
             item = self.grid.takeAt(0)
             if item.widget():
                 item.widget().hide()
                 item.widget().deleteLater()
         self._cards.clear()
-        columns = self._column_count()
         self._columns = columns
         items: list[QWidget] = []
-        for workstation in self._filtered_workstations():
+        for workstation in filtered:
             card = WorkstationCard(workstation, self.user)
             card.ping_result.setText(self._ping_results.get(workstation.workstation_id, ""))
             card.ping_completed.connect(lambda result, key=workstation.workstation_id: self._ping_results.__setitem__(key, result))
             card.selected.connect(self.workstation_selected)
             card.connect_requested.connect(self.connect_requested)
+            card.logoff_requested.connect(self.logoff_requested)
             card.account_selected.connect(self.account_selected)
             card.account_add_requested.connect(self.account_add_requested)
             items.append(card)
@@ -466,6 +588,7 @@ class WorkstationCardsWidget(QWidget):
             self.grid.addWidget(card, row, column)
             self.grid.setColumnStretch(column, 1)
             self._cards.append(card)
+        self.scroll.verticalScrollBar().setValue(scroll_position)
 
     def _column_count(self) -> int:
         width = max(self.scroll.viewport().width(), self.width())
@@ -480,21 +603,27 @@ class WorkstationCardsWidget(QWidget):
     def set_workstations(self, workstations: list[Workstation]) -> None:
         self.workstations = workstations
         selected_site = self.site_filter.currentData()
-        self.site_filter.blockSignals(True)
-        self.site_filter.clear()
-        self.site_filter.addItem("Alle Standorte", "")
-        for site in sorted({ws.site for ws in self.workstations if ws.site}):
-            self.site_filter.addItem(site, site)
-        selected_index = self.site_filter.findData(selected_site)
-        self.site_filter.setCurrentIndex(max(0, selected_index))
-        self.site_filter.blockSignals(False)
+        sites = sorted({ws.site for ws in self.workstations if ws.site})
+        existing_sites = [self.site_filter.itemData(i) for i in range(1, self.site_filter.count())]
+        if existing_sites != sites:
+            self.site_filter.blockSignals(True)
+            self.site_filter.clear()
+            self.site_filter.addItem("Alle Standorte", "")
+            for site in sites:
+                self.site_filter.addItem(site, site)
+            selected_index = self.site_filter.findData(selected_site)
+            self.site_filter.setCurrentIndex(max(0, selected_index))
+            self.site_filter.blockSignals(False)
         selected_user = self.user_filter.currentData()
-        self.user_filter.blockSignals(True)
-        self.user_filter.clear()
-        self.user_filter.addItem("Alle Benutzer", "")
-        self._populate_user_filter()
-        self.user_filter.setCurrentIndex(max(0, self.user_filter.findData(selected_user)))
-        self.user_filter.blockSignals(False)
+        users = sorted({ws.current_session_user for ws in self.workstations if ws.current_session_user})
+        existing_users = [self.user_filter.itemData(i) for i in range(1, self.user_filter.count())]
+        if existing_users != users:
+            self.user_filter.blockSignals(True)
+            self.user_filter.clear()
+            self.user_filter.addItem("Alle Benutzer", "")
+            self._populate_user_filter()
+            self.user_filter.setCurrentIndex(max(0, self.user_filter.findData(selected_user)))
+            self.user_filter.blockSignals(False)
         self._rebuild_grid()
 
 

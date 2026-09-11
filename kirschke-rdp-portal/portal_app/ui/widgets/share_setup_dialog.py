@@ -27,20 +27,34 @@ class ShareConnectionWorker(QThread):
 
 
 class ShareSetupDialog(QDialog):
-    def __init__(self, current_path: str, parent=None):
+    def __init__(
+        self,
+        current_path: str,
+        parent=None,
+        *,
+        suggested_path: str = r"\\Remote-Ettlingen\RDP-Status",
+        suggested_username: str = r"Remote-Ettlingen\PortalLeser",
+        workstation_name: str = "",
+    ):
         super().__init__(parent)
-        self.setWindowTitle("Netzwerkfreigabe einrichten")
+        self.setWindowTitle(
+            f"Fallback für {workstation_name} einrichten"
+            if workstation_name
+            else "Netzwerkfreigabe einrichten"
+        )
         self.setMinimumWidth(560)
         self.worker = None
         self.connected_path = ""
         layout = QVBoxLayout(self)
-        intro = QLabel("Einmal für deinen Windows-Benutzer einrichten. Der Statusordner und das Lesekonto "
-                       "müssen auf dem Freigabe-Rechner bereits eingerichtet sein.")
+        intro = QLabel(
+            "Dieser Datei-Fallback gilt nur für die ausgewählte Maschine. "
+            "Statusordner und Lesekonto müssen auf dem Zielrechner bereits eingerichtet sein."
+        )
         intro.setWordWrap(True)
         layout.addWidget(intro)
         form = QFormLayout()
-        self.path = QLineEdit(current_path if current_path.startswith("\\\\") else r"\\Remote-Ettlingen\RDP-Status")
-        self.username = QLineEdit(r"Remote-Ettlingen\PortalLeser")
+        self.path = QLineEdit(current_path if current_path.startswith("\\\\") else suggested_path)
+        self.username = QLineEdit(suggested_username)
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.Password)
         form.addRow("Netzwerkordner", self.path)

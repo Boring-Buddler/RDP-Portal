@@ -1,11 +1,40 @@
-"""Read-only live status endpoint protected by Windows pipe ACLs."""
+"""Live status endpoint with a narrowly verified local-session logoff command."""
+import ctypes
 import json
 import logging
 import threading
+from ctypes import wintypes
 
 from shared.status_pipe import CLIENT_ACCESS, MAX_MESSAGE, PIPE_NAME, io_operation, read_message, write_message
 
 logger = logging.getLogger(__name__)
+
+
+def client_computer_name(handle) -> str:
+    """Return the SMB/named-pipe client computer as observed by Windows."""
+    kernel32 = ctypes.WinDLL("Kernel32.dll", use_last_error=True)
+    function = kernel32.GetNamedPipeClientComputerNameW
+    function.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.ULONG]
+    function.restype = wintypes.BOOL
+    buffer = ctypes.create_unicode_buffer(256)
+    raw_handle = int(handle)
+    if not function(wintypes.HANDLE(raw_handle), buffer, len(buffer)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return buffer.value.lstrip("\\")
+
+
+def client_is_local_administrator(handle) -> bool:
+    """Trust an admin command only when the target authenticated an admin token."""
+    import win32security
+    win32security.ImpersonateNamedPipeClient(handle)
+    try:
+        administrators = win32security.CreateWellKnownSid(
+            win32security.WinBuiltinAdministratorsSid,
+            None,
+        )
+        return bool(win32security.CheckTokenMembership(None, administrators))
+    finally:
+        win32security.RevertToSelf()
 
 
 def security_attributes(reader):
@@ -26,11 +55,18 @@ def security_attributes(reader):
 
 
 class StatusServer(threading.Thread):
-    def __init__(self, snapshot_factory, reader="PortalLeser", pipe_name=PIPE_NAME):
+    def __init__(
+        self,
+        snapshot_factory,
+        reader="PortalLeser",
+        pipe_name=PIPE_NAME,
+        logoff_handler=None,
+    ):
         super().__init__(name="agent-live-status", daemon=True)
         self.snapshot_factory = snapshot_factory
         self.reader = reader
         self.pipe_name = pipe_name
+        self.logoff_handler = logoff_handler
         self.stopping = threading.Event()
         self.ready = threading.Event()
         self.error = None
@@ -64,13 +100,26 @@ class StatusServer(threading.Thread):
                         io_operation(handle, connect, 1000)
                     except TimeoutError:
                         continue
-                    if read_message(handle, 128) != b"STATUS/1":
-                        continue
-                    try:
-                        data = self.snapshot_factory().to_dict()
-                    except Exception:
-                        logger.exception("Live-Status: WTS-Abfrage fehlgeschlagen")
-                        data = {"error": "wts_unavailable"}
+                    request = read_message(handle)
+                    if request == b"STATUS/1":
+                        try:
+                            data = self.snapshot_factory().to_dict()
+                        except Exception:
+                            logger.exception("Live-Status: WTS-Abfrage fehlgeschlagen")
+                            data = {"error": "wts_unavailable"}
+                    elif request.startswith(b"LOGOFF/1 ") and self.logoff_handler is not None:
+                        try:
+                            command = json.loads(request[len(b"LOGOFF/1 "):])
+                            data = self.logoff_handler(
+                                command,
+                                client_computer_name(handle),
+                                client_is_local_administrator(handle),
+                            )
+                        except Exception as exc:
+                            logger.warning("Agent-Abmeldung abgelehnt: %s", exc)
+                            data = {"ok": False, "message": str(exc)}
+                    else:
+                        data = {"ok": False, "message": "Unbekannte oder nicht freigegebene Agent-Anfrage."}
                     payload = json.dumps(data).encode("utf-8")
                     if len(payload) > MAX_MESSAGE:
                         payload = b'{"error":"status_too_large"}'

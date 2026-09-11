@@ -3,13 +3,14 @@
 from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QComboBox, QLineEdit, QFrame, QMessageBox, QMenu
+    QLineEdit, QFrame, QMessageBox, QMenu
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 
 from portal_app.ui.design import DesignSystem, Colors, Spacing
 from portal_app.ui.widgets.connect_button import ConnectButton
+from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 from portal_app.models.workstation import Workstation
 from portal_app.models.user import User
 from shared.enums import AgentStatus, ManualFlagType
@@ -400,7 +401,10 @@ class WorkstationTableWidget(QWidget):
         
         # Connect action
         connect_action = menu.addAction("Verbinden")
-        connect_action.setEnabled(ws.can_connect(self.user.get_rdp_username()) or ws.can_choose_session())
+        connect_action.setEnabled(
+            ws.can_connect(self.user.get_rdp_username(), self.user.windows_identity)
+            or ws.can_choose_session()
+        )
         connect_action.triggered.connect(lambda: self.connect_requested.emit(ws))
         
         menu.addSeparator()

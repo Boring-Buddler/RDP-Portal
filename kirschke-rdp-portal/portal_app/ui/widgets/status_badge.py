@@ -48,7 +48,7 @@ class StatusBadgeWidget(QLabel):
                 color: {Colors.surface.name()};
                 border-radius: {Spacing.SM}px;
                 padding: {Spacing.XXS}px {Spacing.XS}px;
-                font-size: {Typography.FONT_SIZE_XS}px;
+                font-size: {Typography.FONT_SIZE_XS}pt;
                 font-weight: {Typography.FONT_WEIGHT_SEMIBOLD};
             }}
         """)

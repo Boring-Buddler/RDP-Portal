@@ -98,6 +98,8 @@ wtsapi32.WTSQuerySessionInformationW.argtypes = [
 wtsapi32.WTSQuerySessionInformationW.restype = wintypes.BOOL
 wtsapi32.WTSFreeMemory.argtypes = [ctypes.c_void_p]
 wtsapi32.WTSFreeMemory.restype = None
+wtsapi32.WTSLogoffSession.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL]
+wtsapi32.WTSLogoffSession.restype = wintypes.BOOL
 kernel32.ProcessIdToSessionId.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
 kernel32.ProcessIdToSessionId.restype = wintypes.BOOL
 kernel32.WTSGetActiveConsoleSessionId.argtypes = []
@@ -235,7 +237,9 @@ class WTSMonitor:
             if client.AddressFamily == AF_INET:
                 return socket.inet_ntop(socket.AF_INET, raw[2:6])
             if client.AddressFamily == AF_INET6:
-                return socket.inet_ntop(socket.AF_INET6, raw[:16])
+                # WTS_CLIENT_ADDRESS reserves the first two bytes before both
+                # IPv4 and IPv6 addresses.
+                return socket.inet_ntop(socket.AF_INET6, raw[2:18])
             return None
         finally:
             self._free_buffer(address)
@@ -369,6 +373,13 @@ class WTSMonitor:
 
     def get_session(self, session_id: int) -> WTSSessionInfo | None:
         return self._get_session_info(session_id)
+
+    def logoff_session(self, session_id: int, wait: bool = True) -> None:
+        """End one session on this monitor's server or raise the Windows error."""
+        if self._server_handle is None or session_id <= 0:
+            raise ValueError("Ungültige Windows-Sitzung.")
+        if not wtsapi32.WTSLogoffSession(self._server_handle, session_id, wait):
+            raise ctypes.WinError(ctypes.get_last_error())
 
     def get_current_session_id(self) -> int:
         session_id = wintypes.DWORD()

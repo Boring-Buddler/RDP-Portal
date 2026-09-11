@@ -56,7 +56,7 @@ def test_portal_reads_selected_status_folder_despite_stale_environment(tmp_path,
     store.save([Workstation("PILOT", "Pilot", "target")], MockUser.create_user(), [])
     monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
     monkeypatch.setenv("AGENT_STATUS_DIR", str(tmp_path / "wrong-old-folder"))
-    window = MainWindow()
+    window = MainWindow(automatic_live_status=False)
     qtbot.addWidget(window)
     directory = tmp_path / "remote" / "agenten-status"
     write_agent_snapshot(AgentSnapshot("PILOT", "target", "1"), directory)
@@ -64,10 +64,6 @@ def test_portal_reads_selected_status_folder_despite_stale_environment(tmp_path,
     assert window.workstations[0].agent_status == AgentStatus.ONLINE
     assert window.agent_status_service.directory == directory
     assert LocalStore(store.path).agent_status_directory == directory
-    # The legacy Admin field also accepts an exact agent folder without moving inventory.
-    inventory_before = store.path
-    window._change_storage_directory(str(directory))
-    assert store.path == inventory_before
     assert "1 Maschine" in window.settings_view.agent_status.text()
 
 
@@ -77,7 +73,7 @@ def test_existing_inventory_inside_status_folder_still_loads_status(tmp_path, mo
     store.save([Workstation("PILOT", "Pilot", "target")], MockUser.create_user(), [])
     write_agent_snapshot(AgentSnapshot("PILOT", "target", "1"), directory)
     monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
-    window = MainWindow()
+    window = MainWindow(automatic_live_status=False)
     qtbot.addWidget(window)
     assert window.workstations[0].agent_status == AgentStatus.ONLINE
 
@@ -162,7 +158,7 @@ def test_new_json_updates_dashboard_details_report_and_restart(tmp_path, monkeyp
     directory.mkdir()
     store.set_agent_status_directory(directory)
     monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
-    window = MainWindow()
+    window = MainWindow(automatic_live_status=False)
     qtbot.addWidget(window)
     window.on_workstation_selected(window.workstations[0])
     write_agent_snapshot(AgentSnapshot("PILOT", "target", "1", current_session_state=SessionState.CONNECTED, current_session_user="TARGET\\tester"), directory)
@@ -181,23 +177,53 @@ def test_new_json_updates_dashboard_details_report_and_restart(tmp_path, monkeyp
     assert window.stack.currentWidget() is window.settings_view
     window.on_refresh()
     assert window.detail_view.workstation is window.workstations[0]
-    restarted = MainWindow()
+    restarted = MainWindow(automatic_live_status=False)
     qtbot.addWidget(restarted)
     assert restarted.workstations[0].agent_status == AgentStatus.ONLINE
     assert restarted.workstations[0].current_session_user == "TARGET\\tester"
 
 
-def test_json_picker_reads_file_from_its_exact_parent(tmp_path, monkeypatch, qtbot):
+def test_machine_specific_fallback_reads_its_exact_folder(tmp_path, monkeypatch, qtbot):
     store = LocalStore(tmp_path / "portal-state.json")
     store.save([Workstation("PILOT", "Pilot", "target")], MockUser.create_user(), [])
-    monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
-    window = MainWindow()
-    qtbot.addWidget(window)
     path = write_agent_snapshot(AgentSnapshot("PILOT", "target", "1"), tmp_path / "actual folder")
-    monkeypatch.setattr("portal_app.ui.widgets.management_pages.QFileDialog.getOpenFileName", lambda *a: (str(path), ""))
-    window.settings_view.choose_agent_json.click()
-    assert window.agent_status_service.directory == path.parent
+    store.set_workstation_agent_status_directory("PILOT", path.parent)
+    monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
+    window = MainWindow(automatic_live_status=False)
+    qtbot.addWidget(window)
+    assert window.workstations[0].agent_fallback_directory == str(path.parent)
+    assert window.workstations[0].agent_fallback_is_explicit
     assert window.workstations[0].agent_status == AgentStatus.ONLINE
+
+
+def test_each_machine_reads_only_its_own_fallback_folder(tmp_path):
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    write_agent_snapshot(AgentSnapshot("WS-1", "one", "1"), first_dir)
+    write_agent_snapshot(AgentSnapshot("WS-2", "two", "1"), second_dir)
+    first = Workstation(
+        "WS-1", "One", "one", agent_fallback_directory=str(first_dir),
+        agent_fallback_is_explicit=True,
+    )
+    second = Workstation(
+        "WS-2", "Two", "two", agent_fallback_directory=str(second_dir),
+        agent_fallback_is_explicit=True,
+    )
+    service = LocalAgentStatusService(directory=tmp_path / "unused")
+    service.apply([first, second])
+    assert first.agent_status_source == second.agent_status_source == "file"
+    assert service.last_match_count == 2
+    assert service.last_snapshot_count == 2
+    assert service.directory_summary == "2 maschinenspezifische Fallbackordner"
+
+
+def test_machine_fallback_paths_survive_restart_independently(tmp_path):
+    store = LocalStore(tmp_path / "portal-state.json")
+    first = store.set_workstation_agent_status_directory("WS-1", tmp_path / "one")
+    second = store.set_workstation_agent_status_directory("WS-2", tmp_path / "two")
+    restored = LocalStore(store.path)
+    assert restored.get_workstation_agent_status_directory("ws-1") == (first, True)
+    assert restored.get_workstation_agent_status_directory("WS-2") == (second, True)
 
 
 def test_nb05_assignment_updates_real_card_and_survives_restart(tmp_path, monkeypatch, qtbot):
@@ -212,7 +238,7 @@ def test_nb05_assignment_updates_real_card_and_survives_restart(tmp_path, monkey
     for old_id in ("NB05-PC12", "NB05-PC12-2"):
         write_agent_snapshot(AgentSnapshot(old_id, "NB05", "1.0.0", observed_at_utc=datetime.now(timezone.utc) - timedelta(days=1)), directory)
     monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
-    window = MainWindow()
+    window = MainWindow(automatic_live_status=False)
     qtbot.addWidget(window)
     assert window.agent_status_service.last_snapshot_count == 3
     assert window.agent_status_service.last_match_count == 0
@@ -236,7 +262,7 @@ def test_nb05_assignment_updates_real_card_and_survives_restart(tmp_path, monkey
     assert any("Belegt von NB05\\tester" == label.text() for label in card.findChildren(QLabel))
     restarted_store = LocalStore(store.path)
     monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: restarted_store)
-    restarted = MainWindow()
+    restarted = MainWindow(automatic_live_status=False)
     qtbot.addWidget(restarted)
     assert restarted.workstations[0].agent_workstation_id == "NB05"
     assert restarted.workstations[0].agent_status == AgentStatus.ONLINE
@@ -266,7 +292,7 @@ def test_failed_agent_binding_save_rolls_back(tmp_path, monkeypatch, qtbot):
     store.set_agent_status_directory(directory)
     write_agent_snapshot(AgentSnapshot("NB05", "NB05", "1"), directory)
     monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
-    window = MainWindow()
+    window = MainWindow(automatic_live_status=False)
     qtbot.addWidget(window)
     monkeypatch.setattr("portal_app.ui.main_window.QInputDialog.getItem", lambda *a: (a[3][1], True))
     monkeypatch.setattr(window, "_persist", lambda: False)

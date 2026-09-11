@@ -58,7 +58,10 @@ class ConnectButton(QPushButton):
             self.setEnabled(False)
             return
         
-        if not self.workstation.can_connect(self.user.get_rdp_username()):
+        if not self.workstation.can_connect(
+            self.user.get_rdp_username(),
+            self.user.windows_identity,
+        ):
             self.setText("Belegt")
             self.setStyleSheet(self._get_disabled_style())
             self.setEnabled(False)
@@ -66,7 +69,10 @@ class ConnectButton(QPushButton):
                 self.setText("Sitzung öffnen …")
                 self.setStyleSheet(self._get_normal_style())
                 self.setEnabled(True)
-        elif self.workstation.matching_sessions(self.user.get_rdp_username()):
+        elif (
+            self.workstation.matching_sessions(self.user.get_rdp_username())
+            or self.workstation.owned_sessions(self.user.windows_identity)
+        ):
             self.setText("Wiederverbinden")
             self.setStyleSheet(self._get_connected_style())
             self.setEnabled(True)

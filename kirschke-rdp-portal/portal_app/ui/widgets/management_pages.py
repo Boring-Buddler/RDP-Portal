@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -24,13 +25,13 @@ from PySide6.QtWidgets import (
 
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
-from shared.agent_paths import default_agent_directory
 
 
 class AdministrationWidget(QWidget):
     add_requested = Signal()
     edit_requested = Signal(Workstation)
     force_disconnect_requested = Signal(Workstation)
+    force_logoff_requested = Signal(Workstation)
     delete_requested = Signal(Workstation)
     rdp_access_requested = Signal(Workstation)
     lock_requested = Signal()
@@ -70,6 +71,14 @@ class AdministrationWidget(QWidget):
         self.force_disconnect.setEnabled(False)
         self.force_disconnect.clicked.connect(self._force_disconnect_selected)
         actions.addWidget(self.force_disconnect)
+        self.force_logoff = QPushButton("Notfall-Abmeldung …")
+        self.force_logoff.setObjectName("dangerButton")
+        self.force_logoff.setEnabled(False)
+        self.force_logoff.setToolTip(
+            "Fremde Windows-Sitzung nach erneuter Identitätsprüfung abmelden; benötigt echte Windows-Adminrechte."
+        )
+        self.force_logoff.clicked.connect(self._force_logoff_selected)
+        actions.addWidget(self.force_logoff)
         self.delete_workstation = QPushButton("Maschine löschen")
         self.delete_workstation.setObjectName("dangerButton")
         self.delete_workstation.setEnabled(False)
@@ -230,6 +239,12 @@ class AdministrationWidget(QWidget):
             return
         self.delete_requested.emit(self.workstations[row])
 
+    def _force_logoff_selected(self) -> None:
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self.workstations):
+            return
+        self.force_logoff_requested.emit(self.workstations[row])
+
     def _manage_rdp_access_selected(self) -> None:
         row = self.table.currentRow()
         if row < 0 or row >= len(self.workstations):
@@ -241,21 +256,22 @@ class AdministrationWidget(QWidget):
         enabled = 0 <= row < len(self.workstations)
         self.rdp_access.setEnabled(enabled)
         self.force_disconnect.setEnabled(enabled)
+        self.force_logoff.setEnabled(enabled and self.workstations[row].has_active_session())
         self.delete_workstation.setEnabled(enabled)
 
 
 class SettingsWidget(QWidget):
     edit_user_requested = Signal()
     agent_refresh_requested = Signal()
-    agent_directory_requested = Signal(str)
-    share_setup_requested = Signal()
     theme_changed = Signal(str)
+    status_refresh_interval_changed = Signal(int)
 
     def __init__(
         self,
         user: User,
         theme_mode: str = "system",
         dark_mode: bool = False,
+        status_refresh_interval: int = 5,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -364,48 +380,21 @@ class SettingsWidget(QWidget):
         agent_layout = QVBoxLayout(agent_card)
         agent_layout.setContentsMargins(22, 20, 22, 20)
         agent_layout.setSpacing(10)
-        agent_title = QLabel("Windows-Agent · gemeinsamer Statusordner")
+        agent_title = QLabel("Windows-Agent · Statusdiagnose")
         agent_title.setObjectName("detailCardTitle")
         agent_layout.addWidget(agent_title)
         self.agent_status = QLabel("Noch nicht geprüft")
         self.agent_status.setObjectName("detailValue")
         self.agent_status.setWordWrap(True)
         agent_layout.addWidget(self.agent_status)
-        self.agent_path = QLabel()
+        self.agent_path = QLabel(
+            "Datei-Fallbacks werden auf der jeweiligen Maschinenseite eingerichtet."
+        )
         self.agent_path.setObjectName("detailMuted")
         self.agent_path.setWordWrap(True)
         self.agent_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
         agent_layout.addWidget(self.agent_path)
-        self.agent_directory = QLineEdit()
-        self.agent_directory.setAccessibleName("Exakter Agent-Statusordner")
-        self.agent_directory.setPlaceholderText(str(default_agent_directory()))
-        self.agent_directory.setToolTip("Exakt den Ordner auswählen, in dem die Agent-JSON liegt. %USERPROFILE% wird aufgelöst.")
-        self.agent_directory.returnPressed.connect(lambda: self.agent_directory_requested.emit(self.agent_directory.text()))
-        agent_layout.addWidget(self.agent_directory)
-        path_buttons = QHBoxLayout()
-        browse_agent = QPushButton("Ordner auswählen …")
-        browse_agent.setObjectName("toolbarButton")
-        browse_agent.clicked.connect(self._choose_agent_directory)
-        path_buttons.addWidget(browse_agent)
-        apply_agent = QPushButton("Statusordner übernehmen")
-        apply_agent.setObjectName("toolbarButton")
-        apply_agent.clicked.connect(lambda: self.agent_directory_requested.emit(self.agent_directory.text()))
-        path_buttons.addWidget(apply_agent)
-        default_agent = QPushButton("Standard verwenden")
-        default_agent.setObjectName("toolbarButton")
-        default_agent.clicked.connect(lambda: self.agent_directory_requested.emit(str(default_agent_directory())))
-        path_buttons.addWidget(default_agent)
-        self.share_setup = QPushButton("Netzwerkzugriff einrichten …")
-        self.share_setup.setObjectName("toolbarButton")
-        self.share_setup.clicked.connect(self.share_setup_requested)
-        agent_layout.addWidget(self.share_setup, alignment=Qt.AlignLeft)
-        path_buttons.addStretch()
-        agent_layout.addLayout(path_buttons)
         diagnostic_buttons = QHBoxLayout()
-        self.choose_agent_json = QPushButton("Agent-JSON auswählen …")
-        self.choose_agent_json.setObjectName("toolbarButton")
-        self.choose_agent_json.clicked.connect(self._choose_agent_json)
-        diagnostic_buttons.addWidget(self.choose_agent_json)
         self.copy_agent_report = QPushButton("Diagnose kopieren")
         self.copy_agent_report.setObjectName("toolbarButton")
         self.copy_agent_report.clicked.connect(lambda: QApplication.clipboard().setText(self.agent_report.toPlainText()))
@@ -441,7 +430,34 @@ class SettingsWidget(QWidget):
         refresh_agent.setObjectName("toolbarButton")
         refresh_agent.clicked.connect(self.agent_refresh_requested)
         agent_layout.addWidget(refresh_agent, alignment=Qt.AlignLeft)
-        layout.insertWidget(0, agent_card)
+        refresh_card = QFrame()
+        refresh_card.setObjectName("detailCard")
+        refresh_layout = QHBoxLayout(refresh_card)
+        refresh_layout.setContentsMargins(22, 18, 22, 18)
+        refresh_copy = QVBoxLayout()
+        refresh_title = QLabel("Statusaktualisierung")
+        refresh_title.setObjectName("detailCardTitle")
+        refresh_copy.addWidget(refresh_title)
+        refresh_note = QLabel(
+            "Das Portal fragt erreichbare Agenten direkt und parallel ab. Schlägt der Live-Kanal fehl, "
+            "bleibt die Agent-JSON als gekennzeichneter Datei-Fallback aktiv."
+        )
+        refresh_note.setObjectName("detailMuted")
+        refresh_note.setWordWrap(True)
+        refresh_copy.addWidget(refresh_note)
+        refresh_layout.addLayout(refresh_copy, 1)
+        refresh_label = QLabel("Intervall")
+        refresh_label.setObjectName("detailLabel")
+        refresh_layout.addWidget(refresh_label)
+        self.status_refresh_interval = QSpinBox()
+        self.status_refresh_interval.setRange(2, 60)
+        self.status_refresh_interval.setSuffix(" Sekunden")
+        self.status_refresh_interval.setValue(max(2, min(60, status_refresh_interval)))
+        self.status_refresh_interval.setAccessibleName("Intervall der automatischen Statusaktualisierung")
+        self.status_refresh_interval.valueChanged.connect(self.status_refresh_interval_changed)
+        refresh_layout.addWidget(self.status_refresh_interval)
+        layout.insertWidget(0, refresh_card)
+        layout.insertWidget(1, agent_card)
         layout.addStretch()
         self.refresh()
         self.network_load_timer = QTimer(self)
@@ -457,6 +473,11 @@ class SettingsWidget(QWidget):
         self.theme_mode = theme_mode
         self.dark_mode = dark_mode
         self._update_theme_toggle_button()
+
+    def set_status_refresh_interval(self, seconds: int) -> None:
+        self.status_refresh_interval.blockSignals(True)
+        self.status_refresh_interval.setValue(max(2, min(60, seconds)))
+        self.status_refresh_interval.blockSignals(False)
 
     def _update_theme_toggle_button(self) -> None:
         self.theme_toggle_button.setText(
@@ -534,21 +555,6 @@ class SettingsWidget(QWidget):
     def _copy_network_info(self) -> None:
         QApplication.clipboard().setText(self.network_output.toPlainText())
 
-    def _choose_agent_directory(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "Ordner mit den Agent-Statusdateien auswählen", self.agent_directory.text())
-        if directory:
-            self.agent_directory.setText(directory)
-            self.agent_directory.setModified(True)
-
-    def _choose_agent_json(self) -> None:
-        from pathlib import Path
-
-        filename, _ = QFileDialog.getOpenFileName(
-            self, "Die aktualisierte Agent-JSON auswählen", self.agent_directory.text(), "JSON-Dateien (*.json);;Alle Dateien (*)"
-        )
-        if filename:
-            self.agent_directory_requested.emit(str(Path(filename).parent))
-
     def set_agent_report(self, report: str) -> None:
         scrollbar = self.agent_report.verticalScrollBar()
         position = scrollbar.value()
@@ -568,9 +574,9 @@ class SettingsWidget(QWidget):
             self.agent_status.setText(
                 f"{matched} Maschine(n) aktualisiert · {snapshots} Statusdatei(en)"
             )
-        self.agent_path.setText(f"Gelesener Statusordner: {path}")
-        if not self.agent_directory.isModified():
-            self.agent_directory.setText(path)
+        self.agent_path.setText(
+            f"Gelesene Fallbackordner: {path}. Einrichtung jeweils unter Maschinen → Details."
+        )
         self.agent_errors.setText("\n".join((errors or [])[:5]))
         self.agent_errors.setVisible(bool(errors))
 

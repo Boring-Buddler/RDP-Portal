@@ -1,5 +1,10 @@
-"""Bounded, authenticated Windows named-pipe status protocol. No command execution."""
+"""Bounded Windows named-pipe protocol for status and verified local logoff."""
+from contextlib import contextmanager
+from datetime import datetime, timezone
+import json
+import re
 import time
+import uuid
 
 PIPE_NAME = "KirschkeRDPStatus-v1"
 MAX_MESSAGE = 65536
@@ -43,28 +48,107 @@ def write_message(handle, data):
         raise OSError("Unvollständige Agent-Nachricht")
 
 
-def request_snapshot(target, pipe_name=PIPE_NAME):
-    import json
-    import re
+def _open_pipe(target, pipe_name):
     import win32con
     import win32file
     import win32pipe
-    from shared.agent_snapshot import AgentSnapshot
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", target) or target in (".", ".."):
         raise ValueError("Für die Live-Abfrage einen Hostnamen oder eine IPv4-Adresse verwenden.")
     path = rf"\\{target}\pipe\{pipe_name}"
-    started = time.monotonic()
     win32pipe.WaitNamedPipe(path, 1500)
-    handle = win32file.CreateFile(path, CLIENT_ACCESS, 0, None, win32con.OPEN_EXISTING,
-                                win32con.FILE_FLAG_OVERLAPPED | 0x00100000, None)  # SECURITY_SQOS_PRESENT, anonymous
+    handle = win32file.CreateFile(
+        path,
+        CLIENT_ACCESS,
+        0,
+        None,
+        win32con.OPEN_EXISTING,
+        win32con.FILE_FLAG_OVERLAPPED | 0x00100000 | 0x00020000,
+        None,
+    )  # SECURITY_SQOS_PRESENT | SECURITY_IMPERSONATION
+    win32pipe.SetNamedPipeHandleState(handle, win32pipe.PIPE_READMODE_MESSAGE, None, None)
+    return handle
+
+
+@contextmanager
+def _network_credentials(credentials):
+    """Use explicit target credentials only on the current worker thread."""
+    if not credentials:
+        yield
+        return
+    import win32con
+    import win32security
+    username, password = credentials
+    domain, separator, account = username.partition("\\")
+    if not separator:
+        domain, account = ".", username
+    if not domain or not account or not password:
+        raise ValueError("Windows-Administratorkonto und Kennwort fehlen.")
+    token = win32security.LogonUser(
+        account,
+        domain,
+        password,
+        win32con.LOGON32_LOGON_NEW_CREDENTIALS,
+        win32con.LOGON32_PROVIDER_WINNT50,
+    )
     try:
-        win32pipe.SetNamedPipeHandleState(handle, win32pipe.PIPE_READMODE_MESSAGE, None, None)
-        write_message(handle, b"STATUS/1")
-        raw = read_message(handle)
-        write_message(handle, b"OK")
-        data = json.loads(raw)
-        if "error" in data:
-            raise ValueError("Der Agent konnte den Windows-Sitzungsstatus nicht lesen.")
-        return AgentSnapshot.from_dict(data), round((time.monotonic() - started) * 1000)
+        win32security.ImpersonateLoggedOnUser(token)
+        yield
     finally:
-        handle.Close()
+        win32security.RevertToSelf()
+        token.Close()
+
+
+def _exchange(target, request, pipe_name=PIPE_NAME, credentials=None):
+    with _network_credentials(credentials):
+        handle = _open_pipe(target, pipe_name)
+        try:
+            write_message(handle, request)
+            raw = read_message(handle)
+            write_message(handle, b"OK")
+            return json.loads(raw)
+        finally:
+            handle.Close()
+
+
+def request_snapshot(target, pipe_name=PIPE_NAME):
+    from shared.agent_snapshot import AgentSnapshot
+    started = time.monotonic()
+    data = _exchange(target, b"STATUS/1", pipe_name)
+    if "error" in data:
+        raise ValueError("Der Agent konnte den Windows-Sitzungsstatus nicht lesen.")
+    return AgentSnapshot.from_dict(data), round((time.monotonic() - started) * 1000)
+
+
+def request_agent_logoff(
+    target,
+    session_id,
+    username,
+    login_time,
+    requester_identity,
+    expected_agent_id=None,
+    *,
+    administrative=False,
+    credentials=None,
+    pipe_name=PIPE_NAME,
+):
+    """Ask the SYSTEM agent to validate and locally end one exact session."""
+    request = {
+        "protocol": "LOGOFF/1",
+        "request_id": str(uuid.uuid4()),
+        "requested_at_utc": datetime.now(timezone.utc).isoformat(),
+        "session_id": session_id,
+        "username": username,
+        "login_time": login_time,
+        "requester_identity": requester_identity,
+        "expected_agent_id": expected_agent_id,
+        "administrative": bool(administrative),
+    }
+    data = _exchange(
+        target,
+        (b"LOGOFF/1 " + json.dumps(request, separators=(",", ":")).encode("utf-8")),
+        pipe_name,
+        credentials,
+    )
+    if not data.get("ok"):
+        raise PermissionError(data.get("message") or "Der Agent hat die Abmeldung abgelehnt.")
+    return data.get("message") or "Der Agent hat die Sitzung abgemeldet."

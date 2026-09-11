@@ -1,8 +1,9 @@
 """Workstation model for Kirschke RDP Workstation Portal."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from dataclasses import dataclass, field
+import re
 from shared.enums import AgentStatus, ConnectionTargetMode, SessionState, ManualFlagType
 from shared.schemas import WorkstationSchema, RDPProfileSchema, ManualFlagSchema
 from shared.validation import generate_test_entra_id, generate_test_upn
@@ -66,6 +67,12 @@ class Workstation:
     agent_last_seen_utc: Optional[datetime] = None
     agent_version: Optional[str] = None
     agent_diagnostic: str = "Noch keine Agent-Prüfung"  # local display only
+    agent_status_source: str = "none"  # transient: live, file or none
+    agent_live_error: Optional[str] = None  # transient; never confirms old data as current
+    # Client-local setting. SMB credentials and reachable paths can differ per
+    # portal PC, so this intentionally is not part of the shared machine schema.
+    agent_fallback_directory: Optional[str] = None
+    agent_fallback_is_explicit: bool = False
     
     # Current Session
     current_session_state: SessionState = SessionState.NONE
@@ -217,6 +224,22 @@ class Workstation:
         """Return the concrete target and the address source used by RDP."""
         return self.get_rdp_profile().resolve_connection_target()
 
+    def get_agent_status_target(self) -> str:
+        """Return the SMB server identity authenticated for this agent channel.
+
+        RDP can deliberately use an IP address when the Windows hostname is not
+        resolvable.  A per-machine fallback connection may nevertheless be
+        authenticated under that hostname.  Reusing its UNC server keeps the
+        read-only named pipe in the same Windows SMB logon session.
+        """
+        configured = (self.agent_fallback_directory or "").strip()
+        if self.agent_fallback_is_explicit:
+            match = re.match(r"^\\\\([^\\]+)\\", configured)
+            if match:
+                return match.group(1)
+        target, _ = self.get_connection_target()
+        return target
+
     def get_connection_target_display(self) -> str:
         labels = {
             ConnectionTargetMode.IP_ADDRESS: "IP-Adresse",
@@ -259,6 +282,11 @@ class Workstation:
     def matching_sessions(self, default_username: Optional[str] = None) -> list[dict]:
         """UI account matching only; Windows remains responsible for authentication."""
         account = (self.selected_login_account or self.username_hint or default_username or "").strip().casefold()
+        return self.sessions_for_account(account)
+
+    def sessions_for_account(self, account: Optional[str]) -> list[dict]:
+        """Return active sessions whose reported Windows name matches one account."""
+        account = (account or "").strip().casefold()
         if not account:
             return []
         sessions = list(self.agent_sessions)
@@ -272,11 +300,23 @@ class Workstation:
                      ((item.get("domain") + "\\") if item.get("domain") else "") +
                      (item.get("username") or "")).strip().casefold() == account]
 
-    def can_connect(self, default_username: Optional[str] = None) -> bool:
+    def owned_sessions(self, windows_identity: Optional[str]) -> list[dict]:
+        """Use the detected process identity, never the account dropdown, as UI ownership hint."""
+        return self.sessions_for_account(windows_identity)
+
+    def can_connect(
+        self,
+        default_username: Optional[str] = None,
+        windows_identity: Optional[str] = None,
+    ) -> bool:
         """Check if connection is allowed."""
         if not self.enabled or self.reservation_block_reason:
             return False
-        return not self.is_blocked() and (not self.has_active_session() or bool(self.matching_sessions(default_username)))
+        return not self.is_blocked() and (
+            not self.has_active_session()
+            or bool(self.matching_sessions(default_username))
+            or bool(self.owned_sessions(windows_identity))
+        )
 
     def has_active_session(self) -> bool:
         """Treat connected and disconnected Windows sessions as occupied."""
@@ -349,6 +389,24 @@ class Workstation:
             AgentStatus.ERROR: "Fehler",
         }
         return status_names.get(self.agent_status, "Unbekannt")
+
+    def get_agent_source_display(self, now: Optional[datetime] = None) -> str:
+        """Show where the currently displayed snapshot came from and how old it is."""
+        if self.agent_last_seen_utc is None:
+            return "Kein bestätigter Status"
+        now = now or datetime.now(timezone.utc)
+        last_seen = self.agent_last_seen_utc
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+        age = max(0, int((now - last_seen).total_seconds()))
+        age_text = "gerade eben" if age < 2 else f"vor {age} Sekunden"
+        if self.agent_status_source == "live":
+            if self.agent_live_error:
+                return f"Live nicht erreichbar · letzter Stand {age_text}"
+            return f"Live · {age_text}"
+        if self.agent_status_source == "file":
+            return f"Datei-Fallback · {age_text}"
+        return f"Unbestätigte Quelle · {age_text}"
     
     def get_session_user_display(self) -> str:
         """Get display text for current session user."""

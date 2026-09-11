@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
+from threading import Event, Lock
 import uuid
 
 import pytest
@@ -10,8 +11,9 @@ from portal_app.models.user import MockUser
 from portal_app.services.reservation_access import apply_reservations
 from portal_app.services.agent_status import LocalAgentStatusService
 from portal_app.services.local_store import LocalStore, StoreConflictError
+from portal_app.services.live_status_polling import AutomaticLiveStatusPoller
 from shared.agent_snapshot import AgentSnapshot, write_agent_snapshot
-from shared.enums import SessionState
+from shared.enums import ConnectionTargetMode, SessionState
 
 
 def test_reservation_boundaries_and_identity():
@@ -81,12 +83,93 @@ def test_newer_live_snapshot_survives_old_json(tmp_path):
     service.apply([ws])
     assert ws.current_session_state == SessionState.CONNECTED
     assert 'Live-Abfrage' in ws.agent_diagnostic
+    assert ws.get_agent_source_display().startswith('Live ·')
+    service.record_live_failure(ws, 'Live-Abfrage fehlgeschlagen (53).')
+    service.apply([ws])
+    assert ws.current_session_state == SessionState.CONNECTED
+    assert ws.get_agent_source_display().startswith('Live nicht erreichbar')
     write_agent_snapshot(AgentSnapshot('A', 'PC', '1.2.0', observed_at_utc=now+timedelta(seconds=1)), tmp_path)
     service.apply([ws])
     assert ws.current_session_state == SessionState.NONE
-    assert 'Live-Abfrage' not in ws.agent_diagnostic
+    assert 'Datei-Fallback' in ws.agent_diagnostic
+    assert ws.get_agent_source_display().startswith('Datei-Fallback ·')
+    service.accept_live_snapshot(
+        ws,
+        AgentSnapshot('A', 'PC', '1.2.1', observed_at_utc=now+timedelta(seconds=2)),
+        3,
+    )
+    service.apply([ws])
+    assert ws.get_agent_source_display().startswith('Live ·')
     with pytest.raises(ValueError):
         service.accept_live_snapshot(ws, AgentSnapshot('B', 'WRONG', '1.2.0'), 4)
+
+
+def test_agent_status_reuses_explicit_smb_server_when_rdp_uses_ip():
+    ws = Workstation(
+        'A',
+        'Remote',
+        'Remote-Ettlingen',
+        ip_address='192.168.2.10',
+        connection_target_mode=ConnectionTargetMode.IP_ADDRESS,
+        agent_fallback_directory=r'\\Remote-Ettlingen\RDP-Status',
+        agent_fallback_is_explicit=True,
+    )
+
+    assert ws.get_connection_target()[0] == '192.168.2.10'
+    assert ws.get_agent_status_target() == 'Remote-Ettlingen'
+
+    ws.agent_fallback_is_explicit = False
+    assert ws.get_agent_status_target() == '192.168.2.10'
+
+
+def test_automatic_live_poller_limits_overlap_and_backs_off(qtbot, monkeypatch):
+    import portal_app.services.live_status_polling as module
+
+    release = Event()
+    both_started = Event()
+    lock = Lock()
+    active = 0
+    maximum = 0
+    calls = []
+
+    def request(target):
+        nonlocal active, maximum
+        with lock:
+            calls.append(target)
+            active += 1
+            maximum = max(maximum, active)
+            if active == 2:
+                both_started.set()
+        try:
+            release.wait(1)
+            if target == 'SLOW':
+                raise TimeoutError('bounded')
+            return AgentSnapshot(target, target, '1.2.1'), 2
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(module, 'request_snapshot', request)
+    poller = AutomaticLiveStatusPoller(max_parallel=2)
+    successes = []
+    failures = []
+    poller.succeeded.connect(lambda *args: successes.append(args))
+    poller.failed.connect(lambda *args: failures.append(args))
+    slow = Workstation('SLOW', 'Slow', 'SLOW')
+    fast = Workstation('FAST', 'Fast', 'FAST')
+
+    assert poller.request_many([slow, fast], 5) == 2
+    assert poller.request_many([slow], 5) == 0
+    qtbot.waitUntil(both_started.is_set)
+    release.set()
+    qtbot.waitUntil(lambda: len(successes) == 1)
+    qtbot.waitUntil(lambda: len(failures) == 1 and not poller._in_flight)
+    assert maximum == 2
+    assert calls.count('SLOW') == 1
+    assert poller.request_many([slow], 5) == 0
+    assert poller.request_many([slow], 5, force=True) == 1
+    qtbot.waitUntil(lambda: len(failures) == 2)
+    poller.stop()
 
 
 def test_native_status_pipe_roundtrip_idle_and_rejected_command():
@@ -120,6 +203,37 @@ def test_native_status_pipe_roundtrip_idle_and_rejected_command():
     finally:
         server.stop()
     assert not server.is_alive() and server.error is None
+
+
+def test_native_status_pipe_routes_bounded_logoff_request():
+    import win32api
+    from workstation_agent.status_server import StatusServer
+    from shared.status_pipe import request_agent_logoff
+
+    name = 'KirschkeTest-' + uuid.uuid4().hex
+    factory = Mock(return_value=AgentSnapshot('TEST', win32api.GetComputerName(), '1.2.3'))
+    handler = Mock(return_value={"ok": True, "message": "verified"})
+    server = StatusServer(factory, win32api.GetUserName(), name, handler)
+    server.start()
+    assert server.ready.wait(3) and server.error is None
+    try:
+        result = request_agent_logoff(
+            win32api.GetComputerName(),
+            3,
+            'DOMAIN\\user',
+            '2026-09-10T08:00:00+00:00',
+            'DOMAIN\\user',
+            'TEST',
+            pipe_name=name,
+        )
+        assert result == "verified"
+        command, client_name, is_admin = handler.call_args.args
+        assert command["session_id"] == 3
+        assert command["expected_agent_id"] == "TEST"
+        assert client_name
+        assert isinstance(is_admin, bool)
+    finally:
+        server.stop()
 
 
 def test_pipe_reader_cannot_create_server_instance():

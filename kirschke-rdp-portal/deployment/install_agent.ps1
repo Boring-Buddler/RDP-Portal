@@ -19,21 +19,14 @@ $script:ConfigPath = Join-Path $script:DataDirectory "agent-config.json"
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     if ($Uninstall) {
-        $child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $PSCommandPath + '"'), '-Uninstall')
+        $child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList @('-NoProfile', '-File', ('"' + $PSCommandPath + '"'), '-Uninstall')
         exit $child.ExitCode
     }
     throw "Die rechnerweite Agent-Installation muss als Administrator gestartet werden."
 }
 
 function Get-DefaultStatusDirectory {
-    $portalConfig = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "KirschkeRDPPortal\storage-config.json"
-    try {
-        $portalSettings = Get-Content -LiteralPath $portalConfig -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($portalSettings.PSObject.Properties.Name -contains 'agent_status_directory' -and $portalSettings.agent_status_directory) {
-            return [Environment]::ExpandEnvironmentVariables($portalSettings.agent_status_directory)
-        }
-    } catch { }
-    return (Join-Path $env:USERPROFILE "Prof. Dr.-Ing. Dieter Kirschke GmbH & Co. KG\IB Kirschke - Dokumente\90\_K.I. Strategie\Testprogramme\RDP-Portal\remote\agenten-status")
+    return "C:\RDP-Portal-Daten\agenten-status"
 }
 
 function Test-StatusDirectoryAccess {
@@ -108,7 +101,7 @@ function Install-Agent {
         live_status_reader = "PortalLeser"
         status_directory = $SelectedStatusDirectory
         log_file = (Join-Path $script:DataDirectory "agent.log")
-        agent_version = "1.2.0"
+        agent_version = "1.3.0"
     }
     $config | ConvertTo-Json | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
     $arguments = "--config `"$script:ConfigPath`" --run"
@@ -117,11 +110,11 @@ function Install-Agent {
     $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "Kirschke RDP-Agent: veröffentlicht den Sitzungsstatus von $SelectedWorkstationId." -Force | Out-Null
-    $uninstallCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $script:InstallDirectory 'Install-Agent.ps1')`" -Uninstall"
+    $uninstallCommand = "powershell.exe -NoProfile -File `"$(Join-Path $script:InstallDirectory 'Install-Agent.ps1')`" -Uninstall"
     $registry = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\KirschkeRDPAgent'
     New-Item -Path $registry -Force | Out-Null
     New-ItemProperty -Path $registry -Name DisplayName -Value 'Kirschke RDP Agent' -Force | Out-Null
-    New-ItemProperty -Path $registry -Name DisplayVersion -Value '1.2.0' -Force | Out-Null
+    New-ItemProperty -Path $registry -Name DisplayVersion -Value '1.3.0' -Force | Out-Null
     New-ItemProperty -Path $registry -Name UninstallString -Value $uninstallCommand -Force | Out-Null
     if ($LaunchNow) {
         $startedAt = [DateTimeOffset]::UtcNow
@@ -209,7 +202,7 @@ function Show-Installer {
     $form.Controls.Add($idBox)
 
     $folderLabel = New-Object System.Windows.Forms.Label
-    $folderLabel.Text = "Gemeinsamer Statusordner"; $folderLabel.AutoSize = $true; $folderLabel.Location = New-Object System.Drawing.Point(24, 178)
+    $folderLabel.Text = "Lokaler Statusordner auf diesem Zielrechner"; $folderLabel.AutoSize = $true; $folderLabel.Location = New-Object System.Drawing.Point(24, 178)
     $form.Controls.Add($folderLabel)
     $folderBox = New-Object System.Windows.Forms.TextBox
     $folderBox.Text = if ($StatusDirectory) { $StatusDirectory } else { Get-DefaultStatusDirectory }
@@ -219,13 +212,13 @@ function Show-Installer {
     $browseButton.Text = "Auswählen..."; $browseButton.Size = New-Object System.Drawing.Size(100, 25); $browseButton.Location = New-Object System.Drawing.Point(514, 199)
     $browseButton.Add_Click({
         $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-        $dialog.Description = "Exakt denselben Agent-Statusordner wie im Portal auswählen"
+        $dialog.Description = "Lokalen Ordner auswählen, in den der Agent als SYSTEM schreiben darf"
         $dialog.SelectedPath = $folderBox.Text
         if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $folderBox.Text = $dialog.SelectedPath }
     })
     $form.Controls.Add($browseButton)
     $hint = New-Object System.Windows.Forms.Label
-    $hint.Text = "Für Dauerbetrieb einen UNC-Netzwerkordner mit Schreibrechten für das Computerkonto verwenden. Ein Benutzer-OneDrive synchronisiert nach Abmeldung nicht weiter. Portal: denselben Ordner unter Windows-Agent wählen."
+    $hint.Text = "Empfohlen: C:\RDP-Portal-Daten\agenten-status. Der Agent schreibt lokal als SYSTEM. Das Portal liest den maschinenspezifischen SMB-Fallback unter \\RECHNER\RDP-Status; PortalLeser bleibt ein reines Lesekonto."
     $hint.AutoSize = $false; $hint.Size = New-Object System.Drawing.Size(590, 70); $hint.Location = New-Object System.Drawing.Point(24, 235); $hint.ForeColor = [System.Drawing.Color]::FromArgb(70, 70, 70)
     $form.Controls.Add($hint)
     $intervalLabel = New-Object System.Windows.Forms.Label
@@ -245,7 +238,7 @@ function Show-Installer {
             [System.Windows.Forms.MessageBox]::Show("Bitte geben Sie die Maschinen-ID exakt wie im Portal an. Erlaubt sind Buchstaben, Zahlen, Punkt, Unterstrich und Bindestrich.", "Maschinen-ID prüfen", "OK", "Warning") | Out-Null; return
         }
         if (-not $selectedDirectory) {
-            [System.Windows.Forms.MessageBox]::Show("Bitte wählen Sie den gemeinsamen Agent-Statusordner aus.", "Statusordner fehlt", "OK", "Warning") | Out-Null; return
+            [System.Windows.Forms.MessageBox]::Show("Bitte wählen Sie den lokalen Agent-Statusordner aus.", "Statusordner fehlt", "OK", "Warning") | Out-Null; return
         }
         try {
             $seconds = @(30, 60, 15)[$intervalBox.SelectedIndex]

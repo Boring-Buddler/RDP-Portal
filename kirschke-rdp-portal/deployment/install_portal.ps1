@@ -37,8 +37,8 @@ function Install-Portal {
     $link.Save()
     New-Item -Path $registry -Force | Out-Null
     New-ItemProperty -Path $registry -Name DisplayName -Value 'Kirschke RDP Portal' -Force | Out-Null
-    New-ItemProperty -Path $registry -Name DisplayVersion -Value '0.2.4' -Force | Out-Null
-    $command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $installDirectory 'Install-Portal.ps1')`" -Uninstall"
+    New-ItemProperty -Path $registry -Name DisplayVersion -Value '0.2.12' -Force | Out-Null
+    $command = "powershell.exe -NoProfile -File `"$(Join-Path $installDirectory 'Install-Portal.ps1')`" -Uninstall"
     New-ItemProperty -Path $registry -Name UninstallString -Value $command -Force | Out-Null
 }
 
@@ -54,7 +54,7 @@ $form.ClientSize = New-Object System.Drawing.Size(570, 220)
 $form.StartPosition = 'CenterScreen'
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
 $label = New-Object System.Windows.Forms.Label
-$label.Text = "Portal 0.2.4 für diesen Benutzer installieren.`n`nAlte installierte Programmdateien werden vor der Neuinstallation entfernt. Maschinen, Reservierungen und Einstellungen bleiben erhalten.`n`nZiel: $installDirectory"
+$label.Text = "Portal 0.2.12 für diesen Benutzer installieren.`n`nAlte installierte Programmdateien werden vor der Neuinstallation entfernt. Maschinen, Reservierungen und Einstellungen bleiben erhalten.`n`nZiel: $installDirectory"
 $label.Location = New-Object System.Drawing.Point(20, 20)
 $label.Size = New-Object System.Drawing.Size(530, 140)
 $form.Controls.Add($label)

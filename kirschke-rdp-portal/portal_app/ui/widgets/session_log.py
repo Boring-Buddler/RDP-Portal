@@ -7,7 +7,6 @@ from pathlib import Path
 from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QComboBox,
     QDateEdit,
     QFileDialog,
     QFrame,
@@ -20,6 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 
 from portal_app.models.session import SessionEvent, SessionLog
 from portal_app.models.user import User

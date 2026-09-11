@@ -17,6 +17,10 @@ class User:
     is_authenticated: bool = True
     rdp_username: Optional[str] = None
     rdp_domain: Optional[str] = None
+    # The process identity is detected at startup and is deliberately not
+    # editable or persisted. It identifies an own Windows session in the UI;
+    # the native logoff path still verifies the SID immediately before use.
+    windows_identity: Optional[str] = None
     
     @property
     def is_admin(self) -> bool:

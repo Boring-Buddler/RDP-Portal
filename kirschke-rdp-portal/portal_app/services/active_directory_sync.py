@@ -100,7 +100,7 @@ foreach ($user in $toRemove) {{ Remove-ADGroupMember -Identity $group -Members $
 """
     try:
         result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
             text=True,
             encoding="utf-8",

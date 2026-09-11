@@ -61,6 +61,18 @@ def test_dialog_connects_in_background_and_clears_password(qtbot, monkeypatch):
     assert dialog.worker.arguments is None
 
 
+def test_dialog_uses_machine_suggestion_instead_of_unrelated_legacy_path(qtbot):
+    dialog = ShareSetupDialog(
+        "",
+        suggested_path=r"\\NB12KI\RDP-Status",
+        suggested_username=r"NB12KI\PortalLeser",
+        workstation_name="NB12KI",
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.path.text() == r"\\NB12KI\RDP-Status"
+    assert dialog.username.text() == r"NB12KI\PortalLeser"
+
+
 def test_unreadable_status_folder_does_not_store_credentials(tmp_path, monkeypatch):
     monkeypatch.setattr(share_connection, "Path", lambda value: tmp_path / "absent")
     monkeypatch.setattr(win32wnet, "WNetAddConnection2", lambda *a: None)

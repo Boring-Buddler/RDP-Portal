@@ -49,7 +49,6 @@ $setupArguments = @(
     "--workpath", (Join-Path $workRoot "setup"),
     "--specpath", $specRoot,
     "--add-data", "$installerDirectory;payload",
-    "--add-data", "$installer;.",
     (Join-Path $PSScriptRoot "agent_installer.py")
 )
 & python @setupArguments

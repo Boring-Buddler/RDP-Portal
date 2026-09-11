@@ -42,6 +42,7 @@ class LocalStore:
             else self.path.with_name(f"{self.path.stem}-preferences.json")
         )
         self.theme_mode = "system"
+        self.status_refresh_interval = 5
         self.selected_login_accounts: dict[str, str] = {}
         self._state_signature: tuple[int, int] | None = None
         self._events_signature: tuple[int, int] | None = None
@@ -97,6 +98,48 @@ class LocalStore:
     def agent_status_directory(self) -> Path:
         configured = self._read_directory_config().get("agent_status_directory")
         return expand_directory(configured) if configured else resolve_agent_directory(self.directory)
+
+    @property
+    def workstation_agent_status_directories(self) -> dict[str, Path]:
+        """Return client-local, per-machine fallback folders."""
+        configured = self._read_directory_config().get("workstation_agent_status_directories", {})
+        if not isinstance(configured, dict):
+            return {}
+        result: dict[str, Path] = {}
+        for workstation_id, directory in configured.items():
+            if isinstance(workstation_id, str) and isinstance(directory, str) and directory.strip():
+                result[workstation_id.casefold()] = expand_directory(directory)
+        return result
+
+    def get_workstation_agent_status_directory(self, workstation_id: str) -> tuple[Path, bool]:
+        """Return a machine folder and whether it was explicitly configured."""
+        configured = self.workstation_agent_status_directories
+        key = workstation_id.strip().casefold()
+        if key in configured:
+            return configured[key], True
+        # Upgrade compatibility: the former global folder remains the default
+        # until each existing machine receives its own fallback path.
+        return self.agent_status_directory, False
+
+    def set_workstation_agent_status_directory(
+        self,
+        workstation_id: str,
+        directory: str | Path,
+    ) -> Path:
+        key = workstation_id.strip().casefold()
+        if not key:
+            raise ValueError("Die Maschinen-ID fehlt.")
+        target = expand_directory(directory)
+        if not target.is_absolute() or re.search(r"%[^%]+%", str(target)):
+            raise ValueError("Bitte einen vollständigen lokalen oder Netzwerkpfad angeben.")
+        config = self._read_directory_config()
+        configured = config.get("workstation_agent_status_directories", {})
+        configured = dict(configured) if isinstance(configured, dict) else {}
+        configured[key] = str(target)
+        config["workstation_agent_status_directories"] = configured
+        config["version"] = 2
+        write_json_atomic(self.agent_config_path, config)
+        return target
 
     def set_agent_status_directory(self, directory: str | Path) -> Path:
         target = expand_directory(directory)
@@ -163,6 +206,7 @@ class LocalStore:
             role=fallback.role,
             rdp_username=data.get("rdp_username"),
             rdp_domain=data.get("rdp_domain"),
+            windows_identity=fallback.windows_identity,
         )
 
     @staticmethod
@@ -188,6 +232,12 @@ class LocalStore:
         if not isinstance(data, dict):
             data = {}
         stored_theme = data.get("theme_mode")
+        stored_interval = data.get("status_refresh_interval", 5)
+        self.status_refresh_interval = (
+            max(2, min(60, stored_interval))
+            if type(stored_interval) is int
+            else 5
+        )
         choices = data.get("selected_login_accounts", {})
         self.selected_login_accounts = {
             key: value for key, value in choices.items()
@@ -203,9 +253,22 @@ class LocalStore:
         self.theme_mode = theme_mode if theme_mode in {"system", "light", "dark"} else "system"
         self._write_json(
             self.preferences_path,
-            {"version": 1, "theme_mode": self.theme_mode, "user": self._user_data(user),
-             "selected_login_accounts": self.selected_login_accounts},
+            {"version": 2, "theme_mode": self.theme_mode, "user": self._user_data(user),
+             "selected_login_accounts": self.selected_login_accounts,
+             "status_refresh_interval": self.status_refresh_interval},
         )
+
+    def save_status_refresh_interval(self, seconds: int, user: MockUser) -> int:
+        if type(seconds) is not int or not 2 <= seconds <= 60:
+            raise ValueError("Das Statusintervall muss zwischen 2 und 60 Sekunden liegen.")
+        previous = self.status_refresh_interval
+        self.status_refresh_interval = seconds
+        try:
+            self._save_preferences(user, self.theme_mode)
+        except OSError:
+            self.status_refresh_interval = previous
+            raise
+        return seconds
 
     def save_login_selection(self, workstation_id: str, account: str, user: MockUser) -> None:
         from shared.login_accounts import validate_login_account

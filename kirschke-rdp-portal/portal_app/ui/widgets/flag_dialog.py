@@ -3,13 +3,14 @@
 from typing import Optional
 from datetime import datetime
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QTextEdit, QPushButton, QFrame, QMessageBox
 )
 
 from portal_app.ui.design import Typography, Spacing
 from portal_app.models.workstation import Workstation
 from portal_app.models.user import User
+from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 from shared.enums import ManualFlagType
 
 

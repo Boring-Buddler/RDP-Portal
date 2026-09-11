@@ -7,7 +7,6 @@ from datetime import date, datetime, time, timedelta
 from PySide6.QtCore import QDateTime, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QComboBox,
     QDateTimeEdit,
     QDialog,
     QDialogButtonBox,
@@ -23,6 +22,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 
 from portal_app.models.reservation import Reservation
 from portal_app.models.user import User

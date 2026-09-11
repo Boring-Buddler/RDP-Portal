@@ -5,7 +5,7 @@ constants as specified in the Kirschke_Corporate_Design_Masterprompt.
 """
 
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 
 
 # =============================================================================
@@ -101,20 +101,16 @@ class Colors:
 # =============================================================================
 
 class Typography:
-    """Typography settings using Segoe UI as the primary font family."""
-    
-    # Font families (fallback chain)
-    FONT_FAMILY = "Segoe UI"
-    FONT_FAMILY_FALLBACK = ["Segoe UI", "Inter", "Arial", "Helvetica", "sans-serif"]
+    """Typography based on the Windows/Qt system font and scalable point sizes."""
     
     # Font sizes
-    FONT_SIZE_XS = 10
-    FONT_SIZE_SM = 12
-    FONT_SIZE_BASE = 14
-    FONT_SIZE_LG = 16
-    FONT_SIZE_XL = 18
-    FONT_SIZE_2XL = 20
-    FONT_SIZE_3XL = 24
+    FONT_SIZE_XS = 8
+    FONT_SIZE_SM = 8
+    FONT_SIZE_BASE = 9
+    FONT_SIZE_LG = 10
+    FONT_SIZE_XL = 11
+    FONT_SIZE_2XL = 13
+    FONT_SIZE_3XL = 16
     
     # Font weights
     FONT_WEIGHT_NORMAL = QFont.Normal
@@ -130,7 +126,10 @@ class Typography:
     @staticmethod
     def get_font(size: int = FONT_SIZE_BASE, weight: int = FONT_WEIGHT_NORMAL) -> QFont:
         """Create a font with specified size and weight."""
-        font = QFont(Typography.FONT_FAMILY, size, weight)
+        application = QApplication.instance()
+        font = QFont(application.font()) if application is not None else QFont()
+        font.setPointSize(size)
+        font.setWeight(weight)
         return font
     
     @classmethod
@@ -302,8 +301,7 @@ class StyleSheets:
                 border: 1px solid {Colors.brand_blue.name()};
                 border-radius: {BorderRadius.MD}px;
                 padding: {Spacing.SM}px {Spacing.LG}px;
-                font-family: {Typography.FONT_FAMILY};
-                font-size: {Typography.FONT_SIZE_BASE}px;
+                font-size: {Typography.FONT_SIZE_BASE}pt;
                 font-weight: {Typography.FONT_WEIGHT_MEDIUM};
             }}
             QPushButton:hover {{
@@ -331,8 +329,7 @@ class StyleSheets:
                 border: 1px solid {Colors.border.name()};
                 border-radius: {BorderRadius.MD}px;
                 padding: {Spacing.SM}px {Spacing.LG}px;
-                font-family: {Typography.FONT_FAMILY};
-                font-size: {Typography.FONT_SIZE_BASE}px;
+                font-size: {Typography.FONT_SIZE_BASE}pt;
             }}
             QPushButton:hover {{
                 background-color: {Colors.paper.name()};
@@ -380,8 +377,7 @@ class StyleSheets:
                 border: 1px solid {Colors.border.name()};
                 border-radius: {BorderRadius.MD}px;
                 padding: {Spacing.SM}px {Spacing.MD}px;
-                font-family: {Typography.FONT_FAMILY};
-                font-size: {Typography.FONT_SIZE_BASE}px;
+                font-size: {Typography.FONT_SIZE_BASE}pt;
                 selection-background-color: {Colors.brand_blue.name()};
                 selection-color: {Colors.surface.name()};
             }}
@@ -405,8 +401,7 @@ class StyleSheets:
                 border: 1px solid {Colors.border.name()};
                 border-radius: {BorderRadius.MD}px;
                 gridline-color: {Colors.border.name()};
-                font-family: {Typography.FONT_FAMILY};
-                font-size: {Typography.FONT_SIZE_SM}px;
+                font-size: {Typography.FONT_SIZE_SM}pt;
             }}
             QHeaderView::section {{
                 background-color: {Colors.surface_alt.name()};
@@ -438,7 +433,7 @@ class StyleSheets:
                 color: {Colors.surface.name()};
                 border-radius: {BorderRadius.SM}px;
                 padding: {Spacing.XXS}px {Spacing.XS}px;
-                font-size: {Typography.FONT_SIZE_XS}px;
+                font-size: {Typography.FONT_SIZE_XS}pt;
                 font-weight: {Typography.FONT_WEIGHT_SEMIBOLD};
             }}
         """

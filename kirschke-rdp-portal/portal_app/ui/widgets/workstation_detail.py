@@ -38,6 +38,7 @@ class WorkstationDetailWidget(QWidget):
     account_add_requested = Signal(Workstation)
     diagnostics_requested = Signal(Workstation)
     agent_assignment_requested = Signal(Workstation)
+    fallback_setup_requested = Signal(Workstation)
     edit_requested = Signal(Workstation)
     back_requested = Signal()
 
@@ -87,6 +88,10 @@ class WorkstationDetailWidget(QWidget):
         self.agent_assignment_btn.setObjectName("toolbarButton")
         self.agent_assignment_btn.clicked.connect(self._on_agent_assignment)
         agent_row.addWidget(self.agent_assignment_btn)
+        self.fallback_setup_btn = QPushButton("Datei-Fallback einrichten …")
+        self.fallback_setup_btn.setObjectName("toolbarButton")
+        self.fallback_setup_btn.clicked.connect(self._on_fallback_setup)
+        agent_row.addWidget(self.fallback_setup_btn)
         root.addLayout(agent_row)
         self.reservation_label = QLabel()
         self.reservation_label.setObjectName("cardStatus")
@@ -117,8 +122,8 @@ class WorkstationDetailWidget(QWidget):
         self.session_warning_text.setWordWrap(True)
         warning_copy.addWidget(self.session_warning_text)
         warning_layout.addLayout(warning_copy, 1)
-        self.logoff_btn = QPushButton("Sitzung abmelden …")
-        self.logoff_btn.setObjectName("toolbarButton")
+        self.logoff_btn = QPushButton("Abmelden")
+        self.logoff_btn.setObjectName("dangerButton")
         self.logoff_btn.clicked.connect(lambda: self.logoff_requested.emit(self.workstation) if self.workstation else None)
         warning_layout.addWidget(self.logoff_btn)
         self.session_warning.setVisible(False)
@@ -171,6 +176,8 @@ class WorkstationDetailWidget(QWidget):
                 (
                     ("status", "Gesamtstatus"),
                     ("agent", "Agent"),
+                    ("status_source", "Statusquelle"),
+                    ("fallback_path", "Datei-Fallback"),
                     ("agent_diagnostic", "Agent-Prüfung"),
                     ("last_seen", "Zuletzt gesehen"),
                     ("session", "Sitzung"),
@@ -338,6 +345,12 @@ class WorkstationDetailWidget(QWidget):
             "dns": ws.dns_server or "–",
             "status": ws.get_status_display(),
             "agent": ws.get_agent_status_display(),
+            "status_source": ws.get_agent_source_display(),
+            "fallback_path": (
+                ws.agent_fallback_directory
+                if ws.agent_fallback_is_explicit
+                else f"Bisheriger Standard: {ws.agent_fallback_directory or '–'}"
+            ),
             "agent_diagnostic": ws.agent_diagnostic,
             "last_seen": self._format_datetime(ws.agent_last_seen_utc),
             "session": {"connected": "Verbunden", "disconnected": "Getrennt", "reconnected": "Wiederverbunden",
@@ -375,25 +388,43 @@ class WorkstationDetailWidget(QWidget):
         else:
             self.flag_value.setText(ws.get_status_display())
             self.flag_reason.setText(ws.manual_flag_reason or "Ohne Begründung")
-        can_connect = ws.can_connect(self.user.get_rdp_username())
+        can_connect = ws.can_connect(
+            self.user.get_rdp_username(),
+            self.user.windows_identity,
+        )
         self.reservation_label.setText(ws.reservation_message)
         self.reservation_label.setVisible(bool(ws.reservation_message))
-        matching = ws.matching_sessions(self.user.get_rdp_username())
+        owned = ws.owned_sessions(self.user.windows_identity)
+        may_logoff = bool(owned) and not ws.reservation_block_reason
+        connected_own = any(
+            item.get("session_state") in ("connected", "reconnected", "logon")
+            for item in owned
+        )
+        connected_own = connected_own and may_logoff
+        disconnected_own = may_logoff and not connected_own
+        self.connect_btn.setVisible(not connected_own)
         self.connect_btn.setEnabled(can_connect or ws.can_choose_session())
-        self.connect_btn.setText(("Wiederverbinden" if matching else "RDP verbinden") if can_connect else "Zugang belegt")
+        self.connect_btn.setText(("Wiederverbinden" if disconnected_own else "RDP verbinden") if can_connect else "Zugang belegt")
         if ws.reservation_block_reason:
             self.connect_btn.setText("Reserviert")
         elif not can_connect and ws.can_choose_session():
             self.connect_btn.setText("Sitzung öffnen …")
         self.connect_btn.setToolTip(ws.reservation_message)
-        self.logoff_btn.setEnabled(any(type(item.get("session_id")) is int and item["session_id"] > 0 and item.get("login_time") for item in matching))
+        self.logoff_btn.setVisible(may_logoff)
+        self.logoff_btn.setEnabled(may_logoff and any(type(item.get("session_id")) is int and item["session_id"] > 0 and item.get("login_time") for item in owned))
         self.logoff_btn.setToolTip("Passendes Anmeldekonto wählen. Die Abmeldung benötigt Windows-Berechtigungen für deine eigene Sitzung.")
         self.session_warning.setVisible(ws.has_active_session())
         if ws.has_active_session():
-            self.session_warning_text.setText(
-                f"Status: {ws.get_status_display()} · Benutzer: {ws.get_session_user_display()}. "
-                "Eine getrennte Sitzung bleibt angemeldet. Wähle ihr Konto unter 'Anmelden als', um sie wieder zu öffnen oder abzumelden."
-            )
+            if may_logoff:
+                self.session_warning_text.setText(
+                    f"Status: {ws.get_status_display()} · Benutzer: {ws.get_session_user_display()}. "
+                    "Windows prüft Benutzerkennung, Sitzungsnummer und Anmeldezeit erneut, bevor es die Abmeldung annimmt."
+                )
+            else:
+                self.session_warning_text.setText(
+                    f"Status: {ws.get_status_display()} · Benutzer: {ws.get_session_user_display()}. "
+                    "Für eine fremde Sitzung steht hier keine Abmeldung zur Verfügung."
+                )
         self.set_flag_btn.setEnabled(ws.can_set_flag(ManualFlagType.CALCULATION_RUNNING, self.user.is_admin))
         is_owner = ws.manual_flag_set_by_upn == self.user.upn
         self.clear_flag_btn.setEnabled(ws.is_blocked() and ws.can_clear_flag(self.user.is_admin, is_owner))
@@ -436,6 +467,10 @@ class WorkstationDetailWidget(QWidget):
     def _on_agent_assignment(self) -> None:
         if self.workstation is not None:
             self.agent_assignment_requested.emit(self.workstation)
+
+    def _on_fallback_setup(self) -> None:
+        if self.workstation is not None:
+            self.fallback_setup_requested.emit(self.workstation)
 
     @Slot()
     def _on_set_flag(self) -> None:

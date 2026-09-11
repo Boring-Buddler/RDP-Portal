@@ -1,29 +1,35 @@
 # Kirschke RDP Workstation Portal
 
-**Version:** 0.2.4 (lokaler Pilot, Review vom 10.09.2026)
+**Version:** 0.2.12 (lokaler Pilot, Review vom 11.09.2026)
 
-Unter **Einstellungen → Windows-Agent → Netzwerkzugriff einrichten …** verbindet
-das Portal eine vorhandene SMB-Freigabe und speichert auf Wunsch die Zugangsdaten
-in der Windows-Anmeldeinformationsverwaltung des aktuellen Benutzers.
+Unter **Maschinen → Details → Datei-Fallback einrichten …** erhält jede
+Maschine ihre eigene SMB-Freigabe. Das Portal speichert auf Wunsch nur die
+Zugangsdaten in der Windows-Anmeldeinformationsverwaltung des aktuellen Benutzers;
+Kennwörter gelangen nicht in Portaldateien.
 
-Agent 1.1.0 startet rechnerweit als SYSTEM über die Windows-Aufgabenplanung und
+Agent 1.3.0 startet rechnerweit als SYSTEM über die Windows-Aufgabenplanung und
 erfasst RDP- und Konsolensitzungen mit Anmeldezeiten und einem begrenzten Verlauf.
-Für den Statusaustausch ohne angemeldeten Benutzer ist ein dauerhaft zugänglicher
-Netzwerkordner nötig; die benutzergebundene OneDrive-Synchronisierung genügt nicht.
+Der Agent schreibt als SYSTEM in seinen lokalen Ordner
+`C:\RDP-Portal-Daten\agenten-status`. Das Portal liest dessen Freigabe
+`\\ZIELRECHNER\RDP-Status` nur als Datei-Fallback; der direkte Statuskanal bleibt
+der bevorzugte Weg.
 Das Testpaket enthält jetzt `Kirschke-RDP-Portal-Setup.exe` und
 `Kirschke-RDP-Agent-Setup.exe`, jeweils mit Deinstallation über Windows.
 
 **Schnellstart:** [Kurzanleitung für Client, Anmeldekonten und Agent-Setup](docs/testbetrieb-kurz.md).
-Den exakten Ordner mit den Agent-JSON-Dateien unter **Einstellungen → Windows-Agent**
-einstellen; es wird kein Unterordner angehängt. **Standard verwenden** setzt
-`%USERPROFILE%\Prof. Dr.-Ing. Dieter Kirschke GmbH & Co. KG\IB Kirschke - Dokumente\90\_K.I. Strategie\Testprogramme\RDP-Portal\remote\agenten-status`.
+Den Fallback je Maschine in deren Details einstellen. Beim Update bleibt der frühere
+globale Ordner als Alt-Standard wirksam, bis die jeweilige Maschine einen eigenen
+Pfad erhalten hat.
 Pro Maschinenkarte gibt es jetzt **Anmelden als** mit **+ Benutzer hinzufügen …**.
 **Agent-Diagnose** im Dashboard zeigt den gelesenen Ordner, Dateien und Zuordnungen.
 Bei abweichender Agent-ID unter **Maschine → Details → Agent zuordnen …** den
 passenden Agenten auswählen. Die Zuordnung bleibt im Inventar gespeichert.
-Mit **Agent-JSON auswählen …** lässt sich die tatsächliche Statusdatei auswählen;
 **Diagnose kopieren** kopiert den vollständigen Prüfbericht zur Fehlersuche.
-Die Agent-Setup-EXE enthält alle benötigten Agent-Dateien; auf dem Ziel-PC ist kein Python nötig.
+Die Agent-Setup-EXE enthält alle benötigten Agent-Dateien und installiert ohne ein
+intern gestartetes PowerShell-Skript; auf dem Ziel-PC ist weder Python noch eine
+gelockerte PowerShell-Ausführungsrichtlinie nötig. Bei der ersten Installation
+richtet sie außerdem `PortalLeser` und `RDP-Status` mit einem selbst vergebenen
+Kennwort ein; das Konto erhält ausschließlich Leserechte auf den Statusordner.
 Nach dem Agent-Build: `dist-agent/Kirschke-RDP-Agent-Setup.exe`.
 Nach beiden Builds erstellt `python deployment/package_pilot.py` das vollständige
 Testpaket `dist/Kirschke-RDP-Testbetrieb.zip` einschließlich Kurzanleitung.
@@ -32,6 +38,15 @@ Für den ersten Testbetrieb sind der [Prüfbericht und die Abnahmeliste](docs/co
 maßgeblich. Der aktive Programmstart verwendet lokale JSON-Dateien und optionale Agent-Statusdateien.
 Die vorhandenen Entra-/Graph-/Windows-Dienst-Module sind noch keine integrierte Betriebsvariante.
 Remote-Adminbefehle und die bisherigen Dienstinstallationsschalter sind im Pilot deaktiviert.
+
+Das Maschinendashboard fragt den geschützten Agent-Statuskanal automatisch ab
+(Standard: 5 Sekunden, einstellbar von 2 bis 60 Sekunden) und zeigt Quelle und Alter
+jedes Zustands. Die Agent-JSON bleibt Fallback. Eigene Sitzungen können nach erneuter
+Windows-Identitätsprüfung vom SYSTEM-Agenten abgemeldet werden. Dazu müssen auch
+Sitzungsnummer, Anmeldezeit und der vom Agenten gemeldete RDP-Client passen. Die
+administrative Notfall-Abmeldung verlangt echte Windows-Administrator-Anmeldedaten
+des Zielrechners; das Kennwort wird nicht gespeichert. `PortalLeser` allein erhält
+keine administrative Abmeldeberechtigung.
 
 Neue Installationen starten ohne Beispielmaschinen. Bestehende Inventare bleiben erhalten.
 Der lokale Adminzugang wird beim ersten Öffnen eingerichtet; es gibt kein Standardpasswort.
@@ -300,14 +315,14 @@ $env:WORKSTATION_ID="WS-001"
 python -m workstation_agent.service --run
 ```
 
-Im Portal unter **Einstellungen → Windows-Agent** den exakten Statusordner auswählen.
-Der Agent schreibt in seinen konfigurierten `status_directory`. Standard für beide ist
-`RDP-Portal\remote\agenten-status` in der SharePoint-Bibliothek unter `%USERPROFILE%`.
+Der Agent schreibt auf jedem Ziel-PC in seinen lokalen `status_directory`, empfohlen
+`C:\RDP-Portal-Daten\agenten-status`. Im Portal wird auf der jeweiligen Maschinenseite
+der dazu freigegebene UNC-Pfad, etwa `\\NB12KI\RDP-Status`, eingestellt.
 
 The portal reads this local test status automatically every five seconds. A snapshot is matched by
 workstation ID or hostname. After 90 seconds without an update it is shown as stale and after five
-minutes as offline. Set the exact directory in the portal's Windows-Agent settings and
-in the agent setup. The portal no longer inherits `AGENT_STATUS_DIR` from Windows.
+minutes as offline. Each machine has its own client-local fallback folder. The portal
+no longer inherits `AGENT_STATUS_DIR` from Windows.
 
 ## Known Limitations (Phase 1)
 

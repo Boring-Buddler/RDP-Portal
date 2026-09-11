@@ -15,7 +15,7 @@ def main() -> int:
         if "--check" in sys.argv:
             return 0
         powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-        args = [str(powershell), "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(script), "-SourceDirectory", str(payload)]
+        args = [str(powershell), "-NoProfile", "-STA", "-File", str(script), "-SourceDirectory", str(payload)]
         if "--uninstall" in sys.argv:
             args.append("-Uninstall")
         result = subprocess.run(args, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)

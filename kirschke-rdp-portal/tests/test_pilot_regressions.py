@@ -289,7 +289,7 @@ def test_agent_poll_does_not_persist_unsaved_machine_edits(tmp_path, monkeypatch
     store = LocalStore(tmp_path / "state.json")
     store.save([machine()], MockUser.create_user(), [])
     monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
-    window = MainWindow()
+    window = MainWindow(automatic_live_status=False)
     qtbot.addWidget(window)
     window.workstations[0].display_name = "Unsaved edit"
     write_agent_snapshot(AgentSnapshot("WS-1", "WS-1", "1"), tmp_path / "agent-status")

@@ -34,6 +34,7 @@ from portal_app.models.workstation import Workstation
 from portal_app.services.local_store import LocalStore, StoreConflictError
 from portal_app.services.local_identity import detect_initial_user
 from portal_app.services.agent_status import LocalAgentStatusService
+from portal_app.services.live_status_polling import AutomaticLiveStatusPoller
 from portal_app.services.reservation_access import apply_reservations
 from shared.agent_paths import expand_directory
 from portal_app.version import PORTAL_VERSION
@@ -71,9 +72,15 @@ class MainWindow(QMainWindow):
     PAGE_SETTINGS = 4
     PAGE_DETAIL = 5
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        automatic_live_status: bool = True,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"Kirschke · RDP Portal {PORTAL_VERSION}")
+        self._automatic_live_status_enabled = automatic_live_status
         self.logo_path = Path(__file__).resolve().parent / "assets" / "kirschke_logo.png"
         self.setWindowIcon(kirschke_window_icon())
         self.setMinimumSize(QSize(1080, 720))
@@ -85,6 +92,7 @@ class MainWindow(QMainWindow):
         self.agent_status_service = LocalAgentStatusService(
             directory=self.store.agent_status_directory
         )
+        self.live_status_poller = AutomaticLiveStatusPoller(max_parallel=4, parent=self)
         self.workstations: list[Workstation] = []
         self.reservations: list[Reservation] = []
         self.session_events: list[SessionEvent] = []
@@ -92,8 +100,6 @@ class MainWindow(QMainWindow):
         self.nav_buttons: list[QPushButton] = []
         self._admin_unlocked = False
         self._pending_save = False
-        self._current_rdp_notice_key: str | None = None
-        self._dismissed_rdp_notice_key: str | None = None
         self._load_data()
         self._create_ui()
         self._update_storage_status("Gemeinsamer Speicher bereit")
@@ -105,10 +111,12 @@ class MainWindow(QMainWindow):
         self.rdp_poll_timer.start()
         self._poll_rdp_sessions()
         self.agent_poll_timer = QTimer(self)
-        self.agent_poll_timer.setInterval(5000)
-        self.agent_poll_timer.timeout.connect(self._poll_agent_status)
+        self.agent_poll_timer.setInterval(self.store.status_refresh_interval * 1000)
+        self.agent_poll_timer.timeout.connect(self._scheduled_status_update)
         self.agent_poll_timer.start()
         self._poll_agent_status()
+        if self._automatic_live_status_enabled:
+            QTimer.singleShot(0, lambda: self._run_status_update_cycle(force=True))
         self.shared_store_sync_timer = QTimer(self)
         self.shared_store_sync_timer.setInterval(5000)
         self.shared_store_sync_timer.timeout.connect(self._sync_shared_store)
@@ -117,6 +125,7 @@ class MainWindow(QMainWindow):
     def _load_data(self) -> None:
         fallback = []  # A new pilot must not offer fictitious targets as real PCs.
         self.workstations, self.current_user, self.reservations = self.store.load(fallback, self.current_user)
+        self._apply_local_agent_fallbacks()
         self.session_events = self.store.load_events()
         self.directory_accounts = self.store.load_directory_accounts()
         self.theme_mode = self.store.theme_mode
@@ -126,6 +135,15 @@ class MainWindow(QMainWindow):
         if not self.store.path.exists():
             self.store.save(self._saved_workstations, self._saved_user, self.reservations, self.store.theme_mode)
         self.store.initialize_event_log()
+
+    def _apply_local_agent_fallbacks(self) -> None:
+        """Attach client-local fallback paths to freshly loaded shared machines."""
+        for workstation in self.workstations:
+            directory, explicit = self.store.get_workstation_agent_status_directory(
+                workstation.workstation_id
+            )
+            workstation.agent_fallback_directory = str(directory)
+            workstation.agent_fallback_is_explicit = explicit
 
     def _create_ui(self) -> None:
         central = QWidget(self)
@@ -208,7 +226,7 @@ class MainWindow(QMainWindow):
         title_box.setSpacing(4)
         self.page_title = QLabel("Maschinen")
         self.page_title.setObjectName("pageTitle")
-        self.page_title.setFont(Typography.get_font(28, Typography.FONT_WEIGHT_BOLD))
+        self.page_title.setFont(Typography.heading_1())
         title_box.addWidget(self.page_title)
         self.page_subtitle = QLabel("Verfügbare Arbeitsplätze und aktive Sitzungen auf einen Blick.")
         self.page_subtitle.setObjectName("pageSubtitle")
@@ -220,33 +238,6 @@ class MainWindow(QMainWindow):
         self._update_summary()
         title_row.addWidget(self.summary, alignment=Qt.AlignBottom)
         layout.addLayout(title_row)
-
-        self.rdp_warning_banner = QFrame()
-        self.rdp_warning_banner.setObjectName("rdpWarningBanner")
-        warning_layout = QHBoxLayout(self.rdp_warning_banner)
-        warning_layout.setContentsMargins(16, 11, 10, 11)
-        warning_layout.setSpacing(12)
-        warning_icon = QLabel("!")
-        warning_icon.setObjectName("rdpWarningIcon")
-        warning_icon.setFixedSize(28, 28)
-        warning_icon.setAlignment(Qt.AlignCenter)
-        warning_layout.addWidget(warning_icon)
-        warning_copy = QVBoxLayout()
-        warning_copy.setSpacing(1)
-        self.rdp_warning_title = QLabel("RDP-Sitzung aktiv")
-        self.rdp_warning_title.setObjectName("rdpWarningTitle")
-        warning_copy.addWidget(self.rdp_warning_title)
-        self.rdp_warning_text = QLabel()
-        self.rdp_warning_text.setObjectName("rdpWarningText")
-        self.rdp_warning_text.setWordWrap(True)
-        warning_copy.addWidget(self.rdp_warning_text)
-        warning_layout.addLayout(warning_copy, 1)
-        dismiss = QPushButton("Ausblenden")
-        dismiss.setObjectName("warningDismissButton")
-        dismiss.clicked.connect(self._dismiss_rdp_warning)
-        warning_layout.addWidget(dismiss)
-        self.rdp_warning_banner.setVisible(False)
-        layout.addWidget(self.rdp_warning_banner)
 
         self.stack = QStackedWidget()
         self.stack.setObjectName("pageStack")
@@ -267,6 +258,7 @@ class MainWindow(QMainWindow):
             self.current_user,
             theme_mode=self.theme_mode,
             dark_mode=self.dark_mode,
+            status_refresh_interval=self.store.status_refresh_interval,
             parent=self,
         )
         self.stack.addWidget(self.settings_view)
@@ -279,6 +271,7 @@ class MainWindow(QMainWindow):
         self.nav_group.buttonClicked.connect(self._on_navigation_clicked)
         self.overview_view.workstation_selected.connect(self.on_workstation_selected)
         self.overview_view.connect_requested.connect(self.on_connect_requested)
+        self.overview_view.logoff_requested.connect(self._logoff_session)
         self.overview_view.account_selected.connect(self._select_login_account)
         self.overview_view.account_add_requested.connect(self._add_login_account)
         self.overview_view.add_requested.connect(self._add_workstation)
@@ -287,6 +280,7 @@ class MainWindow(QMainWindow):
         self.admin_view.add_requested.connect(self._add_workstation)
         self.admin_view.edit_requested.connect(self._edit_workstation)
         self.admin_view.force_disconnect_requested.connect(self._force_disconnect_workstation)
+        self.admin_view.force_logoff_requested.connect(self._admin_logoff_workstation)
         self.admin_view.delete_requested.connect(self._delete_workstation)
         self.admin_view.rdp_access_requested.connect(self._manage_rdp_access)
         self.admin_view.lock_requested.connect(self._lock_admin)
@@ -294,10 +288,13 @@ class MainWindow(QMainWindow):
         self.admin_view.active_directory_status_requested.connect(self._update_active_directory_status)
         self.admin_view.admin_password_change_requested.connect(self._change_local_admin_password)
         self.settings_view.edit_user_requested.connect(self._edit_user)
-        self.settings_view.agent_refresh_requested.connect(self._poll_agent_status)
-        self.settings_view.agent_directory_requested.connect(self._change_agent_directory)
-        self.settings_view.share_setup_requested.connect(self._setup_share)
+        self.settings_view.agent_refresh_requested.connect(
+            lambda: self._run_status_update_cycle(force=True)
+        )
         self.settings_view.theme_changed.connect(self._set_theme_mode)
+        self.settings_view.status_refresh_interval_changed.connect(
+            self._set_status_refresh_interval
+        )
         self.calendar_view.reservations_changed.connect(self._on_reservations_changed)
         self.detail_view.back_requested.connect(self._show_machines)
         self.detail_view.edit_requested.connect(self._edit_workstation)
@@ -308,8 +305,11 @@ class MainWindow(QMainWindow):
         self.detail_view.account_add_requested.connect(self._add_login_account)
         self.detail_view.diagnostics_requested.connect(self._run_rdp_diagnostics)
         self.detail_view.agent_assignment_requested.connect(self._assign_agent)
+        self.detail_view.fallback_setup_requested.connect(self._setup_workstation_fallback)
         self.detail_view.workstation_updated.connect(self._on_workstation_updated)
         self.workstation_selected.connect(self.detail_view.set_workstation)
+        self.live_status_poller.succeeded.connect(self._on_live_status_succeeded)
+        self.live_status_poller.failed.connect(self._on_live_status_failed)
 
     @Slot(Workstation, str)
     def _select_login_account(self, workstation: Workstation, account: str) -> None:
@@ -374,7 +374,7 @@ class MainWindow(QMainWindow):
         from shared.agent_snapshot import load_agent_snapshots
 
         try:
-            snapshots = load_agent_snapshots(self.store.agent_status_directory)
+            snapshots = load_agent_snapshots(self.agent_status_service.directory_for(workstation))
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Agent-Zuordnung", str(exc))
             return
@@ -416,17 +416,54 @@ class MainWindow(QMainWindow):
         self._poll_agent_status()
         self.detail_view.set_workstation(workstation)
 
-    @Slot()
-    def _dismiss_rdp_warning(self) -> None:
-        self._dismissed_rdp_notice_key = self._current_rdp_notice_key
-        self.rdp_warning_banner.setVisible(False)
+    @Slot(Workstation)
+    def _setup_workstation_fallback(self, workstation: Workstation) -> None:
+        from portal_app.ui.widgets.share_setup_dialog import ShareSetupDialog
+
+        try:
+            target, _ = workstation.get_connection_target()
+        except ValueError:
+            target = workstation.hostname
+        server = (workstation.hostname or target or workstation.display_name).split(".", 1)[0]
+        # Do not prefill a machine with the former global fallback.  Its server
+        # and the machine-local PortalLeser account can otherwise be mixed (for
+        # example Remote-Ettlingen as server with NB12KI as account).  Only a
+        # path explicitly saved for this machine is safe to offer again.
+        current = (
+            workstation.agent_fallback_directory or ""
+            if workstation.agent_fallback_is_explicit
+            else ""
+        )
+        dialog = ShareSetupDialog(
+            current,
+            self,
+            suggested_path=fr"\\{server}\RDP-Status",
+            suggested_username=fr"{server}\PortalLeser",
+            workstation_name=workstation.display_name,
+        )
+        self.agent_poll_timer.stop()
+        try:
+            if dialog.exec() != QDialog.Accepted:
+                return
+            path = self.store.set_workstation_agent_status_directory(
+                workstation.workstation_id,
+                dialog.connected_path,
+            )
+            workstation.agent_fallback_directory = str(path)
+            workstation.agent_fallback_is_explicit = True
+            self._poll_agent_status()
+            self.detail_view.set_workstation(workstation)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Datei-Fallback nicht gespeichert", str(exc))
+        finally:
+            self.agent_poll_timer.start()
+            dialog.deleteLater()
 
     @Slot()
     def _poll_rdp_sessions(self) -> None:
-        """Monitor RDP clients launched by this portal without blocking the UI."""
-        from portal_app.rdp import consume_finished_rdp_sessions, get_active_rdp_sessions
+        """Record closed RDP clients without adding a persistent visual notice."""
+        from portal_app.rdp import consume_finished_rdp_sessions
 
-        active = get_active_rdp_sessions()
         finished = consume_finished_rdp_sessions()
         for session in finished:
             workstation = next(
@@ -440,38 +477,10 @@ class MainWindow(QMainWindow):
                     EventResult.SUCCESS,
                     "Lokales RDP-Fenster geschlossen",
                 )
-        if active:
-            notice_key = "active:" + ",".join(str(session.pid) for session in sorted(active, key=lambda item: item.pid))
-            self._current_rdp_notice_key = notice_key
-            machine_names = ", ".join(sorted({session.display_name for session in active}))
-            count = len(active)
-            self.rdp_warning_title.setText(
-                f"{count} lokales RDP-Fenster aktiv"
-                if count == 1
-                else f"{count} lokale RDP-Fenster aktiv"
-            )
-            self.rdp_warning_text.setText(
-                f"{machine_names} · Beim Trennen kann die Windows-Sitzung angemeldet bleiben und den Zugang belegen."
-            )
-            if self._dismissed_rdp_notice_key != notice_key:
-                self.rdp_warning_banner.setVisible(True)
-        elif finished:
-            notice_key = "finished:" + ",".join(str(session.pid) for session in sorted(finished, key=lambda item: item.pid))
-            self._current_rdp_notice_key = notice_key
-            machine_names = ", ".join(sorted({session.display_name for session in finished}))
-            self.rdp_warning_title.setText("RDP-Fenster wurde geschlossen")
-            self.rdp_warning_text.setText(
-                f"{machine_names} · Das beendet nicht zwingend die Windows-Sitzung. Bitte auf der Maschine abmelden."
-            )
-            if self._dismissed_rdp_notice_key != notice_key:
-                self.rdp_warning_banner.setVisible(True)
-        else:
-            self._current_rdp_notice_key = None
-            self._dismissed_rdp_notice_key = None
 
     @Slot()
     def _poll_agent_status(self) -> None:
-        """Merge locally published WTS status into matching test workstations."""
+        """Apply file fallback and retained live snapshots without blocking the UI."""
         reservation_changed = apply_reservations(self.workstations, self.reservations, self.current_user.upn)
         if reservation_changed:
             self._refresh_workstation_views()
@@ -487,17 +496,24 @@ class MainWindow(QMainWindow):
         self.settings_view.set_agent_bridge_status(
             self.agent_status_service.last_match_count,
             self.agent_status_service.last_snapshot_count,
-            str(self.agent_status_service.directory),
+            self.agent_status_service.directory_summary,
             self.agent_status_service.last_errors,
         )
         service = self.agent_status_service
         self.settings_view.set_agent_report(service.last_report + f"\nPortalprogramm: {Path(sys.executable).resolve()}\nInventar: {self.store.path}\nKonfiguration: {self.store.agent_config_path}")
         checked = service.last_checked_at.astimezone().strftime("%H:%M:%S")
-        result = f"{service.last_file_count} JSON · {service.last_snapshot_count} gültig · {service.last_match_count}/{len(self.workstations)} Maschinen zugeordnet"
+        live_count = sum(ws.agent_status_source == "live" and not ws.agent_live_error for ws in self.workstations)
+        fallback_count = sum(ws.agent_status_source == "file" for ws in self.workstations)
+        result = (
+            f"Live {live_count} · Datei-Fallback {fallback_count} · "
+            f"{service.last_match_count}/{len(self.workstations)} Maschinen zugeordnet"
+        )
         if service.last_errors:
             result += " · Lesefehler"
-        self.overview_view.agent_channel_status.setText(f"Agent-Prüfung {checked}: {result}")
-        self.overview_view.agent_channel_status.setToolTip(str(service.directory))
+        self.overview_view.agent_channel_status.setText(
+            f"Automatisch alle {self.store.status_refresh_interval} s · Prüfung {checked}: {result}"
+        )
+        self.overview_view.agent_channel_status.setToolTip(service.directory_summary)
         if not changed and not reservation_changed:
             return
         # Heartbeats are transient. They must not save unsaved form changes or
@@ -507,6 +523,91 @@ class MainWindow(QMainWindow):
             selected = next((ws for ws in self.workstations if ws.workstation_id == self.detail_view.workstation.workstation_id), None)
             if selected is not None:
                 self.detail_view.set_workstation(selected)
+
+    @Slot()
+    def _scheduled_status_update(self) -> None:
+        if self._automatic_live_status_enabled:
+            self._run_status_update_cycle()
+        else:
+            self._poll_agent_status()
+
+    @Slot()
+    def _run_status_update_cycle(
+        self,
+        workstations: list[Workstation] | None = None,
+        *,
+        force: bool = False,
+    ) -> None:
+        """Refresh file fallback, then start bounded direct status requests."""
+        self._poll_agent_status()
+        targets = self.workstations if workstations is None else workstations
+        started = self.live_status_poller.request_many(
+            targets,
+            self.store.status_refresh_interval,
+            force=force,
+        )
+        if started:
+            self.overview_view.agent_channel_status.setText(
+                f"Live-Status wird für {started} Maschine(n) im Hintergrund aktualisiert …"
+            )
+
+    @Slot(str, object, object, int)
+    def _on_live_status_succeeded(
+        self,
+        workstation_id: str,
+        route: object,
+        snapshot: object,
+        elapsed: int,
+    ) -> None:
+        workstation = next(
+            (item for item in self.workstations if item.workstation_id == workstation_id),
+            None,
+        )
+        if workstation is None:
+            return
+        try:
+            if workstation.get_agent_status_target() != route:
+                return
+            self.agent_status_service.accept_live_snapshot(workstation, snapshot, elapsed)
+        except ValueError as exc:
+            self.agent_status_service.record_live_failure(workstation, str(exc))
+        self._poll_agent_status()
+
+    @Slot(str, object, str)
+    def _on_live_status_failed(
+        self,
+        workstation_id: str,
+        route: object,
+        message: str,
+    ) -> None:
+        workstation = next(
+            (item for item in self.workstations if item.workstation_id == workstation_id),
+            None,
+        )
+        if workstation is None:
+            return
+        if route is not None:
+            try:
+                if workstation.get_agent_status_target() != route:
+                    return
+            except ValueError:
+                return
+        self.agent_status_service.record_live_failure(workstation, message)
+        self._poll_agent_status()
+
+    @Slot(int)
+    def _set_status_refresh_interval(self, seconds: int) -> None:
+        try:
+            seconds = self.store.save_status_refresh_interval(seconds, self._saved_user)
+        except (OSError, ValueError) as exc:
+            self.settings_view.set_status_refresh_interval(
+                self.store.status_refresh_interval
+            )
+            QMessageBox.warning(self, "Statusintervall nicht gespeichert", str(exc))
+            return
+        self.agent_poll_timer.setInterval(seconds * 1000)
+        self.live_status_poller.set_interval(seconds)
+        self._run_status_update_cycle(force=True)
 
     @Slot()
     def _show_agent_diagnostics(self) -> None:
@@ -538,6 +639,8 @@ class MainWindow(QMainWindow):
         self.page_title.setText(title)
         self.page_subtitle.setText(subtitle)
         self.summary.setVisible(page_index == self.PAGE_MACHINES)
+        if page_index == self.PAGE_MACHINES and self._automatic_live_status_enabled:
+            self._run_status_update_cycle(force=True)
 
     def _request_admin_access(self) -> bool:
         if self.directory_mode != "active_directory":
@@ -664,30 +767,23 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _change_agent_directory(self, directory: str) -> None:
         try:
-            target = self.store.set_agent_status_directory(directory)
+            self.store.set_agent_status_directory(directory)
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Agent-Statusordner nicht gespeichert", str(exc))
             return
-        self.settings_view.agent_directory.setText(str(target))
+        self._apply_local_agent_fallbacks()
         self._poll_agent_status()
-
-    def _setup_share(self) -> None:
-        from portal_app.ui.widgets.share_setup_dialog import ShareSetupDialog
-        dialog = ShareSetupDialog(self.settings_view.agent_directory.text(), self)
-        self.agent_poll_timer.stop()
-        try:
-            if dialog.exec() == QDialog.Accepted:
-                self._change_agent_directory(dialog.connected_path)
-        finally:
-            self.agent_poll_timer.start()
-            dialog.deleteLater()
 
     @Slot(str)
     def _change_storage_directory(self, directory: str) -> None:
         target = expand_directory(directory)
         if target.name.casefold() in {"agent-status", "agenten-status"}:
-            self._change_agent_directory(str(target))
-            self._update_storage_status("Agent-Statusordner eingestellt; Inventar-Speicherort unverändert")
+            QMessageBox.warning(
+                self,
+                "Kein Inventarordner",
+                "Ein Agent-Statusordner ist kein Inventar-Speicherort. "
+                "Den Datei-Fallback in den Details der betreffenden Maschine einrichten.",
+            )
             return
         try:
             self.store.relocate(target, move_files=True)
@@ -749,6 +845,11 @@ class MainWindow(QMainWindow):
         if any(ws.workstation_id == dialog.workstation.workstation_id for ws in self.workstations):
             QMessageBox.warning(self, "Doppelte ID", "Diese Maschinen-ID ist bereits vergeben.")
             return
+        fallback, explicit = self.store.get_workstation_agent_status_directory(
+            dialog.workstation.workstation_id
+        )
+        dialog.workstation.agent_fallback_directory = str(fallback)
+        dialog.workstation.agent_fallback_is_explicit = explicit
         self.workstations.append(dialog.workstation)
         self._refresh_workstation_views()
         if dialog.should_save:
@@ -760,6 +861,8 @@ class MainWindow(QMainWindow):
         dialog = WorkstationDialog(workstation=workstation, parent=self)
         if dialog.exec() != QDialog.Accepted or not dialog.workstation:
             return
+        dialog.workstation.agent_fallback_directory = workstation.agent_fallback_directory
+        dialog.workstation.agent_fallback_is_explicit = workstation.agent_fallback_is_explicit
         index = self.workstations.index(workstation)
         self.workstations[index] = dialog.workstation
         self._refresh_workstation_views()
@@ -841,6 +944,90 @@ class MainWindow(QMainWindow):
             f"Das lokale RDP-Fenster für {workstation.display_name} wurde beendet. "
             "Dies ist kein vollständiges Windows-Logoff.",
         )
+
+    @Slot(Workstation)
+    def _admin_logoff_workstation(self, workstation: Workstation) -> None:
+        """Offer a separate emergency WTS action; Windows remains the authority."""
+        from portal_app.ui.widgets.session_logoff_dialog import SessionLogoffDialog
+
+        if not self._admin_unlocked:
+            return
+        sessions = [
+            dict(item)
+            for item in workstation.agent_sessions
+            if item.get("session_state")
+            in ("connected", "disconnected", "reconnected", "logon")
+            and type(item.get("session_id")) is int
+            and item["session_id"] > 0
+            and item.get("login_time")
+        ]
+        if not sessions:
+            QMessageBox.warning(
+                self,
+                "Keine prüfbare Sitzung",
+                "Für die Notfall-Abmeldung wird eine aktuelle Agent-Meldung mit Benutzer, "
+                "Sitzungsnummer und Anmeldezeit benötigt.",
+            )
+            return
+        labels = []
+        for item in sessions:
+            username = item.get("full_username") or (
+                ((item.get("domain") + "\\") if item.get("domain") else "")
+                + (item.get("username") or "")
+            )
+            labels.append(
+                f"{username} · Sitzung {item['session_id']} · {item.get('session_state')} · {item['login_time']}"
+            )
+        selected_index = 0
+        if len(sessions) > 1:
+            label, accepted = QInputDialog.getItem(
+                self,
+                "Administrative Notfall-Abmeldung",
+                "Welche Windows-Sitzung soll nach erneuter Live-Prüfung abgemeldet werden?",
+                labels,
+                0,
+                False,
+            )
+            if not accepted:
+                return
+            selected_index = labels.index(label)
+        try:
+            target, _ = workstation.get_connection_target()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Ziel fehlt", str(exc))
+            return
+        dialog = SessionLogoffDialog(
+            target,
+            workstation.display_name,
+            sessions[selected_index],
+            self,
+            administrative=True,
+            expected_agent_id=workstation.agent_workstation_id or workstation.workstation_id,
+            status_target=workstation.get_agent_status_target(),
+        )
+        dialog.request_finished.connect(
+            lambda success, message, ws=workstation: self._admin_logoff_finished(
+                ws, success, message
+            )
+        )
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _admin_logoff_finished(
+        self,
+        workstation: Workstation,
+        success: bool,
+        message: str,
+    ) -> None:
+        self._record_event(
+            workstation,
+            EventType.ADMIN_LOGOFF_COMPLETED if success else EventType.ADMIN_LOGOFF_FAILED,
+            EventResult.SUCCESS if success else EventResult.FAILED,
+            message,
+            EventSource.ADMIN,
+        )
+        if success:
+            self._run_status_update_cycle([workstation], force=True)
 
     @Slot(Workstation)
     def _delete_workstation(self, workstation: Workstation) -> None:
@@ -1112,19 +1299,33 @@ class MainWindow(QMainWindow):
                 "Ein zweiter Start wurde verhindert.",
             )
             return
-        if workstation.has_active_session() and not workstation.matching_sessions(self.current_user.get_rdp_username()):
+        owned_sessions = workstation.owned_sessions(self.current_user.windows_identity)
+        if (
+            workstation.has_active_session()
+            and not workstation.matching_sessions(self.current_user.get_rdp_username())
+            and not owned_sessions
+        ):
             if not workstation.can_choose_session():
                 QMessageBox.warning(self, "Sitzung nicht verfügbar", "Kein eindeutig gemeldetes Sitzungskonto oder die Maschine ist gesperrt.")
                 return
-            account, accepted = QInputDialog.getItem(self, "Eigene Sitzung wieder öffnen",
-                "Wähle das Konto deiner bestehenden Sitzung. Windows fragt dessen Anmeldung ab.\n"
-                "Der angezeigte Windows-Name kann von deiner E-Mail-Adresse abweichen.",
-                workstation.session_accounts(), 0, False)
-            if not accepted:
-                return
+            session_accounts = workstation.session_accounts()
+            if len(session_accounts) == 1:
+                # There is nothing meaningful to choose. Passing the reported
+                # account only pre-fills mstsc; Windows still authenticates it.
+                account = session_accounts[0]
+            else:
+                account, accepted = QInputDialog.getItem(self, "Bestehende Sitzung öffnen",
+                    "Wähle das Konto der bestehenden Sitzung. Windows fragt dessen Anmeldung ab.\n"
+                    "Der angezeigte Windows-Name kann von deiner E-Mail-Adresse abweichen.",
+                    session_accounts, 0, False)
+                if not accepted:
+                    return
             workstation.selected_login_account = account
             self._refresh_login_views(workstation)
-        if not workstation.can_connect(self.current_user.get_rdp_username()):
+        if not workstation.can_connect(
+            self.current_user.get_rdp_username(),
+            self.current_user.windows_identity,
+        ):
             QMessageBox.warning(
                 self,
                 "Verbindung nicht möglich",
@@ -1200,30 +1401,26 @@ class MainWindow(QMainWindow):
 
     @Slot(Workstation)
     def _query_live_status(self, workstation: Workstation) -> None:
-        from portal_app.ui.widgets.live_status_dialog import LiveStatusDialog
-        try:
-            route = workstation.get_connection_target()
-            target, _ = route
-        except ValueError as exc:
-            QMessageBox.warning(self, "Ziel fehlt", str(exc))
+        current = next(
+            (ws for ws in self.workstations if ws.workstation_id == workstation.workstation_id),
+            None,
+        )
+        if current is None:
             return
-        dialog = LiveStatusDialog(target, self)
-        dialog.exec()
-        if dialog.snapshot is not None:
-            current = next((ws for ws in self.workstations if ws.workstation_id == workstation.workstation_id), None)
-            try:
-                if current is not None and current.get_connection_target() == route:
-                    self.agent_status_service.accept_live_snapshot(current, dialog.snapshot, dialog.elapsed)
-                    self._poll_agent_status()
-            except ValueError as exc:
-                QMessageBox.warning(self, "Agent-Zuordnung", str(exc))
-        dialog.deleteLater()
+        self._run_status_update_cycle([current], force=True)
 
     @Slot(Workstation)
     def _logoff_session(self, workstation: Workstation) -> None:
         from portal_app.ui.widgets.session_logoff_dialog import SessionLogoffDialog
 
-        sessions = workstation.matching_sessions(self.current_user.get_rdp_username())
+        if workstation.reservation_block_reason:
+            QMessageBox.warning(
+                self,
+                "Fremde Reservierung",
+                "Während einer fremden Reservierung wird keine normale Abmeldung angeboten.",
+            )
+            return
+        sessions = workstation.owned_sessions(self.current_user.windows_identity)
         sessions = [item for item in sessions if type(item.get("session_id")) is int
                     and item["session_id"] > 0 and item.get("login_time")]
         if not sessions:
@@ -1242,7 +1439,19 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             QMessageBox.warning(self, "Ziel fehlt", str(exc))
             return
-        dialog = SessionLogoffDialog(target, workstation.display_name, dict(session), self)
+        dialog = SessionLogoffDialog(
+            target,
+            workstation.display_name,
+            dict(session),
+            self,
+            expected_agent_id=workstation.agent_workstation_id or workstation.workstation_id,
+            status_target=workstation.get_agent_status_target(),
+        )
+        dialog.request_finished.connect(
+            lambda success, _message, ws=workstation: (
+                self._run_status_update_cycle([ws], force=True) if success else None
+            )
+        )
         dialog.exec()
         dialog.deleteLater()
         self._poll_agent_status()
@@ -1308,6 +1517,7 @@ class MainWindow(QMainWindow):
             logger.warning("Could not refresh portal storage: %s", exc)
             return
         self.workstations, self.current_user, self.reservations = loaded
+        self._apply_local_agent_fallbacks()
         self._pending_save = False
         self._poll_agent_status()
         self.session_events = self.store.load_events()
@@ -1323,6 +1533,11 @@ class MainWindow(QMainWindow):
         self.calendar_view.set_user(self.current_user)
         self.settings_view.set_user(self.current_user)
         self.settings_view.set_theme_mode(self.theme_mode, self.dark_mode)
+        self.settings_view.set_status_refresh_interval(
+            self.store.status_refresh_interval
+        )
+        self.agent_poll_timer.setInterval(self.store.status_refresh_interval * 1000)
+        self.live_status_poller.set_interval(self.store.status_refresh_interval)
         self.detail_view.set_user(self.current_user)
         self._update_user_header()
         self._apply_theme()
@@ -1410,17 +1625,18 @@ class MainWindow(QMainWindow):
 
         self.rdp_poll_timer.stop()
         self.agent_poll_timer.stop()
+        self.live_status_poller.stop()
         cleanup_rdp_files()
         event.accept()
 
     @staticmethod
     def _application_style(dark_mode: bool = False) -> str:
         light_style = """
-            QMainWindow, QWidget#appBackground { background: #eef1f3; color: #17212b; font-family: "Segoe UI"; font-size: 14px; }
+            QMainWindow, QWidget#appBackground { background: #eef1f3; color: #17212b; }
             QFrame#appShell { background: #ffffff; border: 1px solid #d9e0e5; border-radius: 14px; }
             QWidget#header { background: #ffffff; border-top-left-radius: 14px; border-top-right-radius: 14px; }
             QLabel#brandLogo { background: transparent; }
-            QLabel#productName { color: #526876; border-left: 1px solid #ccd5dc; padding-left: 14px; font-size: 12px; font-weight: 600; letter-spacing: 1px; }
+            QLabel#productName { color: #526876; border-left: 1px solid #ccd5dc; padding-left: 14px; font-size: 8pt; font-weight: 600; letter-spacing: 1px; }
             QPushButton#userButton { background: transparent; color: #1f3444; border: none; text-align: right; padding: 4px 8px; font-weight: 600; }
             QPushButton#userButton:hover { color: #315e80; background: #eef4f8; border-radius: 7px; }
             QPushButton#avatarButton { background: #e8f0f6; color: #3c6687; border: none; border-radius: 21px; font-weight: 700; }
@@ -1432,16 +1648,14 @@ class MainWindow(QMainWindow):
             QPushButton#navButton:hover { color: #315e80; background: #eef4f8; }
             QPushButton#navButton:checked { color: #315e80; border-bottom-color: #567f9e; }
             QWidget#content { background: #f7f9fa; }
-            QLabel#eyebrow { color: #62839a; font-size: 11px; font-weight: 700; letter-spacing: 1px; }
+            QLabel#eyebrow { color: #62839a; font-size: 8pt; font-weight: 700; letter-spacing: 1px; }
             QLabel#pageTitle { color: #17232d; }
-            QLabel#pageSubtitle { color: #516170; font-size: 14px; }
-            QLabel#summaryBadge { background: #e8f1eb; color: #3d6f4d; border: 1px solid #cfe0d3; border-radius: 14px; padding: 6px 12px; font-weight: 600; font-size: 12px; }
-            QFrame#rdpWarningBanner, QFrame#sessionWarning { background: #fff7e6; border: 1px solid #e4c47d; border-radius: 9px; }
-            QLabel#rdpWarningIcon, QLabel#sessionWarningIcon { background: #d89a28; color: #ffffff; border: none; border-radius: 14px; font-size: 17px; font-weight: 800; }
-            QLabel#rdpWarningTitle, QLabel#sessionWarningTitle { color: #684a12; border: none; font-weight: 700; }
-            QLabel#rdpWarningText, QLabel#sessionWarningText { color: #7a5d26; border: none; font-size: 12px; }
-            QPushButton#warningDismissButton { background: transparent; color: #70531d; border: 1px solid #d7b66d; border-radius: 6px; padding: 6px 10px; }
-            QPushButton#warningDismissButton:hover { background: #ffefc9; }
+            QLabel#pageSubtitle { color: #516170; font-size: 9pt; }
+            QLabel#summaryBadge { background: #e8f1eb; color: #3d6f4d; border: 1px solid #cfe0d3; border-radius: 14px; padding: 6px 12px; font-weight: 600; font-size: 8pt; }
+            QFrame#sessionWarning { background: #fff7e6; border: 1px solid #e4c47d; border-radius: 9px; }
+            QLabel#sessionWarningIcon { background: #d89a28; color: #ffffff; border: none; border-radius: 14px; font-size: 12pt; font-weight: 800; }
+            QLabel#sessionWarningTitle { color: #684a12; border: none; font-weight: 700; }
+            QLabel#sessionWarningText { color: #7a5d26; border: none; font-size: 8pt; }
             QLineEdit, QComboBox, QDateEdit, QDateTimeEdit, QSpinBox, QTextEdit, QPlainTextEdit {
                 background: #ffffff;
                 color: #17212b;
@@ -1466,7 +1680,7 @@ class MainWindow(QMainWindow):
             QLabel#pingTitle { color: #334d60; font-weight: 700; }
             QLineEdit#pingInput { background: #f8fafb; color: #283641; border: 1px solid #ccd6dd; border-radius: 6px; padding: 7px 10px; }
             QLineEdit#pingInput:focus { background: #ffffff; border-color: #5e87a5; }
-            QLabel#pingResult { color: #73828d; font-size: 12px; }
+            QLabel#pingResult { color: #73828d; font-size: 8pt; }
             QLabel#pingResult[pingOk="true"] { color: #39704a; font-weight: 700; }
             QLabel#pingResult[pingOk="false"] { color: #9b4144; font-weight: 700; }
             QPushButton#toolbarButton { background: #ffffff; color: #385d77; border: 1px solid #c8d4dc; border-radius: 8px; padding: 9px 14px; font-weight: 600; }
@@ -1484,31 +1698,31 @@ class MainWindow(QMainWindow):
             QFrame#workstationCard { background: #ffffff; border: 1px solid #d5dde3; border-radius: 11px; }
             QFrame#workstationCard:hover { border: 1px solid #7799b0; background: #fbfdfe; }
             QLabel#cardTitle { color: #1d2b36; }
-            QLabel#cardStatus { color: #344652; font-size: 13px; font-weight: 600; }
-            QLabel#cardMeta { color: #526572; font-size: 12px; }
+            QLabel#cardStatus { color: #344652; font-size: 9pt; font-weight: 600; }
+            QLabel#cardMeta { color: #526572; font-size: 8pt; }
             QPushButton#cardSecondaryButton { background: #ffffff; color: #526673; border: 1px solid #d3dbe1; border-radius: 7px; padding: 8px 12px; }
             QPushButton#cardSecondaryButton:hover { background: #f1f5f7; }
             QFrame#addWorkstationCard { background: #f8fafb; border: 2px dashed #b8c6cf; border-radius: 11px; }
             QFrame#addWorkstationCard:hover { background: #f0f5f8; border-color: #6f91a9; }
             QLabel#addCardPlus { color: #557d99; font-size: 42px; font-weight: 300; }
-            QLabel#addCardTitle { color: #334d60; font-size: 15px; font-weight: 600; }
+            QLabel#addCardTitle { color: #334d60; font-size: 10pt; font-weight: 600; }
             QFrame#detailCard { background: #ffffff; border: 1px solid #d8e0e5; border-radius: 10px; }
-            QPlainTextEdit#networkOutput { background: #18232c; color: #dce7ee; border: 1px solid #31434f; border-radius: 7px; padding: 10px; font-family: "Cascadia Mono", "Consolas", monospace; font-size: 12px; selection-background-color: #4f7897; }
-            QLabel#detailCardTitle { color: #263844; font-size: 16px; font-weight: 700; }
-            QLabel#detailLabel { color: #536774; font-size: 12px; }
+            QPlainTextEdit#networkOutput { background: #18232c; color: #dce7ee; border: 1px solid #31434f; border-radius: 7px; padding: 10px; font-family: "Cascadia Mono", "Consolas", monospace; font-size: 8pt; selection-background-color: #4f7897; }
+            QLabel#detailCardTitle { color: #263844; font-size: 11pt; font-weight: 700; }
+            QLabel#detailLabel { color: #536774; font-size: 8pt; }
             QLabel#detailValue { color: #263844; font-weight: 600; }
-            QLabel#detailMuted { color: #536774; font-size: 12px; }
+            QLabel#detailMuted { color: #536774; font-size: 8pt; }
             QLabel#detailMuted[pingOk="true"] { color: #39704a; font-weight: 700; }
             QLabel#detailMuted[pingOk="false"] { color: #9b4144; font-weight: 700; }
             QFrame#detailDivider { color: #e2e7ea; }
-            QLabel#dialogTitle { color: #20323f; font-size: 20px; font-weight: 700; }
-            QLabel#dialogNote { color: #536774; font-size: 12px; }
+            QLabel#dialogTitle { color: #20323f; font-size: 13pt; font-weight: 700; }
+            QLabel#dialogNote { color: #536774; font-size: 8pt; }
             QLabel#dialogFormLabel { color: #263844; font-weight: 600; }
             QLabel#dialogWarning { color: #825b1a; font-weight: 600; }
             QLabel#calendarRange { color: #38566c; font-weight: 600; }
-            QLabel#adminAccessStatus { background: #eef1f3; color: #6f7d87; border-radius: 11px; padding: 5px 9px; font-size: 11px; font-weight: 600; }
+            QLabel#adminAccessStatus { background: #eef1f3; color: #6f7d87; border-radius: 11px; padding: 5px 9px; font-size: 8pt; font-weight: 600; }
             QLabel#adminAccessStatus[unlocked="true"] { background: #e4f0e7; color: #39704a; }
-            QLabel#logTitle { color: #20323f; font-size: 20px; font-weight: 700; }
+            QLabel#logTitle { color: #20323f; font-size: 13pt; font-weight: 700; }
             QFrame#filterBar { background: #eef3f6; border: 1px solid #cad6de; border-radius: 8px; }
             QTableWidget#calendarTable { gridline-color: #ffffff; }
             QTableWidget#calendarTable::item { padding: 6px; }
@@ -1526,7 +1740,7 @@ class MainWindow(QMainWindow):
                 color: #263f52;
                 border: 1px solid #aebfca;
                 border-radius: 7px;
-                font-size: 14px;
+                font-size: 9pt;
                 min-height: 22px;
                 padding: 7px 16px;
                 min-width: 82px;
@@ -1539,7 +1753,7 @@ class MainWindow(QMainWindow):
             QDialog QSpinBox, QDialog QTextEdit, QDialog QPlainTextEdit {
                 background: #ffffff;
                 color: #17212b;
-                font-size: 14px;
+                font-size: 9pt;
                 min-height: 22px;
                 placeholder-text-color: #7a8994;
                 border: 1px solid #cbd6dd;
@@ -1556,8 +1770,8 @@ class MainWindow(QMainWindow):
             QWizard#machineRegistrationWizard, QWizard#machineRegistrationWizard > QWidget,
             QWizard#machineRegistrationWizard QFrame, QWizardPage#machineWizardPage { background: #f7f9fa; color: #263844; }
             QWizard QLabel, QWizard QCheckBox, QWizard QRadioButton { color: #263844; }
-            QWizard QLineEdit { background: #ffffff; color: #17212b; font-size: 14px; min-height: 22px; placeholder-text-color: #7a8994; border: 1px solid #aebfca; border-radius: 6px; padding: 6px 10px; }
-            QWizard QPushButton { background: #ffffff; color: #263f52; font-size: 14px; min-height: 22px; border: 1px solid #aebfca; border-radius: 6px; padding: 7px 13px; min-width: 82px; font-weight: 600; }
+            QWizard QLineEdit { background: #ffffff; color: #17212b; font-size: 9pt; min-height: 22px; placeholder-text-color: #7a8994; border: 1px solid #aebfca; border-radius: 6px; padding: 6px 10px; }
+            QWizard QPushButton { background: #ffffff; color: #263f52; font-size: 9pt; min-height: 22px; border: 1px solid #aebfca; border-radius: 6px; padding: 7px 13px; min-width: 82px; font-weight: 600; }
             QWizard QPushButton:hover { background: #edf4f8; border-color: #6389a4; }
             QWizard QPushButton:default { background: #4f7897; color: #ffffff; border-color: #4f7897; }
             QWizard QPushButton:disabled { background: #edf1f3; color: #8a99a3; border-color: #d3dce1; }
@@ -1583,12 +1797,10 @@ class MainWindow(QMainWindow):
             QLabel#pageTitle { color: #f4f8fb; }
             QLabel#pageSubtitle { color: #b8c8d3; }
             QLabel#summaryBadge { background: #1d473c; color: #c4f0d1; border-color: #3c7861; }
-            QFrame#rdpWarningBanner, QFrame#sessionWarning { background: #413516; border-color: #a98438; }
-            QLabel#rdpWarningTitle, QLabel#sessionWarningTitle { color: #ffdf9b; }
-            QLabel#rdpWarningText, QLabel#sessionWarningText { color: #f4d59a; }
-            QPushButton#warningDismissButton { color: #ffdf9b; border-color: #a98438; }
-            QPushButton#warningDismissButton:hover { background: #5b481d; }
-            QLineEdit, QComboBox, QDateEdit, QDateTimeEdit, QPlainTextEdit, QTextEdit { background: #1a2a35; color: #f1f6fa; border-color: #4c697a; selection-background-color: #4f7897; selection-color: #ffffff; }
+            QFrame#sessionWarning { background: #413516; border-color: #a98438; }
+            QLabel#sessionWarningTitle { color: #ffdf9b; }
+            QLabel#sessionWarningText { color: #f4d59a; }
+            QLineEdit, QComboBox, QDateEdit, QDateTimeEdit, QSpinBox, QPlainTextEdit, QTextEdit { background: #1a2a35; color: #f1f6fa; border-color: #4c697a; selection-background-color: #4f7897; selection-color: #ffffff; }
             QLineEdit#dashboardSearch, QComboBox#dashboardFilter, QLineEdit#pingInput { background: #1a2a35; color: #f1f6fa; border-color: #4c697a; }
             QLineEdit#dashboardSearch:focus, QLineEdit#pingInput:focus { background: #1a2a35; color: #f1f6fa; border-color: #8fc1dd; }
             QComboBox QAbstractItemView, QDateEdit QAbstractItemView, QDateTimeEdit QAbstractItemView { background: #1c2d38; color: #f1f6fa; border-color: #59788b; selection-background-color: #3a6884; selection-color: #ffffff; }
@@ -1625,7 +1837,7 @@ class MainWindow(QMainWindow):
                 color: #e7f0f5;
             }
             QMessageBox QLabel { color: #edf3f8; }
-            QMessageBox QPushButton, QDialogButtonBox QPushButton { background: #263d4b; color: #f3f8fb; font-size: 14px; min-height: 22px; border-color: #628196; }
+            QMessageBox QPushButton, QDialogButtonBox QPushButton { background: #263d4b; color: #f3f8fb; font-size: 9pt; min-height: 22px; border-color: #628196; }
             QMessageBox QPushButton:hover, QDialogButtonBox QPushButton:hover { background: #315164; border-color: #9ac3da; }
             QMessageBox QPushButton:default, QDialogButtonBox QPushButton:default { background: #5b91b1; color: #ffffff; border-color: #8cc0db; }
             QMessageBox QPushButton:default:hover, QDialogButtonBox QPushButton:default:hover { background: #6ca6c7; border-color: #b5d9ea; }
@@ -1633,7 +1845,7 @@ class MainWindow(QMainWindow):
             QDialog QSpinBox, QDialog QTextEdit, QDialog QPlainTextEdit {
                 background: #1a2a35;
                 color: #f1f6fa;
-                font-size: 14px;
+                font-size: 9pt;
                 min-height: 22px;
                 placeholder-text-color: #8fa6b5;
                 border-color: #557386;
@@ -1652,9 +1864,9 @@ class MainWindow(QMainWindow):
             QWizard#machineRegistrationWizard, QWizard#machineRegistrationWizard > QWidget,
             QWizard#machineRegistrationWizard QFrame, QWizardPage#machineWizardPage { background: #192833; color: #e7f0f5; }
             QWizard QLabel, QWizard QCheckBox, QWizard QRadioButton { color: #e7f0f5; }
-            QWizard QLineEdit { background: #1a2a35; color: #f1f6fa; font-size: 14px; min-height: 22px; placeholder-text-color: #8fa6b5; border: 1px solid #557386; border-radius: 6px; padding: 6px 10px; }
+            QWizard QLineEdit { background: #1a2a35; color: #f1f6fa; font-size: 9pt; min-height: 22px; placeholder-text-color: #8fa6b5; border: 1px solid #557386; border-radius: 6px; padding: 6px 10px; }
             QWizard QLineEdit:disabled { background: #22343f; color: #aebfca; border-color: #456172; }
-            QWizard QPushButton { background: #263d4b; color: #f3f8fb; font-size: 14px; min-height: 22px; border: 1px solid #628196; border-radius: 6px; padding: 7px 13px; min-width: 82px; font-weight: 600; }
+            QWizard QPushButton { background: #263d4b; color: #f3f8fb; font-size: 9pt; min-height: 22px; border: 1px solid #628196; border-radius: 6px; padding: 7px 13px; min-width: 82px; font-weight: 600; }
             QWizard QPushButton:hover { background: #315164; border-color: #9ac3da; }
             QWizard QPushButton:default { background: #5b91b1; color: #ffffff; border-color: #8cc0db; }
             QWizard QPushButton:disabled { background: #22343f; color: #8095a3; border-color: #3d5868; }

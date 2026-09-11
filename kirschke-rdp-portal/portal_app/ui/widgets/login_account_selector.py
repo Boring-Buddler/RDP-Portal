@@ -2,13 +2,14 @@
 
 from PySide6.QtCore import Signal, QPointF
 from PySide6.QtGui import QPainter, QPalette, QPen
-from PySide6.QtWidgets import QComboBox, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
+from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox
 
 
-class AccountComboBox(QComboBox):
+class AccountComboBox(ScrollSafeComboBox):
     """Keep the dropdown affordance visible under the application stylesheet."""
 
     def paintEvent(self, event) -> None:
@@ -49,6 +50,8 @@ class LoginAccountSelector(QWidget):
 
     def set_workstation(self, workstation: Workstation | None, user: User) -> None:
         self.workstation, self.user = workstation, user
+        if self.combo.view().isVisible():
+            return
         self.combo.blockSignals(True)
         self.combo.clear()
         if workstation:

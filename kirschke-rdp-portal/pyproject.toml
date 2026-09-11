@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kirschke-rdp-portal"
-version = "0.2.4"
+version = "0.2.12"
 description = "Kirschke RDP Workstation Portal - Windows application for managing office workstations with RDP connections"
 readme = "README.md"
 license = {text = "Proprietary"}
