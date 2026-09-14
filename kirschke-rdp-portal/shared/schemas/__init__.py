@@ -6,20 +6,21 @@ the portal application, workstation agent, and SharePoint lists.
 
 import ipaddress
 from datetime import datetime
-from typing import Any, Optional
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
 from shared.enums import (
     AgentStatus,
-    ManualFlagType,
-    SessionState,
-    EventType,
+    CommandStatus,
+    CommandType,
+    ConnectionTargetMode,
     EventResult,
     EventSource,
-    CommandType,
-    CommandStatus,
-    ConnectionTargetMode,
+    EventType,
+    ManualFlagType,
+    SessionState,
 )
-
 
 # =============================================================================
 # Base Schemas
@@ -27,7 +28,7 @@ from shared.enums import (
 
 class BaseSchema(BaseModel):
     """Base schema with common configuration."""
-    
+
     model_config = ConfigDict(
         from_attributes=True,
         populate_by_name=True,
@@ -44,40 +45,40 @@ class BaseSchema(BaseModel):
 
 class ManualFlagSchema(BaseSchema):
     """Manual flag information."""
-    
+
     flag_type: ManualFlagType = Field(
         default=ManualFlagType.NONE,
         description="Type of the manual flag"
     )
-    reason: Optional[str] = Field(
+    reason: str | None = Field(
         default=None,
         max_length=500,
         description="Reason for setting the flag"
     )
-    project: Optional[str] = Field(
+    project: str | None = Field(
         default=None,
         max_length=100,
         description="Optional project or task reference"
     )
-    set_by_object_id: Optional[str] = Field(
+    set_by_object_id: str | None = Field(
         default=None,
         max_length=100,
         description="Entra ID object ID of the user who set the flag"
     )
-    set_by_upn: Optional[str] = Field(
+    set_by_upn: str | None = Field(
         default=None,
         max_length=256,
         description="UPN of the user who set the flag"
     )
-    set_at_utc: Optional[datetime] = Field(
+    set_at_utc: datetime | None = Field(
         default=None,
         description="Timestamp when the flag was set (UTC)"
     )
-    expires_at_utc: Optional[datetime] = Field(
+    expires_at_utc: datetime | None = Field(
         default=None,
         description="Optional expiration timestamp (UTC)"
     )
-    
+
     @field_validator("flag_type", mode="before")
     @classmethod
     def validate_flag_type(cls, v: Any) -> ManualFlagType:
@@ -95,21 +96,21 @@ class ManualFlagSchema(BaseSchema):
 
 class RDPProfileSchema(BaseSchema):
     """RDP connection profile settings."""
-    
+
     hostname: str = Field(
         default="",
         max_length=256,
         description="Hostname or FQDN of the workstation"
     )
-    fqdn: Optional[str] = Field(
+    fqdn: str | None = Field(
         default=None,
         max_length=256,
         description="Fully qualified domain name"
     )
-    ip_address: Optional[str] = Field(default=None, max_length=50)
-    subnet_mask: Optional[str] = Field(default=None, max_length=50)
-    default_gateway: Optional[str] = Field(default=None, max_length=50)
-    dns_server: Optional[str] = Field(default=None, max_length=50)
+    ip_address: str | None = Field(default=None, max_length=50)
+    subnet_mask: str | None = Field(default=None, max_length=50)
+    default_gateway: str | None = Field(default=None, max_length=50)
+    dns_server: str | None = Field(default=None, max_length=50)
     connection_target_mode: ConnectionTargetMode = Field(
         default=ConnectionTargetMode.AUTO,
         description="Address source used for the RDP connection",
@@ -119,17 +120,17 @@ class RDPProfileSchema(BaseSchema):
         max_length=100,
         description="Display name for the workstation"
     )
-    site: Optional[str] = Field(
+    site: str | None = Field(
         default=None,
         max_length=100,
         description="Location or site"
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         default=None,
         max_length=500,
         description="Optional description"
     )
-    username_hint: Optional[str] = Field(
+    username_hint: str | None = Field(
         default=None,
         max_length=256,
         description="Username hint (UPN or username)"
@@ -142,7 +143,7 @@ class RDPProfileSchema(BaseSchema):
         default=False,
         description="Explicit per-machine exception that suppresses the RDP server identity warning",
     )
-    gateway_hostname: Optional[str] = Field(
+    gateway_hostname: str | None = Field(
         default=None,
         max_length=256,
         description="RD Gateway hostname"
@@ -167,12 +168,12 @@ class RDPProfileSchema(BaseSchema):
         default=False,
         description="Redirect audio"
     )
-    screen_mode: Optional[str] = Field(
+    screen_mode: str | None = Field(
         default=None,
         max_length=50,
         description="Screen mode (e.g., fullscreen, windowed)"
     )
-    resolution: Optional[str] = Field(
+    resolution: str | None = Field(
         default=None,
         max_length=50,
         description="Screen resolution"
@@ -224,6 +225,26 @@ class RDPProfileSchema(BaseSchema):
         """Microsoft Entra web-account authentication cannot target an IP address."""
         return self.entra_sso_enabled and not self.uses_ip_target()
 
+    def effective_rdp_username(self) -> str | None:
+        r"""The account name for the .rdp file, spelled the way this target needs.
+
+        A machine that authenticates Entra accounts needs one of two spellings,
+        and which one depends on whether the Entra web sign-in is actually in
+        play.  With it, Windows wants the plain UPN.  Without it -- most often
+        because the target is an IP address, where Windows does not offer the web
+        sign-in at all -- the account has to be named ``AzureAD\user@domain.tld``,
+        or Windows authenticates something else and the target answers "not
+        authorized for remote login" even though the account is in the group.
+        """
+        from shared.identity import entra_rdp_username
+
+        if not self.entra_sso_enabled:
+            return self.username_hint or None
+        return entra_rdp_username(
+            self.username_hint,
+            aad_auth=self.effective_entra_sso_enabled(),
+        )
+
 
 # =============================================================================
 # Session Event Schema
@@ -231,7 +252,7 @@ class RDPProfileSchema(BaseSchema):
 
 class SessionEventSchema(BaseSchema):
     """Schema for session events stored in SharePoint."""
-    
+
     event_id: str = Field(
         ...,
         max_length=100,
@@ -250,51 +271,51 @@ class SessionEventSchema(BaseSchema):
         max_length=100,
         description="ID of the workstation"
     )
-    workstation_hostname: Optional[str] = Field(
+    workstation_hostname: str | None = Field(
         default=None,
         max_length=256,
         description="Hostname of the workstation"
     )
-    windows_session_id: Optional[int] = Field(
+    windows_session_id: int | None = Field(
         default=None,
         ge=0,
         description="Windows session ID"
     )
-    session_user_upn: Optional[str] = Field(
+    session_user_upn: str | None = Field(
         default=None,
         max_length=256,
         description="UPN of the session user"
     )
-    session_user_domain: Optional[str] = Field(
+    session_user_domain: str | None = Field(
         default=None,
         max_length=100,
         description="Domain of the session user"
     )
-    client_name: Optional[str] = Field(
+    client_name: str | None = Field(
         default=None,
         max_length=256,
         description="Name of the client machine"
     )
-    client_ip: Optional[str] = Field(
+    client_ip: str | None = Field(
         default=None,
         max_length=50,
         description="IP address of the client"
     )
-    actor_entra_object_id: Optional[str] = Field(
+    actor_entra_object_id: str | None = Field(
         default=None,
         max_length=100,
         description="Entra object ID of the actor"
     )
-    actor_upn: Optional[str] = Field(
+    actor_upn: str | None = Field(
         default=None,
         max_length=256,
         description="UPN of the actor"
     )
-    result: Optional[EventResult] = Field(
+    result: EventResult | None = Field(
         default=None,
         description="Result of the event"
     )
-    reason: Optional[str] = Field(
+    reason: str | None = Field(
         default=None,
         max_length=500,
         description="Reason or additional information"
@@ -303,12 +324,12 @@ class SessionEventSchema(BaseSchema):
         default=EventSource.PORTAL,
         description="Source of the event"
     )
-    correlation_id: Optional[str] = Field(
+    correlation_id: str | None = Field(
         default=None,
         max_length=100,
         description="Correlation ID for tracking related events"
     )
-    agent_version: Optional[str] = Field(
+    agent_version: str | None = Field(
         default=None,
         max_length=50,
         description="Version of the agent"
@@ -321,7 +342,7 @@ class SessionEventSchema(BaseSchema):
 
 class AdminCommandSchema(BaseSchema):
     """Schema for admin commands."""
-    
+
     command_id: str = Field(
         ...,
         max_length=100,
@@ -332,7 +353,7 @@ class AdminCommandSchema(BaseSchema):
         max_length=100,
         description="ID of the target workstation"
     )
-    target_windows_session_id: Optional[int] = Field(
+    target_windows_session_id: int | None = Field(
         default=None,
         ge=0,
         description="Target Windows session ID"
@@ -359,7 +380,7 @@ class AdminCommandSchema(BaseSchema):
         ...,
         description="Expiration timestamp in UTC"
     )
-    reason: Optional[str] = Field(
+    reason: str | None = Field(
         default=None,
         max_length=500,
         description="Reason for the command"
@@ -368,11 +389,11 @@ class AdminCommandSchema(BaseSchema):
         default=CommandStatus.PENDING,
         description="Current status of the command"
     )
-    executed_at_utc: Optional[datetime] = Field(
+    executed_at_utc: datetime | None = Field(
         default=None,
         description="Execution timestamp in UTC"
     )
-    result_message: Optional[str] = Field(
+    result_message: str | None = Field(
         default=None,
         max_length=1000,
         description="Result message"
@@ -385,7 +406,7 @@ class AdminCommandSchema(BaseSchema):
 
 class AccessRuleSchema(BaseSchema):
     """Schema for access rules."""
-    
+
     rule_id: str = Field(
         ...,
         max_length=100,
@@ -396,7 +417,7 @@ class AccessRuleSchema(BaseSchema):
         max_length=100,
         description="Entra user or group ID"
     )
-    workstation_id: Optional[str] = Field(
+    workstation_id: str | None = Field(
         default=None,
         max_length=100,
         description="Target workstation ID (null for all)"
@@ -409,11 +430,11 @@ class AccessRuleSchema(BaseSchema):
         default=False,
         description="Whether user may set calculation flag"
     )
-    valid_from_utc: Optional[datetime] = Field(
+    valid_from_utc: datetime | None = Field(
         default=None,
         description="Valid from timestamp"
     )
-    valid_until_utc: Optional[datetime] = Field(
+    valid_until_utc: datetime | None = Field(
         default=None,
         description="Valid until timestamp"
     )
@@ -429,8 +450,8 @@ class AccessRuleSchema(BaseSchema):
 
 class WorkstationSchema(BaseSchema):
     """Complete schema for a workstation including all metadata."""
-    agent_workstation_id: Optional[str] = Field(default=None, max_length=100)
-    
+    agent_workstation_id: str | None = Field(default=None, max_length=100)
+
     workstation_id: str = Field(
         ...,
         max_length=100,
@@ -446,25 +467,25 @@ class WorkstationSchema(BaseSchema):
         max_length=256,
         description="Hostname"
     )
-    fqdn: Optional[str] = Field(
+    fqdn: str | None = Field(
         default=None,
         max_length=256,
         description="Fully qualified domain name"
     )
-    ip_address: Optional[str] = Field(default=None, max_length=50)
-    subnet_mask: Optional[str] = Field(default=None, max_length=50)
-    default_gateway: Optional[str] = Field(default=None, max_length=50)
-    dns_server: Optional[str] = Field(default=None, max_length=50)
+    ip_address: str | None = Field(default=None, max_length=50)
+    subnet_mask: str | None = Field(default=None, max_length=50)
+    default_gateway: str | None = Field(default=None, max_length=50)
+    dns_server: str | None = Field(default=None, max_length=50)
     connection_target_mode: ConnectionTargetMode = Field(
         default=ConnectionTargetMode.AUTO,
         description="Address source used for the RDP connection",
     )
-    site: Optional[str] = Field(
+    site: str | None = Field(
         default=None,
         max_length=100,
         description="Location or site"
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         default=None,
         max_length=500,
         description="Description"
@@ -489,7 +510,7 @@ class WorkstationSchema(BaseSchema):
         default_factory=list,
         description="Directory accounts assigned to this workstation's RDP access group",
     )
-    username_hint: Optional[str] = Field(
+    username_hint: str | None = Field(
         default=None,
         max_length=256,
         description="Username hint"
@@ -502,7 +523,7 @@ class WorkstationSchema(BaseSchema):
         default=False,
         description="Explicit per-machine exception that suppresses the RDP server identity warning",
     )
-    gateway_hostname: Optional[str] = Field(
+    gateway_hostname: str | None = Field(
         default=None,
         max_length=256,
         description="RD Gateway hostname"
@@ -527,64 +548,64 @@ class WorkstationSchema(BaseSchema):
         default=False,
         description="Redirect audio"
     )
-    screen_mode: Optional[str] = Field(
+    screen_mode: str | None = Field(
         default=None,
         max_length=50,
         description="Screen mode"
     )
-    resolution: Optional[str] = Field(
+    resolution: str | None = Field(
         default=None,
         max_length=50,
         description="Resolution"
     )
-    
+
     # Manual flag
     manual_flag: ManualFlagSchema = Field(
         default_factory=ManualFlagSchema,
         description="Manual flag information"
     )
-    
+
     # Agent status
     agent_status: AgentStatus = Field(
         default=AgentStatus.OFFLINE,
         description="Agent status"
     )
-    agent_last_seen_utc: Optional[datetime] = Field(
+    agent_last_seen_utc: datetime | None = Field(
         default=None,
         description="Last seen timestamp"
     )
-    agent_version: Optional[str] = Field(
+    agent_version: str | None = Field(
         default=None,
         max_length=50,
         description="Agent version"
     )
-    
+
     # Current session
     current_session_state: SessionState = Field(
         default=SessionState.NONE,
         description="Current session state"
     )
-    current_session_user: Optional[str] = Field(
+    current_session_user: str | None = Field(
         default=None,
         max_length=256,
         description="Current session user"
     )
-    current_windows_session_id: Optional[int] = Field(
+    current_windows_session_id: int | None = Field(
         default=None,
         ge=0,
         description="Current Windows session ID"
     )
-    last_session_event_utc: Optional[datetime] = Field(
+    last_session_event_utc: datetime | None = Field(
         default=None,
         description="Last session event timestamp"
     )
-    
+
     # SharePoint metadata
-    etag: Optional[str] = Field(
+    etag: str | None = Field(
         default=None,
         description="ETag for concurrency control"
     )
-    
+
     def get_rdp_profile(self) -> RDPProfileSchema:
         """Extract RDP profile from workstation data."""
         return RDPProfileSchema(
@@ -612,7 +633,7 @@ class WorkstationSchema(BaseSchema):
             enabled=self.enabled,
             allowed_entra_group_ids=self.allowed_entra_group_ids,
         )
-    
+
     def is_blocked(self) -> bool:
         """Check if workstation is blocked by a manual flag."""
         return self.manual_flag.flag_type in [
@@ -620,13 +641,13 @@ class WorkstationSchema(BaseSchema):
             ManualFlagType.MAINTENANCE,
             ManualFlagType.CALCULATION_RUNNING,
         ]
-    
+
     def can_disconnect(self) -> bool:
         """Check if disconnect is allowed (always for calculation_running)."""
         if self.manual_flag.flag_type == ManualFlagType.CALCULATION_RUNNING:
             return True
         return not self.is_blocked()
-    
+
     def can_logoff(self) -> bool:
         """Check if logoff is allowed (blocked for all flags)."""
         return not self.is_blocked()

@@ -42,7 +42,11 @@ def test_native_installer_writes_config_and_registers_system_task(tmp_path, monk
     assert result == paths
     config = json.loads(paths.config.read_text(encoding="utf-8"))
     assert config["workstation_id"] == "WS-004"
-    assert config["agent_version"] == "1.3.0"
+    # Read from the one place versions are defined, so a release bump does not
+    # have to be repeated here -- that is what shared.version exists to prevent.
+    from shared.version import AGENT_VERSION
+
+    assert config["agent_version"] == AGENT_VERSION
     assert config["live_status_reader"] == "PortalLeser"
     assert registered == {
         "executable": paths.install / agent_installer.AGENT_EXE,
@@ -134,6 +138,17 @@ def test_status_share_creates_reader_and_read_only_share(tmp_path, monkeypatch):
         "NetShareAdd",
         lambda server, level, info: calls.update(share=(level, info)),
     )
+    monkeypatch.setattr(
+        agent_installer.win32security, "LsaOpenPolicy", lambda server, access: "policy"
+    )
+    monkeypatch.setattr(
+        agent_installer.win32security,
+        "LsaAddAccountRights",
+        lambda policy, sid, rights: calls.update(denied_rights=(sid, tuple(rights))),
+    )
+    monkeypatch.setattr(
+        agent_installer.win32security, "LsaClose", lambda policy: calls.update(policy_closed=True)
+    )
 
     account, created = agent_installer.ensure_status_share(
         status, credential, credential
@@ -148,6 +163,16 @@ def test_status_share_creates_reader_and_read_only_share(tmp_path, monkeypatch):
     assert calls["share"][0] == 502
     assert calls["share"][1]["netname"] == "RDP-Status"
     assert calls["share"][1]["security_descriptor"] == "share-security"
+    # The share account must not be able to sign in; it only needs SMB access.
+    denied_sid, denied_rights = calls["denied_rights"]
+    assert denied_sid == "reader-sid"
+    assert set(denied_rights) == {
+        "SeDenyInteractiveLogonRight",
+        "SeDenyRemoteInteractiveLogonRight",
+        "SeDenyBatchLogonRight",
+        "SeDenyServiceLogonRight",
+    }
+    assert calls["policy_closed"] is True
 
 
 def test_status_share_reuses_complete_existing_setup_without_password(tmp_path, monkeypatch):

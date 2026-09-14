@@ -31,30 +31,42 @@ from portal_app.models.reservation import Reservation
 from portal_app.models.session import SessionEvent
 from portal_app.models.user import MockUser
 from portal_app.models.workstation import Workstation
-from portal_app.services.local_store import LocalStore, StoreConflictError
-from portal_app.services.local_identity import detect_initial_user
+from portal_app.services.active_directory_sync import (
+    check_active_directory_readiness,
+    sync_rdp_group_members,
+)
+from portal_app.services.admin_security import (
+    AdminLockoutError,
+    LocalAdminPasswordStore,
+    directory_mode,
+)
+from portal_app.services.agent_identity import machine_hostnames
 from portal_app.services.agent_status import LocalAgentStatusService
-from portal_app.services.live_status_polling import AutomaticLiveStatusPoller
-from portal_app.services.reservation_access import apply_reservations
-from shared.agent_paths import expand_directory
-from portal_app.version import PORTAL_VERSION
 from portal_app.services.directory_users import discover_windows_domain_accounts
-from portal_app.services.active_directory_sync import sync_rdp_group_members
-from portal_app.services.active_directory_sync import check_active_directory_readiness
-from portal_app.services.windows_admin_auth import check_windows_admin_authorization, test_password_fallback_allowed
-from portal_app.services.admin_security import LocalAdminPasswordStore, directory_mode
+from portal_app.services.fallback_scanning import FallbackScanner
+from portal_app.services.live_status_polling import AutomaticLiveStatusPoller
+from portal_app.services.local_identity import detect_initial_user
+from portal_app.services.local_store import LocalStore, StoreConflictError
+from portal_app.services.reservation_access import apply_reservations
+from portal_app.services.windows_admin_auth import (
+    check_windows_admin_authorization,
+    test_password_fallback_allowed,
+)
 from portal_app.ui.design import Typography
 from portal_app.ui.icons import kirschke_window_icon
+from portal_app.ui.widgets.machine_registration_wizard import MachineRegistrationWizard
 from portal_app.ui.widgets.management_pages import AdministrationWidget, SettingsWidget
+from portal_app.ui.widgets.rdp_access_dialog import RDPAccessDialog
 from portal_app.ui.widgets.reservation_calendar import ReservationCalendarWidget
 from portal_app.ui.widgets.session_log import SessionLogWidget
 from portal_app.ui.widgets.user_settings_dialog import UserSettingsDialog
 from portal_app.ui.widgets.workstation_cards import WorkstationCardsWidget
 from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
 from portal_app.ui.widgets.workstation_dialog import WorkstationDialog
-from portal_app.ui.widgets.machine_registration_wizard import MachineRegistrationWizard
-from portal_app.ui.widgets.rdp_access_dialog import RDPAccessDialog
+from portal_app.version import PORTAL_VERSION
+from shared.agent_paths import expand_directory
 from shared.enums import EventResult, EventSource, EventType, ManualFlagType
+from shared.session_identity import is_active_session, is_console_session, session_username
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +105,8 @@ class MainWindow(QMainWindow):
             directory=self.store.agent_status_directory
         )
         self.live_status_poller = AutomaticLiveStatusPoller(max_parallel=4, parent=self)
+        self.fallback_scanner = FallbackScanner(parent=self)
+        self.fallback_scanner.completed.connect(self._on_fallback_scan_completed)
         self.workstations: list[Workstation] = []
         self.reservations: list[Reservation] = []
         self.session_events: list[SessionEvent] = []
@@ -100,11 +114,17 @@ class MainWindow(QMainWindow):
         self.nav_buttons: list[QPushButton] = []
         self._admin_unlocked = False
         self._pending_save = False
+        # Set by a non-blocking poll whose reservation change still needs a view
+        # refresh once the background folder scan delivers.
+        self._reservation_change_pending = False
         self._load_data()
         self._create_ui()
         self._update_storage_status("Gemeinsamer Speicher bereit")
         self._connect_signals()
         self._apply_theme()
+        # A crash or "End task" skips the cleanup in closeEvent, and the leftover
+        # .rdp files name the target machine and the user.
+        self._cleanup_stale_rdp_files()
         self.rdp_poll_timer = QTimer(self)
         self.rdp_poll_timer.setInterval(1500)
         self.rdp_poll_timer.timeout.connect(self._poll_rdp_sessions)
@@ -459,6 +479,19 @@ class MainWindow(QMainWindow):
             self.agent_poll_timer.start()
             dialog.deleteLater()
 
+    @staticmethod
+    def _cleanup_stale_rdp_files() -> None:
+        """Remove .rdp files an earlier run could not delete."""
+        from portal_app.rdp import cleanup_old_rdp_files
+
+        try:
+            removed = cleanup_old_rdp_files(older_than_hours=24)
+        except OSError as exc:
+            logger.warning("Alte RDP-Dateien konnten nicht entfernt werden: %s", exc)
+            return
+        if removed:
+            logger.info("%s verwaiste RDP-Datei(en) aus dem Temp-Ordner entfernt", removed)
+
     @Slot()
     def _poll_rdp_sessions(self) -> None:
         """Record closed RDP clients without adding a persistent visual notice."""
@@ -479,20 +512,56 @@ class MainWindow(QMainWindow):
                 )
 
     @Slot()
-    def _poll_agent_status(self) -> None:
-        """Apply file fallback and retained live snapshots without blocking the UI."""
+    def _poll_agent_status(self, *, blocking: bool = True) -> None:
+        """Refresh reservations and the agent file fallback.
+
+        ``blocking`` reads the fallback folders inline and is what startup,
+        explicit user actions and the tests rely on.  The recurring heartbeat
+        passes ``blocking=False``: reading a UNC path can stall for the SMB
+        timeout, which must never happen on the Qt main thread, so the read goes
+        to ``FallbackScanner`` and the result arrives in
+        ``_on_fallback_scan_completed``.
+        """
         reservation_changed = apply_reservations(self.workstations, self.reservations, self.current_user.upn)
         if reservation_changed:
             self._refresh_workstation_views()
         try:
             self.agent_status_service.set_directory(self.store.agent_status_directory)
-            changed = self.agent_status_service.apply(self.workstations)
+            directories = self.agent_status_service.fallback_directories(self.workstations)
         except (OSError, ValueError) as exc:
-            self._update_storage_status(f"Agent-Status nicht lesbar: {exc}")
-            self.settings_view.agent_status.setText(f"Agent-Status nicht lesbar: {exc}")
-            self.settings_view.set_agent_report(f"RDP-Portal {PORTAL_VERSION}\nKonfiguration: {self.store.agent_config_path}\nFehler: {exc}")
-            self.overview_view.agent_channel_status.setText("Agent-Status nicht lesbar · Agent-Diagnose öffnen")
+            self._report_agent_status_failure(exc)
             return
+        if not blocking:
+            self._reservation_change_pending = self._reservation_change_pending or reservation_changed
+            # A scan that is still running will deliver on its own; queuing a
+            # second one would only build a backlog behind a slow share.
+            self.fallback_scanner.request(directories)
+            return
+        try:
+            scans = self.agent_status_service.scan_directories(directories)
+        except (OSError, ValueError) as exc:
+            self._report_agent_status_failure(exc)
+            return
+        self._apply_fallback_scans(scans, reservation_changed)
+
+    def _report_agent_status_failure(self, exc: Exception) -> None:
+        self._update_storage_status(f"Agent-Status nicht lesbar: {exc}")
+        self.settings_view.agent_status.setText(f"Agent-Status nicht lesbar: {exc}")
+        self.settings_view.set_agent_report(f"RDP-Portal {PORTAL_VERSION}\nKonfiguration: {self.store.agent_config_path}\nFehler: {exc}")
+        self.overview_view.agent_channel_status.setText("Agent-Status nicht lesbar · Agent-Diagnose öffnen")
+
+    @Slot(object)
+    def _on_fallback_scan_completed(self, scans: object) -> None:
+        """Apply a background folder scan on the UI thread."""
+        reservation_changed = self._reservation_change_pending
+        self._reservation_change_pending = False
+        try:
+            self._apply_fallback_scans(scans, reservation_changed)
+        except (OSError, ValueError) as exc:
+            self._report_agent_status_failure(exc)
+
+    def _apply_fallback_scans(self, scans: object, reservation_changed: bool) -> None:
+        changed = self.agent_status_service.apply_scans(self.workstations, scans)
         self.settings_view.set_agent_bridge_status(
             self.agent_status_service.last_match_count,
             self.agent_status_service.last_snapshot_count,
@@ -526,10 +595,11 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _scheduled_status_update(self) -> None:
+        """Recurring heartbeat: never read the fallback folders on this thread."""
         if self._automatic_live_status_enabled:
-            self._run_status_update_cycle()
+            self._run_status_update_cycle(blocking=False)
         else:
-            self._poll_agent_status()
+            self._poll_agent_status(blocking=False)
 
     @Slot()
     def _run_status_update_cycle(
@@ -537,9 +607,10 @@ class MainWindow(QMainWindow):
         workstations: list[Workstation] | None = None,
         *,
         force: bool = False,
+        blocking: bool = True,
     ) -> None:
         """Refresh file fallback, then start bounded direct status requests."""
-        self._poll_agent_status()
+        self._poll_agent_status(blocking=blocking)
         targets = self.workstations if workstations is None else workstations
         started = self.live_status_poller.request_many(
             targets,
@@ -669,7 +740,12 @@ class MainWindow(QMainWindow):
         )
         if not accepted:
             return False
-        if not self.local_admin_password_store.verify_password(password):
+        try:
+            correct = self.local_admin_password_store.verify_password(password)
+        except AdminLockoutError as exc:
+            QMessageBox.warning(self, "Adminzugang gesperrt", str(exc))
+            return False
+        if not correct:
             QMessageBox.warning(self, "Zugriff verweigert", "Das eingegebene Admin-Passwort ist nicht korrekt.")
             return False
         self._unlock_admin("Lokales Admin-Passwort bestätigt")
@@ -714,7 +790,12 @@ class MainWindow(QMainWindow):
         )
         if not accepted:
             return
-        if not self.local_admin_password_store.verify_password(current):
+        try:
+            correct = self.local_admin_password_store.verify_password(current)
+        except AdminLockoutError as exc:
+            QMessageBox.warning(self, "Adminzugang gesperrt", str(exc))
+            return
+        if not correct:
             QMessageBox.warning(self, "Zugriff verweigert", "Das aktuelle Admin-Passwort ist nicht korrekt.")
             return
         new_password, accepted = QInputDialog.getText(
@@ -747,11 +828,6 @@ class MainWindow(QMainWindow):
         self._admin_unlocked = True
         self.admin_view.set_access_status(True, access_label)
         self.nav_buttons[self.PAGE_ADMIN].setText("Admin · offen")
-
-    @classmethod
-    def _is_admin_password_valid(cls, password: str) -> bool:
-        """Deprecated compatibility hook; the fixed test password no longer exists."""
-        return False
 
     def _lock_admin(self) -> None:
         self._admin_unlocked = False
@@ -955,8 +1031,7 @@ class MainWindow(QMainWindow):
         sessions = [
             dict(item)
             for item in workstation.agent_sessions
-            if item.get("session_state")
-            in ("connected", "disconnected", "reconnected", "logon")
+            if is_active_session(item)
             and type(item.get("session_id")) is int
             and item["session_id"] > 0
             and item.get("login_time")
@@ -971,10 +1046,7 @@ class MainWindow(QMainWindow):
             return
         labels = []
         for item in sessions:
-            username = item.get("full_username") or (
-                ((item.get("domain") + "\\") if item.get("domain") else "")
-                + (item.get("username") or "")
-            )
+            username = session_username(item)
             labels.append(
                 f"{username} · Sitzung {item['session_id']} · {item.get('session_state')} · {item['login_time']}"
             )
@@ -1004,6 +1076,7 @@ class MainWindow(QMainWindow):
             administrative=True,
             expected_agent_id=workstation.agent_workstation_id or workstation.workstation_id,
             status_target=workstation.get_agent_status_target(),
+            hostnames=None if workstation.agent_workstation_id else machine_hostnames(workstation),
         )
         dialog.request_finished.connect(
             lambda success, message, ws=workstation: self._admin_logoff_finished(
@@ -1286,20 +1359,25 @@ class MainWindow(QMainWindow):
 
     @Slot(Workstation)
     def on_connect_requested(self, workstation: Workstation) -> None:
-        from portal_app.rdp import has_active_rdp_session, launch_rdp_session
+        from portal_app.rdp import focus_rdp_session, has_active_rdp_session, launch_rdp_session
 
         if not self._check_reservation_access(workstation):
             return
 
         if has_active_rdp_session(workstation.workstation_id):
+            # Raising the window is what the user actually wanted; the old message
+            # was correct and useless, because the window is usually just minimised.
+            if focus_rdp_session(workstation.workstation_id):
+                return
             QMessageBox.warning(
                 self,
                 "RDP-Fenster bereits aktiv",
-                f"Für {workstation.display_name} läuft bereits ein von diesem Portal gestartetes RDP-Fenster. "
-                "Ein zweiter Start wurde verhindert.",
+                f"Für {workstation.display_name} läuft bereits ein von diesem Portal gestartetes "
+                "RDP-Fenster, das sich nicht in den Vordergrund holen ließ. "
+                "Wechsle über die Taskleiste dorthin; ein zweiter Start wurde verhindert.",
             )
             return
-        owned_sessions = workstation.owned_sessions(self.current_user.windows_identity)
+        owned_sessions = workstation.owned_sessions(self.current_user.windows_accounts())
         if (
             workstation.has_active_session()
             and not workstation.matching_sessions(self.current_user.get_rdp_username())
@@ -1324,7 +1402,7 @@ class MainWindow(QMainWindow):
             self._refresh_login_views(workstation)
         if not workstation.can_connect(
             self.current_user.get_rdp_username(),
-            self.current_user.windows_identity,
+            self.current_user.windows_accounts(),
         ):
             QMessageBox.warning(
                 self,
@@ -1332,6 +1410,27 @@ class MainWindow(QMainWindow):
                 f"{workstation.display_name} ist momentan nicht verfügbar: {workstation.get_status_display()}",
             )
             return
+        spelling_warning = workstation.entra_spelling_warning(
+            self.current_user.get_rdp_username()
+        )
+        if spelling_warning:
+            question = QMessageBox(self)
+            question.setIcon(QMessageBox.Warning)
+            question.setWindowTitle("Entra-Anmeldung fehlt")
+            question.setText(spelling_warning)
+            enable = question.addButton("Entra-Anmeldung aktivieren", QMessageBox.AcceptRole)
+            question.addButton("Trotzdem starten", QMessageBox.DestructiveRole)
+            question.addButton(QMessageBox.Cancel)
+            question.setDefaultButton(enable)
+            question.exec()
+            clicked = question.clickedButton()
+            if clicked is None or question.buttonRole(clicked) == QMessageBox.RejectRole:
+                return
+            if clicked == enable:
+                workstation.entra_sso_enabled = True
+                self._commit_workstation(workstation)
+                self._persist()
+                self._refresh_workstation_views()
         try:
             profile = workstation.get_rdp_profile(self.current_user.get_rdp_username())
             target, _ = profile.resolve_connection_target()
@@ -1385,6 +1484,13 @@ class MainWindow(QMainWindow):
             )
             if success:
                 self._record_event(workstation, EventType.LAUNCH_REQUESTED, EventResult.SUCCESS)
+                # Remember which Windows account this person connects as, so the
+                # resulting session is recognised as theirs next time instead of
+                # showing up as somebody else's and locking them out.
+                if self.current_user.claim_account(profile.username_hint):
+                    self._saved_user = deepcopy(self.current_user)
+                    self._persist()
+                    self._refresh_workstation_views()
                 self._poll_rdp_sessions()
                 QMessageBox.information(
                     self,
@@ -1420,11 +1526,30 @@ class MainWindow(QMainWindow):
                 "Während einer fremden Reservierung wird keine normale Abmeldung angeboten.",
             )
             return
-        sessions = workstation.owned_sessions(self.current_user.windows_identity)
-        sessions = [item for item in sessions if type(item.get("session_id")) is int
-                    and item["session_id"] > 0 and item.get("login_time")]
+        from portal_app.ui.machine_actions import CONSOLE_LOGOFF_HINT, logoff_candidates
+
+        owned = workstation.owned_sessions(self.current_user.windows_accounts())
+        sessions = logoff_candidates(owned)
         if not sessions:
             QMessageBox.warning(self, "Keine passende Sitzung", "Wähle das Konto deiner Sitzung und warte auf eine aktuelle Agent-Meldung mit Anmeldezeitpunkt.")
+            return
+        sessions = [item for item in sessions if not is_console_session(item)]
+        if not sessions:
+            # The agent would refuse this, but its reason names a mismatched RDP
+            # client. Saying "console session" here is the honest version, and it
+            # points at the two ways that do work.
+            answer = QMessageBox.question(
+                self,
+                "Konsolensitzung",
+                f"{CONSOLE_LOGOFF_HINT}\n\nMöchtest du stattdessen die administrative "
+                "Abmeldung mit Windows-Administratordaten des Zielrechners öffnen?",
+                QMessageBox.Yes | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+            if answer == QMessageBox.Yes and (
+                self._admin_unlocked or self._request_admin_access()
+            ):
+                self._admin_logoff_workstation(workstation)
             return
         if len(sessions) > 1:
             labels = [f"Sitzung {item['session_id']} · {item.get('session_state')} · {item['login_time']}" for item in sessions]
@@ -1446,6 +1571,7 @@ class MainWindow(QMainWindow):
             self,
             expected_agent_id=workstation.agent_workstation_id or workstation.workstation_id,
             status_target=workstation.get_agent_status_target(),
+            hostnames=None if workstation.agent_workstation_id else machine_hostnames(workstation),
         )
         dialog.request_finished.connect(
             lambda success, _message, ws=workstation: (
@@ -1459,7 +1585,10 @@ class MainWindow(QMainWindow):
     @Slot(Workstation)
     def _run_rdp_diagnostics(self, workstation: Workstation) -> None:
         """Show a credential-free RDP preflight report for one workstation."""
-        from portal_app.services.rdp_diagnostics import clear_saved_rdp_credentials, run_rdp_diagnostics
+        from portal_app.services.rdp_diagnostics import (
+            clear_saved_rdp_credentials,
+            run_rdp_diagnostics,
+        )
 
         try:
             profile = workstation.get_rdp_profile(self.current_user.get_rdp_username())
@@ -1626,6 +1755,7 @@ class MainWindow(QMainWindow):
         self.rdp_poll_timer.stop()
         self.agent_poll_timer.stop()
         self.live_status_poller.stop()
+        self.fallback_scanner.stop()
         cleanup_rdp_files()
         event.accept()
 

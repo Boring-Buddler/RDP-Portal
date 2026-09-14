@@ -19,11 +19,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 
 from portal_app.models.session import SessionEvent, SessionLog
 from portal_app.models.user import User
 from portal_app.ui.design import Colors, Spacing, Typography
+from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 from shared.enums import EventResult, EventType
 
 

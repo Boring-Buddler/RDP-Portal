@@ -1,6 +1,6 @@
 """Bounded, persistent history of observed Windows session transitions."""
-from datetime import datetime, timezone
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from shared.file_io import write_json_atomic
@@ -19,7 +19,7 @@ class SessionHistory:
     def observe(self, sessions: list[dict]) -> None:
         current = {str(s["session_id"]): {key: s.get(key) for key in
                    ("session_id", "username", "domain", "login_time", "session_state")} for s in sessions}
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         events = []
         for key in sorted(set(self.current) | set(current)):
             previous, new = self.current.get(key), current.get(key)

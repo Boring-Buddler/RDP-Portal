@@ -65,6 +65,10 @@ class AutomaticLiveStatusPoller(QObject):
         self._failure_counts: dict[str, int] = {}
         self._retry_after: dict[str, float] = {}
         self._stopped = False
+        # Plain attribute on purpose: a private property whose getter read an
+        # unmangled "__current_interval" string silently pinned this to 5, so
+        # set_interval() never reached the backoff calculation.
+        self.interval_seconds = 5
 
     def request_many(
         self,
@@ -124,7 +128,7 @@ class AutomaticLiveStatusPoller(QObject):
         self._failure_counts[key] = failures
         # Failed machines are retried progressively less often, while healthy
         # targets remain independent in the bounded worker pool.
-        delay = min(60, self._current_interval * (2 ** min(failures - 1, 3)))
+        delay = min(60, self.interval_seconds * (2 ** min(failures - 1, 3)))
         self._retry_after[key] = time.monotonic() + delay
         if not self._stopped:
             self.failed.emit(workstation_id, route, message)
@@ -134,16 +138,9 @@ class AutomaticLiveStatusPoller(QObject):
         self._in_flight.discard(key)
         self._tasks.pop(key, None)
 
-    @property
-    def _current_interval(self) -> int:
-        return getattr(self, "__current_interval", 5)
-
-    @_current_interval.setter
-    def _current_interval(self, value: int) -> None:
-        self.__current_interval = max(2, min(60, int(value)))
-
     def set_interval(self, seconds: int) -> None:
-        self._current_interval = seconds
+        """Store the configured poll interval that drives the failure backoff."""
+        self.interval_seconds = max(2, min(60, int(seconds)))
 
     def stop(self) -> None:
         self._stopped = True

@@ -19,14 +19,23 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
-from portal_app.ui.design import Colors, Typography
-from portal_app.ui.widgets.ping_tool import PingToolWidget
+from portal_app.ui.design import Typography
+from portal_app.ui.machine_actions import (
+    SORT_ORDER,
+    css_color,
+    describe_actions,
+    machine_state,
+    state_border_width,
+    state_color,
+)
 from portal_app.ui.widgets.login_account_selector import LoginAccountSelector
-from shared.enums import AgentStatus, ManualFlagType, SessionState
+from portal_app.ui.widgets.ping_tool import PingToolWidget
+from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
+from portal_app.ui.widgets.status_legend import StatusLegend
+from shared.enums import AgentStatus, SessionState
 
 
 class WorkstationGlyph(QWidget):
@@ -126,7 +135,7 @@ class WorkstationCard(QFrame):
         status_row = QHBoxLayout()
         status_row.setSpacing(8)
         self.status_dot = QLabel("●")
-        self.status_dot.setStyleSheet(f"color: {self._accent_color().name()}; font-size: 12px;")
+        self.status_dot.setStyleSheet(f"color: {css_color(self._accent_color())}; font-size: 12px;")
         status_row.addWidget(self.status_dot)
         self.status_label = QLabel(self._status_text())
         self.status_label.setToolTip(self.workstation.agent_diagnostic)
@@ -198,10 +207,11 @@ class WorkstationCard(QFrame):
         self.refresh_status()
 
     def refresh_status(self) -> None:
-        accent = self._accent_color().name()
+        accent = self._accent_color()
         self._apply_card_accent()
-        self.glyph.set_color(self._accent_color())
-        self.status_dot.setStyleSheet(f"color: {accent}; font-size: 12px;")
+        self.glyph.set_color(accent)
+        # css_color rather than QColor.name(), which would drop the emphasis alpha.
+        self.status_dot.setStyleSheet(f"color: {css_color(accent)}; font-size: 12px;")
         self.status_label.setText(self._status_text())
         self.status_label.setToolTip(self.workstation.agent_diagnostic)
         self.source_label.setText(self.workstation.get_agent_source_display())
@@ -211,33 +221,22 @@ class WorkstationCard(QFrame):
         self.reservation_label.setText(self.workstation.reservation_message)
         self.reservation_label.setVisible(bool(self.workstation.reservation_message))
 
-        owned = self.workstation.owned_sessions(self.user.windows_identity)
-        may_logoff = bool(owned) and not self.workstation.reservation_block_reason
-        connected_own = any(
-            item.get("session_state") in ("connected", "reconnected", "logon")
-            for item in owned
+        from portal_app.rdp import has_active_rdp_session
+
+        actions = describe_actions(
+            self.workstation,
+            self.user,
+            window_open=has_active_rdp_session(self.workstation.workstation_id),
         )
-        connected_own = connected_own and may_logoff
-        disconnected_own = may_logoff and not connected_own
-        can_connect = self.workstation.can_connect(
-            self.user.get_rdp_username(),
-            self.user.windows_identity,
-        )
-        self.logoff_btn.setVisible(connected_own or disconnected_own)
-        self.connect_btn.setVisible(not connected_own)
-        if connected_own:
-            return
-        self.connect_btn.setText("Wiederverbinden" if disconnected_own else "Verbinden")
-        self.connect_btn.setEnabled(can_connect or self.workstation.can_choose_session())
-        if not can_connect:
-            self.connect_btn.setText(
-                "Reserviert"
-                if self.workstation.reservation_block_reason
-                else self.workstation.get_status_display()
-            )
-            if self.workstation.can_choose_session():
-                self.connect_btn.setText("Sitzung öffnen …")
-        self.connect_btn.setToolTip(self.workstation.reservation_message)
+        # The primary button is always shown. Hiding it while an own session was
+        # connected used to leave a machine you are signed into with no way back.
+        self.connect_btn.setVisible(True)
+        self.connect_btn.setText(actions.primary_text)
+        self.connect_btn.setEnabled(actions.primary_enabled)
+        self.connect_btn.setToolTip(actions.primary_tooltip or self.workstation.reservation_message)
+        self.logoff_btn.setVisible(actions.logoff_visible)
+        self.logoff_btn.setEnabled(actions.logoff_enabled)
+        self.logoff_btn.setToolTip(actions.logoff_tooltip)
 
     def _ping(self) -> None:
         """Ping the same target that the RDP profile will use."""
@@ -293,29 +292,25 @@ class WorkstationCard(QFrame):
             self.ping_process.deleteLater()
         self.ping_process = None
 
+    def _state(self):
+        """The one state decides colour, weight and buttons alike."""
+        from portal_app.rdp import has_active_rdp_session
+
+        return machine_state(
+            self.workstation,
+            self.user,
+            window_open=has_active_rdp_session(self.workstation.workstation_id),
+        )
+
     def _accent_color(self) -> QColor:
-        ws = self.workstation
-        if (
-            not ws.enabled
-            or ws.agent_status == AgentStatus.OFFLINE
-            or ws.agent_status_source == "none"
-        ):
-            return Colors.text_muted
-        if ws.manual_flag_type == ManualFlagType.BLOCKED or ws.agent_status == AgentStatus.ERROR:
-            return Colors.error
-        if ws.manual_flag_type == ManualFlagType.MAINTENANCE or ws.agent_status == AgentStatus.STALE:
-            return Colors.warning
-        if ws.has_active_session():
-            return Colors.info
-        if ws.manual_flag_type == ManualFlagType.CALCULATION_RUNNING:
-            return Colors.info
-        return Colors.success
+        """The accent for border, glyph and status dot, emphasis included."""
+        return state_color(self._state())
 
     def _apply_card_accent(self) -> None:
-        accent = self._accent_color()
-        width = 2 if accent == Colors.text_muted else 4
+        state = self._state()
+        accent, width = state_color(state), state_border_width(state)
         self.setStyleSheet(
-            f"QFrame#workstationCard {{ border: {width}px solid {accent.name()}; }}"
+            f"QFrame#workstationCard {{ border: {width}px solid {css_color(accent)}; }}"
         )
 
     def _status_text(self) -> str:
@@ -449,7 +444,6 @@ class WorkstationCardsWidget(QWidget):
         self.flag_filter.setObjectName("dashboardFilter")
         self.flag_filter.addItem("Alle Kennzeichnungen", "")
         self.flag_filter.addItem("Ohne Flag", "none")
-        self.flag_filter.addItem("Berechnung läuft", "calculation_running")
         self.flag_filter.addItem("Wartung", "maintenance")
         self.flag_filter.addItem("Gesperrt", "blocked")
         self.flag_filter.currentIndexChanged.connect(self._rebuild_grid)
@@ -476,11 +470,13 @@ class WorkstationCardsWidget(QWidget):
         self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.scroll.setWidget(self.grid_host)
         root.addWidget(self.scroll, 1)
-        ping_row = QHBoxLayout()
-        ping_row.addStretch()
+        footer = QHBoxLayout()
+        footer.setSpacing(16)
+        self.legend = StatusLegend()
+        footer.addWidget(self.legend, 1)
         self.ping_tool = PingToolWidget()
-        ping_row.addWidget(self.ping_tool)
-        root.addLayout(ping_row)
+        footer.addWidget(self.ping_tool, 0, Qt.AlignBottom)
+        root.addLayout(footer)
 
     def _populate_user_filter(self) -> None:
         users = sorted({ws.current_session_user for ws in self.workstations if ws.current_session_user})
@@ -526,26 +522,17 @@ class WorkstationCardsWidget(QWidget):
             ),
         )
 
-    @staticmethod
-    def _visual_priority(workstation: Workstation) -> int:
-        """Order available green, occupied blue, alerts, then unconfirmed grey."""
-        if (
-            not workstation.enabled
-            or workstation.agent_status == AgentStatus.OFFLINE
-            or workstation.agent_status_source == "none"
-        ):
-            return 3
-        if (
-            workstation.manual_flag_type in {ManualFlagType.BLOCKED, ManualFlagType.MAINTENANCE}
-            or workstation.agent_status in {AgentStatus.ERROR, AgentStatus.STALE}
-        ):
-            return 2
-        if (
-            workstation.has_active_session()
-            or workstation.manual_flag_type == ManualFlagType.CALCULATION_RUNNING
-        ):
-            return 1
-        return 0
+    def _visual_priority(self, workstation: Workstation) -> int:
+        """Sort by the same state that colours the card: free first, grey last."""
+        from portal_app.rdp import has_active_rdp_session
+
+        return SORT_ORDER[
+            machine_state(
+                workstation,
+                self.user,
+                window_open=has_active_rdp_session(workstation.workstation_id),
+            )
+        ]
 
     def _rebuild_grid(self) -> None:
         if not hasattr(self, "_ping_results"):
@@ -558,7 +545,7 @@ class WorkstationCardsWidget(QWidget):
             and [item.workstation.workstation_id for item in existing_cards]
             == [item.workstation_id for item in filtered]
         ):
-            for card, workstation in zip(existing_cards, filtered):
+            for card, workstation in zip(existing_cards, filtered, strict=True):
                 card.set_workstation(workstation, self.user)
             return
         scroll_position = self.scroll.verticalScrollBar().value()

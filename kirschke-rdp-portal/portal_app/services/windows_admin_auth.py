@@ -8,6 +8,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 
+from shared.windows_tools import system32_tool
 
 DEFAULT_ADMIN_GROUP = "RDP-Portal-Admins"
 
@@ -35,7 +36,7 @@ def check_windows_admin_authorization(group_name: str | None = None) -> WindowsA
     group_name = (group_name or configured_admin_group()).strip()
     try:
         result = subprocess.run(
-            ["whoami", "/groups", "/fo", "csv", "/nh"],
+            [system32_tool("whoami.exe"), "/groups", "/fo", "csv", "/nh"],
             capture_output=True,
             text=True,
             encoding="oem",

@@ -1,9 +1,9 @@
 """Self-contained installer for the current user's portal application."""
 import ctypes
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 
 def main() -> int:

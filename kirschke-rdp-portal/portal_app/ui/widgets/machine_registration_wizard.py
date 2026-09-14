@@ -14,7 +14,11 @@ from PySide6.QtWidgets import (
     QWizardPage,
 )
 
-from portal_app.services.machine_discovery import MachineDiscovery, discover_local_machine, discover_remote_machine
+from portal_app.services.machine_discovery import (
+    MachineDiscovery,
+    discover_local_machine,
+    discover_remote_machine,
+)
 
 
 class MachineRegistrationWizard(QWizard):

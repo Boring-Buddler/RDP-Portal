@@ -13,12 +13,12 @@ from shared.enums import (
     SessionState,
 )
 from shared.schemas import (
-    WorkstationSchema,
-    SessionEventSchema,
-    AdminCommandSchema,
     AccessRuleSchema,
-    RDPProfileSchema,
+    AdminCommandSchema,
     ManualFlagSchema,
+    RDPProfileSchema,
+    SessionEventSchema,
+    WorkstationSchema,
 )
 
 __all__ = [

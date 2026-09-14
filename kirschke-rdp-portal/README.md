@@ -50,6 +50,13 @@ keine administrative Abmeldeberechtigung.
 
 Neue Installationen starten ohne Beispielmaschinen. Bestehende Inventare bleiben erhalten.
 Der lokale Adminzugang wird beim ersten Öffnen eingerichtet; es gibt kein Standardpasswort.
+Nach fünf Fehlversuchen ist er 15 Minuten gesperrt. **Reichweite dieses Schutzes:** Der
+Passwort-Hash liegt im Profil des angemeldeten Benutzers, der ihn löschen und damit die
+Ersteinrichtung erneut auslösen kann. Der Adminbereich trennt Rollen in der Oberfläche
+und hält beiläufige Änderungen aus dem gemeinsamen Inventar heraus; eine Grenze gegen die
+Person am Gerät ist er nicht. Die wirksamen Kontrollen setzt Windows: die Freigabe-ACL auf
+dem gemeinsamen Speicher, im AD-Modus die Gruppe `RDP-Portal-Admins`, und für eine
+administrative Abmeldung echte Administrator-Anmeldedaten des Zielrechners.
 Im optionalen AD-Modus ist der lokale Passwort-Fallback standardmäßig ausgeschaltet.
 Programmlogs liegen unter `%LOCALAPPDATA%\KirschkeRDPPortal\logs\portal.log` und werden rotiert.
 
@@ -218,10 +225,15 @@ benutzerbasierten Pilotbetriebs sind in [docs/agent-installation.md](docs/agent-
 .\deployment\build_agent.cmd
 ```
 
-Im erzeugten Ordner `dist-agent\Kirschke-RDP-Agent\` startet `Install-Agent.cmd` einen geführten One-Click-Installer.
-Er fragt nur die nicht automatisch bestimmbare Maschinen-ID und den gemeinsamen `agent-status`-Ordner ab, prüft den
-Schreibzugriff und richtet den Autostart für den angemeldeten Benutzer ein. Administratorrechte werden dafür nicht
-benötigt.
+**Empfohlener Weg:** `dist-agent\Kirschke-RDP-Agent-Setup.exe` als Administrator starten. Dieses Setup ist
+der unterstützte Installationsweg; es installiert rechnerweit als SYSTEM über die Aufgabenplanung, richtet
+auf Wunsch `PortalLeser` und die Freigabe `RDP-Status` ein und benötigt auf dem Ziel-PC weder Python noch
+eine gelockerte PowerShell-Ausführungsrichtlinie.
+
+Daneben liegt im Ordner noch `Install-Agent.cmd`, das den älteren PowerShell-Installer
+(`deployment/install_agent.ps1`) startet. Er richtet den Autostart nur für den angemeldeten Benutzer ein und
+legt **kein** Lesekonto und **keine** Freigabe an. Beide Wege registrieren dieselbe geplante Aufgabe, also
+nur einen davon verwenden. Der PowerShell-Weg bleibt ausschließlich als Rückfallebene erhalten.
 
 ## Active Directory (optional)
 
@@ -285,11 +297,37 @@ The application uses the Kirschke Corporate Design system as specified in the pr
 
 ## Security Notes
 
-- No passwords are stored in the application or configuration
-- RDP profiles are validated to prevent injection attacks
-- mstsc.exe is launched with explicit argument lists (no shell=True)
-- All SharePoint values are validated before use
-- Admin actions require explicit confirmation and reasoning
+- No passwords are stored in the application or configuration. The local admin
+  password is kept only as a PBKDF2-HMAC-SHA256 hash (310 000 iterations, random
+  16-byte salt) and is rate-limited to five attempts per 15 minutes. See the
+  scope note under "Der lokale Adminzugang" above for what that gate does and
+  does not protect.
+- RDP profiles are validated to prevent injection attacks: control characters are
+  rejected at the output boundary, and the target host is validated against an
+  allowlist pattern.
+- Every child process is started from an absolute `System32` path, never a bare
+  executable name, so `CreateProcess` cannot pick up a planted binary from the
+  working directory. A test enforces this repository-wide
+  (`tests/test_windows_tools.py`).
+- mstsc.exe is launched with explicit argument lists (no shell=True).
+- Generated `.rdp` files carry the target and user name. They are deleted when the
+  portal closes and leftovers from a crashed run are removed at the next start.
+- The Active Directory sync passes its payload base64-encoded into PowerShell
+  instead of interpolating values into the script text.
+- The agent's live status channel is restricted by SDDL to SYSTEM, local
+  administrators and the read-only `PortalLeser` account; `PortalLeser` is denied
+  interactive, remote-interactive, batch and service logon.
+- Agent snapshots read from an SMB share are untrusted input and are bounded in
+  file size, file count, list length and field length.
+- Signing out a session requires a fresh agent reply with matching session ID,
+  user and logon time, a request no older than 30 seconds, an unused request ID,
+  and either proven session ownership or real administrator credentials for the
+  target computer. Note the UAC caveat in
+  [docs/no-ad-pilotbetrieb.md](docs/no-ad-pilotbetrieb.md) for local accounts.
+- Admin actions require explicit confirmation and reasoning.
+- Roughly 5 700 lines of Entra/Graph/SharePoint code ship but are **not
+  integrated and untested**; one known defect makes the token cache inoperable.
+  See [docs/phase2-status.md](docs/phase2-status.md) before enabling any of it.
 
 ## Testing
 
@@ -300,9 +338,26 @@ pytest
 # Run pilot regression tests
 pytest tests/test_pilot_regressions.py
 
-# With coverage
-pytest --cov=portal_app --cov=shared
+# With coverage (requires the dev extra)
+pytest --cov=portal_app --cov=workstation_agent --cov=shared
 ```
+
+Lint and type checks use the configuration in `pyproject.toml`:
+
+```bash
+ruff check portal_app workstation_agent shared deployment tests
+mypy portal_app workstation_agent shared deployment
+```
+
+Current state (11.09.2026): **327 tests green, `ruff check` clean, 67 % line
+coverage** of the code that runs in the pilot. `mypy` reports 123 remaining
+findings, mostly missing annotations (`no-untyped-def`) and possible `None`
+dereferences (`union-attr`) — a known backlog, not a clean baseline.
+
+`ruff check` must stay clean. Do not add a blanket `noqa`; either fix the finding
+or record the reason in the `per-file-ignores` section of `pyproject.toml`. The
+coverage figure excludes the unintegrated Phase 2 modules listed in
+[docs/phase2-status.md](docs/phase2-status.md), which have no tests at all.
 
 ### Test the Windows agent locally
 
@@ -330,7 +385,10 @@ no longer inherits `AGENT_STATUS_DIR` from Windows.
 2. **No SharePoint integration** - Uses mock data
 3. **Agent transport** - Statusdateien können über SMB oder einen synchronisierten Ordner gelesen werden. Vollständige Agent-Ereignisse werden noch nicht in das lokale Portal-Log übertragen.
 4. **Local process monitoring only** - The portal detects the lifetime of RDP clients it started; closing mstsc.exe does not prove that the remote Windows session logged off
-5. **Remote admin commands disabled** - Das Portal kann eigene lokale RDP-Fenster schließen; ein entferntes Windows-Logoff ist im Pilot nicht freigegeben.
+5. **Remote admin commands disabled** - Das Portal kann eigene lokale RDP-Fenster schließen; ein entferntes Windows-Logoff über die Befehlswarteschlange ist im Pilot nicht freigegeben. Die Abmeldung über den geschützten Statuskanal ist freigegeben und geprüft.
+6. **Administrative Abmeldung bei lokalen Konten** - Die UAC-Remoteeinschränkung lässt die Prüfung für lokale Administratorkonten fehlschlagen, solange `LocalAccountTokenFilterPolicy` nicht gesetzt ist. Fehlerrichtung ist sicher (Ablehnung). Siehe [docs/no-ad-pilotbetrieb.md](docs/no-ad-pilotbetrieb.md).
+7. **Nur ein Live-Client gleichzeitig** - Der Statuskanal des Agenten bedient eine Verbindung nach der anderen. Jeder Schritt ist zeitlich begrenzt, sodass kein Client den Kanal blockieren kann; mehrere Portale auf demselben Agenten serialisieren sich aber.
+8. **Zwei Installationswege für den Agenten** - Unterstützt ist `Kirschke-RDP-Agent-Setup.exe`. `Install-Agent.cmd` startet den älteren PowerShell-Installer ohne Lesekonto und Freigabe; beide registrieren dieselbe geplante Aufgabe.
 
 These will be addressed in subsequent phases.
 

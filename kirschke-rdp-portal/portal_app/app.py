@@ -3,8 +3,8 @@
 import logging
 import os
 import sys
-from pathlib import Path
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 # A direct ``python portal_app/app.py`` start puts only ``portal_app`` on
 # sys.path.  Add the project directory first so absolute package imports work
@@ -14,16 +14,14 @@ if __package__ in {None, ""}:
     if project_directory not in sys.path:
         sys.path.insert(0, project_directory)
 
-from PySide6.QtWidgets import QApplication, QWidget, QMessageBox
 from PySide6.QtCore import QEvent
 from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from portal_app.ui.design import Colors, Typography
-from portal_app.ui.main_window import MainWindow
 from portal_app.ui.icons import kirschke_window_icon
-from portal_app.models.user import MockUser
+from portal_app.ui.main_window import MainWindow
 from portal_app.version import PORTAL_VERSION
-
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +30,9 @@ def configure_logging() -> None:
     """Portable installations need a writable log outside the program folder."""
     directory = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "KirschkeRDPPortal" / "logs"
     directory.mkdir(parents=True, exist_ok=True)
-    handlers = [RotatingFileHandler(directory / "portal.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8")]
+    handlers: list[logging.Handler] = [
+        RotatingFileHandler(directory / "portal.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8")
+    ]
     if sys.stderr is not None:
         handlers.append(logging.StreamHandler(sys.stderr))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", handlers=handlers)
@@ -40,11 +40,11 @@ def configure_logging() -> None:
 
 class RDPPortalApp(QApplication):
     """Main application class for the RDP Workstation Portal."""
-    
+
     def __init__(self, argv: list[str]):
         """Initialize the application."""
         super().__init__(argv)
-        
+
         # Set application metadata
         self.setApplicationName("Kirschke RDP Workstation Portal")
         self.setApplicationVersion(PORTAL_VERSION)
@@ -53,14 +53,14 @@ class RDPPortalApp(QApplication):
         self.portal_icon = kirschke_window_icon()
         self.setWindowIcon(self.portal_icon)
         self.installEventFilter(self)
-        
+
         # Apply design system
         self._apply_design_system()
-        
+
         # Set default font
         default_font = Typography.body()
         self.setFont(default_font)
-        
+
         # Create and show main window
         try:
             self.main_window = MainWindow()
@@ -69,7 +69,7 @@ class RDPPortalApp(QApplication):
             QMessageBox.critical(None, "Portal konnte nicht gestartet werden", str(exc))
             raise
         self.main_window.show()
-        
+
         logger.info("RDP Workstation Portal started")
 
     def eventFilter(self, watched, event):  # noqa: N802
@@ -78,7 +78,7 @@ class RDPPortalApp(QApplication):
             if watched.isWindow() and not self.portal_icon.isNull():
                 watched.setWindowIcon(self.portal_icon)
         return super().eventFilter(watched, event)
-    
+
     def _apply_design_system(self) -> None:
         """Apply Kirschke design system to the application."""
         # Set palette
@@ -95,16 +95,24 @@ class RDPPortalApp(QApplication):
         palette.setColor(QPalette.ToolTipBase, Colors.surface)
         palette.setColor(QPalette.ToolTipText, Colors.text)
         self.setPalette(palette)
-    
-    def get_current_user(self) -> MockUser:
-        """Get the current authenticated user (mock for Phase 1)."""
-        # For Phase 1, return a mock user
-        # In Phase 2, this will use actual Entra ID authentication
-        return MockUser.create_user()
-    
-    def get_admin_user(self) -> MockUser:
-        """Get an admin user (for testing admin features)."""
-        return MockUser.create_admin()
+
+
+def show_startup_error(detail: str) -> None:
+    """Report a pre-Qt failure where the user can actually see it.
+
+    The portable build runs without a console, so a print() to stdout would make
+    a failed start look like nothing happened at all.
+    """
+    logger.error("Portal start aborted: %s", detail)
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(
+            None, detail, "Kirschke RDP-Portal – Start nicht möglich", 0x10
+        )
+    except (AttributeError, OSError):
+        # Non-Windows or no window station: the log entry above has to do.
+        pass
 
 
 def main():
@@ -120,12 +128,12 @@ def main():
         env_info = validate_environment()
         logger.info(f"Environment validated: Python {env_info['python_version_info'].major}.{env_info['python_version_info'].minor}")
     except Exception as e:
-        print(f"Environment validation failed: {e}")
+        show_startup_error(f"Die Programmumgebung ist nicht geeignet: {e}")
         sys.exit(1)
-    
+
     # Create application
     app = RDPPortalApp(sys.argv)
-    
+
     # Execute
     try:
         sys.exit(app.exec())

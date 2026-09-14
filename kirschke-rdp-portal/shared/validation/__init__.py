@@ -1,15 +1,14 @@
 """Validation utilities for Kirschke RDP Workstation Portal."""
 
-import re
 import ipaddress
-from typing import Optional
-import uuid
-import sys
 import platform
+import re
+import sys
+import uuid
 
 
 class RDPValidationError(Exception):
-    def __init__(self, message: str, field: Optional[str] = None, value: Optional[str] = None):
+    def __init__(self, message: str, field: str | None = None, value: str | None = None):
         self.message = message
         self.field = field
         self.value = value
@@ -34,11 +33,6 @@ ALLOWED_RDP_OPTIONS = {
     "disable full window drag", "disable menu anims",
     "disable themes",
 }
-
-FORBIDDEN_RDP_PATTERNS = [
-    "password", "cmd", "powershell", "executable",
-    "|", ";", "&&", "$", "`", ">", "<",
-]
 
 MAX_HOSTNAME_LENGTH = 256
 MAX_UPN_LENGTH = 256
@@ -71,13 +65,13 @@ class RDPProfileValidator:
         if not (re.fullmatch(hostname_pattern, hostname) or re.fullmatch(fqdn_pattern, hostname)):
             raise RDPValidationError("Hostname has invalid format", "hostname", hostname)
         return hostname
-    
+
     @staticmethod
-    def validate_gateway(gateway: Optional[str]) -> Optional[str]:
+    def validate_gateway(gateway: str | None) -> str | None:
         if gateway is None:
             return None
         return RDPProfileValidator.validate_hostname(gateway)
-    
+
     @staticmethod
     def validate_option_name(name: str) -> str:
         if not name:
@@ -87,7 +81,7 @@ class RDPProfileValidator:
         if name not in ALLOWED_RDP_OPTIONS:
             raise RDPValidationError("Option not in allowlist", "option_name", name)
         return name
-    
+
     @staticmethod
     def validate_rdp_content(content: str) -> str:
         if not content:
@@ -144,10 +138,13 @@ def validate_reason(reason: str, max_length: int = MAX_REASON_LENGTH) -> str:
 
 def validate_environment() -> dict:
     info = {"python_version": sys.version, "python_version_info": sys.version_info, "platform": platform.system(), "platform_version": platform.version()}
-    if sys.version_info < (3, 12):
-        raise EnvironmentError("Python 3.12+ required")
+    # Kept deliberately although requires-python already declares 3.12: a source
+    # checkout started with an older interpreter must fail with this message
+    # rather than with an arbitrary SyntaxError further in.
+    if sys.version_info < (3, 12):  # noqa: UP036
+        raise OSError("Python 3.12+ required")
     if platform.system() != "Windows":
-        raise EnvironmentError("This application requires Windows")
+        raise OSError("This application requires Windows")
     return info
 
 
@@ -172,7 +169,7 @@ def generate_test_reason() -> str:
 
 
 __all__ = [
-    "RDPValidationError", "ALLOWED_RDP_OPTIONS", "FORBIDDEN_RDP_PATTERNS",
+    "RDPValidationError", "ALLOWED_RDP_OPTIONS",
     "MAX_HOSTNAME_LENGTH", "MAX_UPN_LENGTH", "MAX_REASON_LENGTH",
     "COMMAND_EXPIRY_MINUTES", "AGENT_POLL_INTERVAL_SECONDS",
     "SESSION_SYNC_INTERVAL_SECONDS", "ALLOWED_RDP_FILE_EXTENSION",

@@ -2,14 +2,39 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from ipaddress import ip_address
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from portal_app.models.workstation import Workstation
+from portal_app.services.agent_identity import (
+    machine_hostnames,
+    match_agent,
+    mismatch_message,
+    name_values,
+)
 from portal_app.version import PORTAL_VERSION
-from shared.agent_snapshot import AgentSnapshot, get_agent_snapshot_directory, scan_agent_snapshots
+from shared.agent_snapshot import (
+    AgentSnapshot,
+    SnapshotFileResult,
+    get_agent_snapshot_directory,
+    scan_agent_snapshots,
+)
 from shared.enums import AgentStatus
+
+
+@dataclass(frozen=True)
+class DirectoryScan:
+    """Result of reading one agent fallback folder.
+
+    Produced by the blocking scan and consumed by the evaluation step, so the two
+    can run on different threads.
+    """
+
+    directory: Path
+    files: list[SnapshotFileResult] = field(default_factory=list)
+    other_names: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 class LocalAgentStatusService:
@@ -28,15 +53,26 @@ class LocalAgentStatusService:
         self._live_failures: dict[str, tuple[datetime, str, tuple]] = {}
 
     def accept_live_snapshot(self, ws: Workstation, snapshot: AgentSnapshot, elapsed: int) -> None:
-        expected_id = (ws.agent_workstation_id or ws.workstation_id).casefold()
-        matches = snapshot.workstation_id.casefold() == expected_id
-        if not ws.agent_workstation_id:
-            matches |= bool(self._identity_values(ws).intersection(self._hostname_values(snapshot.hostname)))
-        if not matches:
-            raise ValueError(f"Der antwortende Agent ({snapshot.workstation_id}, {snapshot.hostname}) passt nicht zur Maschine. Agent-Zuordnung prüfen.")
+        match = match_agent(
+            expected_id=ws.agent_workstation_id or ws.workstation_id,
+            assigned_explicitly=bool(ws.agent_workstation_id),
+            hostnames=self._identity_values(ws),
+            reported_id=snapshot.workstation_id,
+            reported_hostname=snapshot.hostname,
+        )
+        if not match:
+            raise ValueError(
+                mismatch_message(
+                    ws.display_name,
+                    ws.agent_workstation_id or ws.workstation_id,
+                    snapshot.workstation_id,
+                    snapshot.hostname,
+                    match.reason,
+                )
+            )
         self._live_snapshots[ws.workstation_id] = (
             snapshot,
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
             elapsed,
             (ws.get_agent_status_target(), ws.agent_workstation_id),
         )
@@ -49,7 +85,7 @@ class LocalAgentStatusService:
         except ValueError:
             target = (None, ws.agent_workstation_id)
         self._live_failures[ws.workstation_id] = (
-            datetime.now(timezone.utc),
+            datetime.now(UTC),
             message,
             target,
         )
@@ -73,18 +109,8 @@ class LocalAgentStatusService:
     def directory_summary(self) -> str:
         return getattr(self, "_directory_summary", str(self.directory))
 
-    @staticmethod
-    def _hostname_values(value: str) -> set[str]:
-        value = value.strip().rstrip(".").casefold()
-        try:
-            return {str(ip_address(value))}
-        except ValueError:
-            pass
-        return {value, value.split(".", 1)[0]} if value else set()
-
-    @classmethod
-    def _identity_values(cls, workstation: Workstation) -> set[str]:
-        return cls._hostname_values(workstation.hostname) | cls._hostname_values(workstation.fqdn or "")
+    _hostname_values = staticmethod(name_values)
+    _identity_values = staticmethod(machine_hostnames)
 
     def _effective_status(self, snapshot: AgentSnapshot, now: datetime) -> AgentStatus:
         if (snapshot.observed_at_utc - now).total_seconds() > 60:
@@ -112,7 +138,7 @@ class LocalAgentStatusService:
             return
         last_seen = ws.agent_last_seen_utc
         if last_seen.tzinfo is None:
-            last_seen = last_seen.replace(tzinfo=timezone.utc)
+            last_seen = last_seen.replace(tzinfo=UTC)
         age = (now - last_seen).total_seconds()
         if age > self.offline_after_seconds:
             ws.agent_status = AgentStatus.OFFLINE
@@ -121,31 +147,62 @@ class LocalAgentStatusService:
         elif age < -60:
             ws.agent_status = AgentStatus.ERROR
 
-    def apply(self, workstations: list[Workstation]) -> int:
-        self.last_errors = []
-        self.last_match_count = 0
-        now = datetime.now(timezone.utc)
-        self.last_checked_at = now
+    def fallback_directories(self, workstations: list[Workstation]) -> dict[str, Path]:
+        """Return the per-machine fallback folders to scan, keyed case-insensitively.
+
+        Pure lookup; safe to call from the UI thread before handing the result to
+        a worker.
+        """
         directories: dict[str, Path] = {}
         for ws in workstations:
             directory = self.directory_for(ws)
             directories.setdefault(str(directory).casefold(), directory)
         if not directories:
             directories[str(self.directory).casefold()] = self.directory
-        scans: dict[str, tuple[list, list[str], list[str]]] = {}
-        all_files = []
-        all_other_names: list[str] = []
+        return directories
+
+    @staticmethod
+    def scan_directories(directories: dict[str, Path]) -> dict[str, DirectoryScan]:
+        """Read every fallback folder. This is the blocking SMB/disk work.
+
+        Touches no Workstation and no service state, so it runs on a worker
+        thread; ``apply_scans`` then applies the result on the UI thread.
+        """
+        scans: dict[str, DirectoryScan] = {}
         for key, directory in directories.items():
-            errors: list[str] = []
             try:
                 files, other_names = scan_agent_snapshots(directory)
+                errors: list[str] = []
             except OSError as exc:
                 files, other_names = [], []
-                errors.append(f"{directory}: Ordner kann nicht gelesen werden: {exc}")
-            scans[key] = (files, other_names, errors)
-            all_files.extend(files)
-            all_other_names.extend(other_names)
-            self.last_errors.extend(errors)
+                errors = [f"{directory}: Ordner kann nicht gelesen werden: {exc}"]
+            scans[key] = DirectoryScan(directory, files, other_names, errors)
+        return scans
+
+    def apply(self, workstations: list[Workstation]) -> int:
+        """Scan and apply in one blocking call (CLI, preflight and tests)."""
+        return self.apply_scans(workstations, self.scan_directories(self.fallback_directories(workstations)))
+
+    def apply_scans(
+        self,
+        workstations: list[Workstation],
+        scans: dict[str, DirectoryScan],
+    ) -> int:
+        """Apply already-read folder contents to the machine list.
+
+        Mutates Workstation objects and therefore belongs on the UI thread.
+        """
+        self.last_errors = []
+        self.last_match_count = 0
+        now = datetime.now(UTC)
+        self.last_checked_at = now
+        directories = {key: scan.directory for key, scan in scans.items()}
+        all_files = []
+        all_other_names: list[str] = []
+        for scan in scans.values():
+            all_files.extend(scan.files)
+            all_other_names.extend(scan.other_names)
+            self.last_errors.extend(scan.errors)
         self._directory_summary = (
             str(next(iter(directories.values())))
             if len(directories) == 1
@@ -162,7 +219,8 @@ class LocalAgentStatusService:
         self.last_snapshot_count = len(snapshots)
         lines.append(f"JSON-Dateien gefunden: {len(all_files)}; gültige Agent-Meldungen: {len(snapshots)}")
         for key, directory in directories.items():
-            files, other_names, errors = scans[key]
+            scan = scans[key]
+            files, other_names, errors = scan.files, scan.other_names, scan.errors
             lines.append(f"\nOrdner: {directory}")
             if errors:
                 lines.extend(errors)
@@ -191,7 +249,12 @@ class LocalAgentStatusService:
 
         for ws in workstations:
             directory = self.directory_for(ws)
-            files, _, directory_errors = scans[str(directory).casefold()]
+            # The scan ran on a worker thread. If the configured folder changed in
+            # between, treat this machine as unscanned rather than raising KeyError.
+            scan = scans.get(str(directory).casefold())
+            if scan is None:
+                scan = DirectoryScan(directory, [], [], ["Fallbackordner wurde während der Prüfung geändert."])
+            files, directory_errors = scan.files, scan.errors
             directory_snapshots = [result.snapshot for result in files if result.snapshot is not None]
             before = (ws.agent_status, ws.agent_last_seen_utc, ws.agent_version,
                       ws.current_session_state, ws.current_session_user,

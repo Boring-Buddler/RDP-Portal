@@ -3,14 +3,14 @@
 # Phase 2: Entra ID authentication with MSAL
 # For Phase 1, mock authentication is used
 
-from portal_app.auth.mock_auth import MockAuthProvider
 from portal_app.auth.entra_auth import (
     EntraAuthConfig,
-    TokenCache,
-    EntraUserInfo,
     EntraAuthProvider,
+    EntraUserInfo,
+    TokenCache,
     create_auth_provider,
 )
+from portal_app.auth.mock_auth import MockAuthProvider
 
 __all__ = [
     "MockAuthProvider",

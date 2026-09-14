@@ -5,9 +5,19 @@ import logging
 import threading
 from ctypes import wintypes
 
-from shared.status_pipe import CLIENT_ACCESS, MAX_MESSAGE, PIPE_NAME, io_operation, read_message, write_message
+from shared.status_pipe import (
+    CLIENT_ACCESS,
+    MAX_MESSAGE,
+    PIPE_NAME,
+    io_operation,
+    read_message,
+    write_message,
+)
 
 logger = logging.getLogger(__name__)
+
+#: How long to wait for the client's read acknowledgement before moving on.
+ACK_TIMEOUT_MS = 1000
 
 
 def client_computer_name(handle) -> str:
@@ -24,7 +34,16 @@ def client_computer_name(handle) -> str:
 
 
 def client_is_local_administrator(handle) -> bool:
-    """Trust an admin command only when the target authenticated an admin token."""
+    """Trust an admin command only when the target authenticated an admin token.
+
+    Operational caveat: for a *local* account arriving over the network, UAC
+    remote restrictions filter the Administrators group to deny-only, and
+    CheckTokenMembership ignores deny-only SIDs.  A genuine local administrator is
+    therefore rejected unless it is the built-in RID 500 account (disabled by
+    default on Windows 10/11) or LocalAccountTokenFilterPolicy=1 is set on the
+    target.  Domain accounts are unaffected.  Fails closed either way; see
+    docs/no-ad-pilotbetrieb.md.
+    """
     import win32security
     win32security.ImpersonateNamedPipeClient(handle)
     try:
@@ -79,9 +98,14 @@ class StatusServer(threading.Thread):
         import pywintypes
         import win32con
         import win32event
+        import win32file
         import win32pipe
         handle = None
         try:
+            # One instance, served serially. Requests are a single small message
+            # each and every step is timeout-bounded, so a client cannot hold the
+            # channel; raising maxInstances would need a thread per connection and
+            # a review of WTS access from several threads at once.
             handle = win32pipe.CreateNamedPipe(rf"\\.\pipe\{self.pipe_name}",
                 win32pipe.PIPE_ACCESS_DUPLEX | win32con.FILE_FLAG_OVERLAPPED | 0x00080000,  # FIRST_PIPE_INSTANCE
                 win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
@@ -124,7 +148,13 @@ class StatusServer(threading.Thread):
                     if len(payload) > MAX_MESSAGE:
                         payload = b'{"error":"status_too_large"}'
                     write_message(handle, payload)
-                    read_message(handle, 128)  # Wait until response consumed, bounded.
+                    # Wait for the client's tiny ack, but only briefly: the pipe
+                    # serves one client at a time, so the default 5 s would let a
+                    # slow or stalled reader block every other portal that long.
+                    try:
+                        io_operation(handle, lambda ov: win32file.ReadFile(handle, 128, ov)[1], ACK_TIMEOUT_MS)
+                    except TimeoutError:
+                        logger.debug("Live-Status: Client hat die Antwort nicht bestätigt")
                 except (OSError, pywintypes.error, ValueError):
                     logger.debug("Live-Status: Client getrennt oder Anfrage fehlgeschlagen", exc_info=True)
                 finally:

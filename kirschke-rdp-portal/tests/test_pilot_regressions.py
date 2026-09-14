@@ -1,7 +1,7 @@
 """Regression coverage for data loss, unsafe RDP output and agent failures."""
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -122,7 +122,7 @@ def test_rdp_options_and_file_validation(tmp_path, redirect, screen):
 def test_missing_snapshot_ages_previous_observation(tmp_path):
     ws = machine()
     ws.agent_status = AgentStatus.ONLINE
-    ws.agent_last_seen_utc = datetime.now(timezone.utc) - timedelta(minutes=6)
+    ws.agent_last_seen_utc = datetime.now(UTC) - timedelta(minutes=6)
     ws.current_session_state = SessionState.DISCONNECTED
     LocalAgentStatusService(directory=tmp_path).apply([ws])
     assert ws.agent_status == AgentStatus.OFFLINE
@@ -145,7 +145,7 @@ def test_malformed_snapshots_are_ignored(tmp_path, data):
 
 
 def test_future_snapshot_is_not_online(tmp_path):
-    snapshot = AgentSnapshot("WS-1", "WS-1", "1", observed_at_utc=datetime.now(timezone.utc) + timedelta(days=1))
+    snapshot = AgentSnapshot("WS-1", "WS-1", "1", observed_at_utc=datetime.now(UTC) + timedelta(days=1))
     write_agent_snapshot(snapshot, tmp_path)
     ws = machine()
     LocalAgentStatusService(directory=tmp_path).apply([ws])
@@ -303,6 +303,6 @@ def test_log_displays_utc_event_with_local_date_filter(qtbot):
 
     widget = SessionLogWidget([], MockUser.create_user())
     qtbot.addWidget(widget)
-    widget.set_events([SessionEvent("EVT-UTC", datetime.now(timezone.utc), EventType.RDP_LOGON, "WS-1")])
+    widget.set_events([SessionEvent("EVT-UTC", datetime.now(UTC), EventType.RDP_LOGON, "WS-1")])
     assert widget.table.rowCount() == 1
     assert widget.table.item(0, 2).text() == "WS-1"

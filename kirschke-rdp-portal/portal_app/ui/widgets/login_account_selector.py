@@ -1,6 +1,6 @@
 """Per-machine login choice, shared by cards and the detail page."""
 
-from PySide6.QtCore import Signal, QPointF
+from PySide6.QtCore import QPointF, Signal
 from PySide6.QtGui import QPainter, QPalette, QPen
 from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 

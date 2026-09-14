@@ -1,12 +1,14 @@
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
+
+from shared.windows_tools import powershell
 
 
 def test_status_share_setup_with_mocked_windows_accounts(tmp_path):
     project = Path(__file__).resolve().parents[1]
-    result = subprocess.run(["powershell.exe", "-NoProfile", "-File",
+    result = subprocess.run([powershell(), "-NoProfile", "-File",
                              str(project / "tests/check_status_share.ps1"), "-Project", str(project), "-TestRoot", str(tmp_path)],
                             capture_output=True, timeout=30)
     if b"PSSecurityException" in result.stderr:

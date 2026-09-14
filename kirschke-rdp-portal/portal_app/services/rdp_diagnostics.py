@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from shared.schemas import RDPProfileSchema
+from shared.windows_tools import system32_tool
 
 
 @dataclass(frozen=True)
@@ -80,8 +81,15 @@ def run_rdp_diagnostics(profile: RDPProfileSchema, timeout_seconds: float = 3.0)
             "Einordnung:",
             "- Ist Port 3389 nicht erreichbar, prüfen Sie Netzwerk, Firewall, VPN und den Remotedesktopdienst.",
             "- Ist Port 3389 erreichbar und Windows meldet trotzdem einen fehlgeschlagenen Anmeldeversuch,",
-            "  prüfen Sie Benutzerformat, Berechtigung 'Remotedesktopbenutzer', Domänen-/Entra-Zuordnung",
+            "  prüfen Sie Benutzerformat, Gruppenmitgliedschaft, Domänen-/Entra-Zuordnung",
             "  sowie gespeicherte Windows-Anmeldedaten für dieses Ziel.",
+            "- Die Gruppe heißt je nach Systemsprache 'Remotedesktopbenutzer' oder 'Remote Desktop Users';",
+            "  sprachunabhängig ist nur ihre SID S-1-5-32-555:",
+            "      $name = (Get-LocalGroup -SID 'S-1-5-32-555').Name",
+            "- Meldet der Zielrechner 'Benutzerkonto nicht zur Remoteanmeldung autorisiert' (0x3 / 0x9),",
+            "  ist das Konto authentifiziert, aber nicht berechtigt. Bei Entra-Konten muss der",
+            "  Gruppeneintrag 'AzureAD\\<UPN>' lauten, nicht den Anzeigenamen verwenden: Windows prüft",
+            "  die SID, und ein über den Anzeigenamen eingetragenes Konto kann eine andere SID haben.",
         )
     )
     report = "\n".join(lines)
@@ -104,7 +112,7 @@ def _has_saved_rdp_credentials(target: str) -> bool | None:
     credential_target = f"TERMSRV/{target}"
     try:
         result = subprocess.run(
-            ["cmdkey", f"/list:{credential_target}"],
+            [system32_tool("cmdkey.exe"), f"/list:{credential_target}"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -124,7 +132,7 @@ def clear_saved_rdp_credentials(target: str) -> tuple[bool, str]:
     credential_target = f"TERMSRV/{target}"
     try:
         result = subprocess.run(
-            ["cmdkey", f"/delete:{credential_target}"],
+            [system32_tool("cmdkey.exe"), f"/delete:{credential_target}"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -153,7 +161,7 @@ def _recent_rdp_client_events() -> str:
     ):
         try:
             result = subprocess.run(
-                ["wevtutil", "qe", channel, "/rd:true", "/c:6", "/f:text"],
+                [system32_tool("wevtutil.exe"), "qe", channel, "/rd:true", "/c:6", "/f:text"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

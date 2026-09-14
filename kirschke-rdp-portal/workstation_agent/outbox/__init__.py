@@ -2,8 +2,8 @@
 
 from workstation_agent.outbox.handler import (
     OutboxConfig,
-    OutboxItem,
     OutboxHandler,
+    OutboxItem,
     TransmissionHandler,
     create_outbox_handler,
     create_transmission_handler,

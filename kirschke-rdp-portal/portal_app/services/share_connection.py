@@ -1,6 +1,6 @@
 """Connect to an SMB status folder without exposing credentials to a shell."""
-from pathlib import Path, PureWindowsPath
 import re
+from pathlib import Path, PureWindowsPath
 
 
 def parse_share_path(value: str) -> tuple[str, str, str]:
@@ -32,9 +32,9 @@ def credential_payload(server: str, username: str, password: str) -> dict:
 
 
 def connect_share(path: str, username: str, password: str, remember: bool) -> tuple[str, str]:
+    import pywintypes
     import win32cred
     import win32wnet
-    import pywintypes
 
     path, server, root = parse_share_path(path)
     username = username.strip()

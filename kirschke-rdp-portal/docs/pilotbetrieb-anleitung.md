@@ -36,8 +36,9 @@ Diese Prompts sind unkritisch, wenn Namen und Domänen anonymisiert werden:
 > Sicherheitsgruppe delegiere.
 
 > Erkläre mir in deutscher Windows Server-Verwaltung, wie ich eine
-> AD-Sicherheitsgruppe per Gruppenrichtlinie zur lokalen Gruppe
-> „Remotedesktopbenutzer“ eines einzelnen PCs hinzufüge.
+> AD-Sicherheitsgruppe per Gruppenrichtlinie zur lokalen Gruppe mit der SID
+> S-1-5-32-555 eines einzelnen PCs hinzufüge (der Anzeigename ist
+> sprachabhängig: „Remotedesktopbenutzer“ bzw. „Remote Desktop Users“).
 
 > Prüfe diese PowerShell-Ausgabe auf fehlende RSAT-Komponenten. Entferne dabei
 > alle Benutzernamen, Servernamen und IP-Adressen.
@@ -111,7 +112,9 @@ Für jede Maschine wird genau ihre Gruppe verwendet:
 
 In der Gruppenrichtlinienverwaltung (GPMC) eine Richtlinie für den jeweiligen
 Zielrechner bzw. die passende Computer-OU erstellen. Die zugehörige
-`RDP-WS-...`-Gruppe der lokalen Gruppe **Remotedesktopbenutzer** hinzufügen.
+`RDP-WS-...`-Gruppe der lokalen Gruppe mit der SID `S-1-5-32-555` hinzufügen
+(Anzeigename je nach Systemsprache **Remotedesktopbenutzer** oder **Remote
+Desktop Users** — die Richtlinie sollte die SID verwenden, nicht den Namen).
 Zusätzlich prüfen, dass die Windows-Richtlinie „Anmelden über
 Remotedesktopdienste zulassen“ die Gruppe nicht ausschließt.
 

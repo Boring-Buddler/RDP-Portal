@@ -6,31 +6,36 @@ portal data schemas.
 
 Note: This is a simplified version for the agent that doesn't depend on
 portal_app modules to avoid circular imports.
+
+.. warning::
+   NOT INTEGRATED -- this module is not reached by the running pilot and has no
+   tests.  See docs/phase2-status.md before changing or enabling it; the token
+   cache in particular is known to be broken in both directions.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Optional, Any
+from datetime import UTC, datetime
+from typing import Any
 
 from shared.enums import (
     AgentStatus,
-    SessionState,
-    ManualFlagType,
-    EventType,
+    CommandStatus,
+    CommandType,
     EventResult,
     EventSource,
-    CommandType,
-    CommandStatus,
+    EventType,
+    ManualFlagType,
+    SessionState,
 )
 from shared.schemas import (
-    WorkstationSchema,
-    SessionEventSchema,
-    AdminCommandSchema,
     AccessRuleSchema,
+    AdminCommandSchema,
     ManualFlagSchema,
+    SessionEventSchema,
+    WorkstationSchema,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,16 +47,16 @@ logger = logging.getLogger(__name__)
 
 class SharePointDataConverter:
     """Base class for SharePoint data conversion."""
-    
+
     @staticmethod
-    def _format_datetime(dt: Optional[datetime]) -> Optional[str]:
+    def _format_datetime(dt: datetime | None) -> str | None:
         """Format datetime for SharePoint."""
         if dt is None:
             return None
         return dt.isoformat()
-    
+
     @staticmethod
-    def _parse_datetime(value: Any) -> Optional[datetime]:
+    def _parse_datetime(value: Any) -> datetime | None:
         """Parse datetime from SharePoint."""
         if value is None:
             return None
@@ -61,16 +66,16 @@ class SharePointDataConverter:
             except (ValueError, AttributeError):
                 return None
         return None
-    
+
     @staticmethod
-    def _format_enum(enum_value: Any) -> Optional[str]:
+    def _format_enum(enum_value: Any) -> str | None:
         """Format enum value for SharePoint."""
         if enum_value is None:
             return None
         if hasattr(enum_value, "value"):
             return enum_value.value
         return str(enum_value)
-    
+
     @staticmethod
     def _parse_enum(value: Any, enum_class: type, default: Any) -> Any:
         """Parse enum value from SharePoint."""
@@ -80,14 +85,14 @@ class SharePointDataConverter:
             return enum_class(value)
         except (ValueError, KeyError):
             return default
-    
+
     @staticmethod
-    def _format_list(values: list) -> Optional[str]:
+    def _format_list(values: list) -> str | None:
         """Format list as JSON string for SharePoint."""
         if not values:
             return None
         return json.dumps(values)
-    
+
     @staticmethod
     def _parse_list(value: Any) -> list:
         """Parse list from JSON string in SharePoint."""
@@ -105,7 +110,7 @@ class SharePointDataConverter:
 
 class WorkstationConverter(SharePointDataConverter):
     """Convert WorkstationSchema to/from SharePoint list items."""
-    
+
     @classmethod
     def from_sharepoint(cls, item: dict) -> WorkstationSchema:
         """Convert SharePoint list item to WorkstationSchema."""
@@ -144,12 +149,12 @@ class WorkstationConverter(SharePointDataConverter):
                 "manual_flag_set_at_utc": "ManualFlagSetAtUtc",
                 "manual_flag_expires_at_utc": "ManualFlagExpiresAtUtc",
             }
-            
+
             sp_field = field_mapping.get(field_name)
             if sp_field and sp_field in item:
                 return item[sp_field]
             return default
-        
+
         manual_flag = ManualFlagSchema(
             flag_type=cls._parse_enum(
                 get_field("manual_flag_flag_type"),
@@ -163,7 +168,7 @@ class WorkstationConverter(SharePointDataConverter):
             set_at_utc=cls._parse_datetime(get_field("manual_flag_set_at_utc")),
             expires_at_utc=cls._parse_datetime(get_field("manual_flag_expires_at_utc")),
         )
-        
+
         return WorkstationSchema(
             workstation_id=get_field("workstation_id", ""),
             display_name=get_field("display_name", ""),
@@ -205,7 +210,7 @@ class WorkstationConverter(SharePointDataConverter):
 
 class SessionEventConverter(SharePointDataConverter):
     """Convert SessionEventSchema to/from SharePoint list items."""
-    
+
     @classmethod
     def to_sharepoint(cls, event: SessionEventSchema) -> dict:
         """Convert SessionEventSchema to SharePoint list item."""
@@ -228,13 +233,13 @@ class SessionEventConverter(SharePointDataConverter):
             "CorrelationId": event.correlation_id,
             "AgentVersion": event.agent_version,
         }
-    
+
     @classmethod
     def from_sharepoint(cls, item: dict) -> SessionEventSchema:
         """Convert SharePoint list item to SessionEventSchema."""
         return SessionEventSchema(
             event_id=item.get("EventId", ""),
-            timestamp_utc=cls._parse_datetime(item.get("TimestampUtc")) or datetime.now(timezone.utc),
+            timestamp_utc=cls._parse_datetime(item.get("TimestampUtc")) or datetime.now(UTC),
             event_type=cls._parse_enum(item.get("EventType"), EventType, EventType.LAUNCH_REQUESTED),
             workstation_id=item.get("WorkstationId", ""),
             workstation_hostname=item.get("WorkstationHostname"),
@@ -255,7 +260,7 @@ class SessionEventConverter(SharePointDataConverter):
 
 class AdminCommandConverter(SharePointDataConverter):
     """Convert AdminCommandSchema to/from SharePoint list items."""
-    
+
     @classmethod
     def to_sharepoint(cls, command: AdminCommandSchema) -> dict:
         """Convert AdminCommandSchema to SharePoint list item."""
@@ -273,7 +278,7 @@ class AdminCommandConverter(SharePointDataConverter):
             "ExecutedAtUtc": cls._format_datetime(command.executed_at_utc),
             "ResultMessage": command.result_message,
         }
-    
+
     @classmethod
     def from_sharepoint(cls, item: dict) -> AdminCommandSchema:
         """Convert SharePoint list item to AdminCommandSchema."""
@@ -284,8 +289,8 @@ class AdminCommandConverter(SharePointDataConverter):
             command_type=cls._parse_enum(item.get("CommandType"), CommandType, CommandType.REFRESH_STATUS),
             requested_by_object_id=item.get("RequestedByObjectId", ""),
             requested_by_upn=item.get("RequestedByUpn", ""),
-            requested_at_utc=cls._parse_datetime(item.get("RequestedAtUtc")) or datetime.now(timezone.utc),
-            expires_at_utc=cls._parse_datetime(item.get("ExpiresAtUtc")) or datetime.now(timezone.utc),
+            requested_at_utc=cls._parse_datetime(item.get("RequestedAtUtc")) or datetime.now(UTC),
+            expires_at_utc=cls._parse_datetime(item.get("ExpiresAtUtc")) or datetime.now(UTC),
             reason=item.get("Reason"),
             status=cls._parse_enum(item.get("Status"), CommandStatus, CommandStatus.PENDING),
             executed_at_utc=cls._parse_datetime(item.get("ExecutedAtUtc")),
@@ -295,7 +300,7 @@ class AdminCommandConverter(SharePointDataConverter):
 
 class AccessRuleConverter(SharePointDataConverter):
     """Convert AccessRuleSchema to/from SharePoint list items."""
-    
+
     @classmethod
     def to_sharepoint(cls, rule: AccessRuleSchema) -> dict:
         """Convert AccessRuleSchema to SharePoint list item."""
@@ -309,7 +314,7 @@ class AccessRuleConverter(SharePointDataConverter):
             "ValidUntilUtc": cls._format_datetime(rule.valid_until_utc),
             "Enabled": rule.enabled,
         }
-    
+
     @classmethod
     def from_sharepoint(cls, item: dict) -> AccessRuleSchema:
         """Convert SharePoint list item to AccessRuleSchema."""

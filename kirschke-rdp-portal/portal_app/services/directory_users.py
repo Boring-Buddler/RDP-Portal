@@ -11,6 +11,8 @@ import re
 import subprocess
 from dataclasses import dataclass
 
+from shared.windows_tools import system32_tool
+
 
 @dataclass(frozen=True)
 class DirectoryUserLookup:
@@ -25,7 +27,7 @@ def discover_windows_domain_accounts() -> DirectoryUserLookup:
         return DirectoryUserLookup([], "Keine Windows-Domäne erkannt.")
     try:
         result = subprocess.run(
-            ["net", "user", "/domain"],
+            [system32_tool("net.exe"), "user", "/domain"],
             capture_output=True,
             text=True,
             encoding="oem",

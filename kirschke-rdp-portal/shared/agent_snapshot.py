@@ -6,15 +6,25 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from shared.agent_paths import default_agent_directory, expand_directory
 from shared.enums import AgentStatus, SessionState
 from shared.file_io import write_json_atomic
-from shared.agent_paths import default_agent_directory, expand_directory
 
 SNAPSHOT_VERSION = 1
+
+# Snapshots arrive over SMB from another machine and are untrusted input. The
+# named-pipe channel already caps a reply at MAX_MESSAGE; these give the file
+# fallback the same kind of ceiling so a corrupt or hostile share cannot push an
+# unbounded payload into the dashboard and the diagnostic report.
+MAX_SNAPSHOT_BYTES = 1_000_000
+MAX_SNAPSHOT_FILES = 500
+MAX_IDENTIFIER_LENGTH = 256
+MAX_SESSIONS = 64
+MAX_HISTORY = 200
 
 
 def get_agent_snapshot_directory() -> Path:
@@ -29,7 +39,7 @@ class AgentSnapshot:
     workstation_id: str
     hostname: str
     agent_version: str
-    observed_at_utc: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    observed_at_utc: datetime = field(default_factory=lambda: datetime.now(UTC))
     agent_status: AgentStatus = AgentStatus.ONLINE
     current_session_state: SessionState = SessionState.NONE
     current_session_user: str | None = None
@@ -60,9 +70,14 @@ class AgentSnapshot:
         for key in ("workstation_id", "hostname", "observed_at_utc"):
             if not isinstance(data.get(key), str) or not data[key].strip():
                 raise ValueError(f"Invalid snapshot field: {key}")
+            if len(data[key]) > MAX_IDENTIFIER_LENGTH:
+                raise ValueError(f"Snapshot field too long: {key}")
         for key in ("agent_version", "current_session_user"):
-            if data.get(key) is not None and not isinstance(data[key], str):
+            value = data.get(key)
+            if value is not None and not isinstance(value, str):
                 raise ValueError(f"Invalid snapshot field: {key}")
+            if isinstance(value, str) and len(value) > MAX_IDENTIFIER_LENGTH:
+                raise ValueError(f"Snapshot field too long: {key}")
         session_id = data.get("current_windows_session_id")
         if session_id is not None and (type(session_id) is not int or session_id < 0):
             raise ValueError("Invalid Windows session ID")
@@ -72,17 +87,24 @@ class AgentSnapshot:
             raise ValueError("Invalid session history")
         if not isinstance(sessions, list) or any(not isinstance(item, dict) for item in sessions):
             raise ValueError("Invalid RDP session list")
+        # A machine cannot plausibly hold this many sessions; refuse rather than
+        # render thousands of rows from one file.
+        if len(sessions) > MAX_SESSIONS:
+            raise ValueError("Too many RDP sessions in snapshot")
         for item in sessions:
             for key in ("username", "domain", "full_username", "login_time"):
-                if item.get(key) is not None and not isinstance(item[key], str):
+                value = item.get(key)
+                if value is not None and not isinstance(value, str):
                     raise ValueError(f"Invalid RDP session field: {key}")
+                if isinstance(value, str) and len(value) > MAX_IDENTIFIER_LENGTH:
+                    raise ValueError(f"RDP session field too long: {key}")
             if item.get("session_id") is not None and (type(item["session_id"]) is not int or item["session_id"] < 0):
                 raise ValueError("Invalid RDP session ID")
             if "session_state" in item:
                 SessionState(item["session_state"])
         observed_at = datetime.fromisoformat(str(data["observed_at_utc"]))
         if observed_at.tzinfo is None:
-            observed_at = observed_at.replace(tzinfo=timezone.utc)
+            observed_at = observed_at.replace(tzinfo=UTC)
         return cls(
             version=int(data.get("version", SNAPSHOT_VERSION)),
             workstation_id=str(data["workstation_id"]),
@@ -95,13 +117,13 @@ class AgentSnapshot:
             ),
             current_session_user=data.get("current_session_user"),
             current_windows_session_id=data.get("current_windows_session_id"),
-            rdp_sessions=list(data.get("rdp_sessions", [])),
-            session_history=history[-200:],
+            rdp_sessions=list(sessions),
+            session_history=history[-MAX_HISTORY:],
         )
 
     def age_seconds(self, now: datetime | None = None) -> float:
-        current = now or datetime.now(timezone.utc)
-        return max(0.0, (current - self.observed_at_utc.astimezone(timezone.utc)).total_seconds())
+        current = now or datetime.now(UTC)
+        return max(0.0, (current - self.observed_at_utc.astimezone(UTC)).total_seconds())
 
 
 def _safe_snapshot_name(workstation_id: str) -> str:
@@ -138,10 +160,22 @@ def scan_agent_snapshots(directory: Path) -> tuple[list[SnapshotFileResult], lis
         if path.suffix.casefold() != ".json":
             other_names.append(path.name)
             continue
+        if len(files) >= MAX_SNAPSHOT_FILES:
+            other_names.append(
+                f"{len(entries) - len(files)} weitere Einträge nach {MAX_SNAPSHOT_FILES} "
+                "Statusdateien nicht mehr gelesen"
+            )
+            break
         result = SnapshotFileResult(path)
         files.append(result)
         try:
-            result.modified_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+            stat = path.stat()
+            result.modified_at = datetime.fromtimestamp(stat.st_mtime, UTC)
+            if stat.st_size > MAX_SNAPSHOT_BYTES:
+                raise ValueError(
+                    f"Statusdatei ist größer als {MAX_SNAPSHOT_BYTES // 1000} kB "
+                    "und wurde nicht gelesen."
+                )
             # json.loads(bytes) also recognizes BOM-marked UTF-16 files produced
             # by Windows PowerShell, while retaining strict schema validation.
             result.snapshot = AgentSnapshot.from_dict(json.loads(path.read_bytes()))
@@ -165,7 +199,9 @@ def load_agent_snapshots(directory: Path | None = None, *, errors: list[str] | N
 
 __all__ = [
     "AgentSnapshot",
+    "SnapshotFileResult",
     "get_agent_snapshot_directory",
     "load_agent_snapshots",
+    "scan_agent_snapshots",
     "write_agent_snapshot",
 ]

@@ -8,6 +8,7 @@ import subprocess
 from dataclasses import dataclass
 
 from portal_app.services.windows_admin_auth import check_windows_admin_authorization
+from shared.windows_tools import powershell
 
 
 @dataclass(frozen=True)
@@ -31,7 +32,7 @@ def check_active_directory_readiness() -> ActiveDirectoryReadiness:
     try:
         result = subprocess.run(
             [
-                "powershell.exe",
+                powershell(),
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
@@ -100,7 +101,7 @@ foreach ($user in $toRemove) {{ Remove-ADGroupMember -Identity $group -Members $
 """
     try:
         result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            [powershell(), "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
             text=True,
             encoding="utf-8",

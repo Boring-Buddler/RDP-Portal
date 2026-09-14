@@ -7,6 +7,7 @@ import json
 import ntpath
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -27,7 +28,8 @@ import win32net
 import win32netcon
 import win32security
 
-AGENT_VERSION = "1.3.0"
+from shared.version import AGENT_VERSION  # noqa: E402 - single source of truth
+
 TASK_NAME = "Kirschke RDP Agent - Machine"
 INSTALL_FOLDER = "KirschkeRDPAgent"
 AGENT_EXE = "Kirschke-RDP-Agent.exe"
@@ -72,9 +74,27 @@ def _hidden_startupinfo() -> subprocess.STARTUPINFO:
     return startupinfo
 
 
+def system32_tool(name: str) -> str:
+    """Resolve a Windows tool to its absolute System32 path.
+
+    The setup runs elevated.  A bare executable name would let CreateProcess
+    search the application and working directory before System32, so a planted
+    schtasks.exe next to the extracted setup would run as Administrator.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.exe", name):
+        raise ValueError(f"Kein zulässiger Windows-Werkzeugname: {name}")
+    tool = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / name
+    if not tool.is_file():
+        raise RuntimeError(f"Windows-Werkzeug nicht gefunden: {tool}")
+    return str(tool)
+
+
 def _run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(  # noqa: S603 - executable is selected from fixed Windows commands
-        command,
+    # The caller passes a bare tool name; it is resolved to System32 here so no
+    # call site can reintroduce a relative executable lookup.
+    resolved = [system32_tool(command[0]), *command[1:]]
+    result = subprocess.run(  # noqa: S603 - argv[0] is an absolute System32 path
+        resolved,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -123,7 +143,8 @@ def _local_user_exists(name: str) -> bool:
 
 def _share_info(name: str) -> dict[str, object] | None:
     try:
-        return win32net.NetShareGetInfo(None, name, 2)
+        info: dict[str, object] = win32net.NetShareGetInfo(None, name, 2)
+        return info
     except pywintypes.error as exc:
         if exc.winerror == 2310:  # NERR_NetNameNotFound
             return None
@@ -150,6 +171,42 @@ def _assert_local_share_path(path: Path) -> None:
         ):
             raise ValueError(f"Verknüpfung im Statuspfad; Einrichtung abgebrochen: {ancestor}")
         ancestor = ancestor.parent
+
+
+def _deny_interactive_logon(reader_sid: pywintypes.SIDType, reader_name: str) -> None:
+    """Restrict the read-only share account to network access.
+
+    The folder ACL already limits what the account may read, but as a member of
+    Users it could otherwise sign in at the console or over RDP.  It only ever
+    needs to reach the SMB share, so local and remote interactive logon and batch
+    and service logon are denied.
+    """
+    # Only the two rights LsaAddAccountRights needs, not POLICY_ALL_ACCESS.
+    policy = win32security.LsaOpenPolicy(
+        None,
+        win32security.POLICY_CREATE_ACCOUNT | win32security.POLICY_LOOKUP_NAMES,
+    )
+    try:
+        win32security.LsaAddAccountRights(
+            policy,
+            reader_sid,
+            (
+                "SeDenyInteractiveLogonRight",
+                "SeDenyRemoteInteractiveLogonRight",
+                "SeDenyBatchLogonRight",
+                "SeDenyServiceLogonRight",
+            ),
+        )
+    except pywintypes.error as exc:
+        # The share still works without this; surface it instead of failing the
+        # install, because the account's read-only ACL is the primary control.
+        raise RuntimeError(
+            f"Die Anmelderechte für {reader_name} konnten nicht eingeschränkt werden "
+            f"(Windows-Fehler {exc.winerror}). Die Einrichtung wurde abgebrochen, "
+            "damit kein anmeldefähiges Konto zurückbleibt."
+        ) from exc
+    finally:
+        win32security.LsaClose(policy)
 
 
 def _status_directory_acl(path: Path, reader_sid: pywintypes.SIDType) -> None:
@@ -279,6 +336,7 @@ def ensure_status_share(
         )
         user_created = True
         reader_sid, _, _ = win32security.LookupAccountName(None, reader_name)
+        _deny_interactive_logon(reader_sid, reader_name)
         _status_directory_acl(status_directory, reader_sid)
         acl_changed = True
         win32net.NetShareAdd(

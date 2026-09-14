@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from PySide6.QtCore import QProcess
@@ -7,6 +7,7 @@ from portal_app.models.user import MockUser
 from portal_app.models.workstation import Workstation
 from portal_app.ui.widgets.workstation_cards import WorkstationCard, WorkstationCardsWidget
 from shared.enums import AgentStatus, SessionState
+from shared.windows_tools import powershell
 from workstation_agent.session_history import SessionHistory
 from workstation_agent.wts.monitor import WTSMonitor, WTSSessionInfo
 
@@ -15,7 +16,7 @@ def test_machine_installer_in_isolated_filesystem(tmp_path):
     import subprocess
     from pathlib import Path
     project = Path(__file__).resolve().parents[1]
-    result = subprocess.run(["powershell.exe", "-NoProfile", "-File",
+    result = subprocess.run([powershell(), "-NoProfile", "-File",
                              str(project / "tests/check_agent_installer.ps1"), "-Project", str(project), "-TestRoot", str(tmp_path)],
                             capture_output=True, timeout=30)
     if b"PSSecurityException" in result.stderr:
@@ -27,7 +28,7 @@ def test_portal_uninstaller_preserves_inventory(tmp_path):
     import subprocess
     from pathlib import Path
     project = Path(__file__).resolve().parents[1]
-    result = subprocess.run(["powershell.exe", "-NoProfile", "-File",
+    result = subprocess.run([powershell(), "-NoProfile", "-File",
                              str(project / "tests/check_portal_uninstaller.ps1"), "-Project", str(project), "-TestRoot", str(tmp_path)],
                             capture_output=True, timeout=30)
     if b"PSSecurityException" in result.stderr:
@@ -36,11 +37,11 @@ def test_portal_uninstaller_preserves_inventory(tmp_path):
 
 
 def test_all_sessions_and_history_reach_portal_details(tmp_path, qtbot):
-    from shared.agent_snapshot import AgentSnapshot, write_agent_snapshot
     from portal_app.services.agent_status import LocalAgentStatusService
     from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
-    sessions = [dict(session_id=1, username="console", domain="PC", session_state="connected", login_time="2026-09-10T08:00:00+00:00"),
-                dict(session_id=2, username="remote", domain="PC", session_state="disconnected", login_time="2026-09-10T09:00:00+00:00")]
+    from shared.agent_snapshot import AgentSnapshot, write_agent_snapshot
+    sessions = [{"session_id": 1, "username": "console", "domain": "PC", "session_state": "connected", "login_time": "2026-09-10T08:00:00+00:00"},
+                {"session_id": 2, "username": "remote", "domain": "PC", "session_state": "disconnected", "login_time": "2026-09-10T09:00:00+00:00"}]
     history = [dict(sessions[0], observed_at_utc="2026-09-10T08:00:10+00:00", event="Sitzung erkannt")]
     write_agent_snapshot(AgentSnapshot("A", "PC", "1.1.0", rdp_sessions=sessions, session_history=history,
                                       current_session_user="PC\\console", current_session_state=SessionState.CONNECTED), tmp_path)
@@ -66,7 +67,7 @@ def test_console_and_disconnected_users_are_included(monkeypatch):
 def test_history_persists_transitions_and_does_not_repeat_heartbeats(tmp_path):
     path = tmp_path / "history.json"
     history = SessionHistory(path)
-    session = dict(session_id=1, username="tester", domain="PC", login_time=datetime.now(timezone.utc).isoformat(), session_state="connected")
+    session = {"session_id": 1, "username": "tester", "domain": "PC", "login_time": datetime.now(UTC).isoformat(), "session_state": "connected"}
     history.observe([session])
     history.observe([session])
     assert len(history.events) == 1
@@ -84,7 +85,7 @@ def test_history_write_failure_keeps_previous_state(tmp_path, monkeypatch):
     monkeypatch.setattr("workstation_agent.session_history.write_json_atomic", fail)
     import pytest
     with pytest.raises(PermissionError):
-        history.observe([dict(session_id=1, username="u")])
+        history.observe([{"session_id": 1, "username": "u"}])
     assert history.current == {} and history.events == []
 
 
@@ -113,7 +114,7 @@ def test_ping_latency_stays_in_card_corner_after_agent_refresh(qtbot, monkeypatc
     assert ws.agent_status == AgentStatus.ONLINE
 
 
-def test_dashboard_orders_green_then_blue_then_grey_and_emphasizes_color(qtbot):
+def test_dashboard_orders_free_first_and_draws_the_unusable_ones_quieter(qtbot):
     grey = Workstation("G", "Grey", "grey")
     blue = Workstation(
         "B", "Blue", "blue", agent_status=AgentStatus.ONLINE,
@@ -128,6 +129,42 @@ def test_dashboard_orders_green_then_blue_then_grey_and_emphasizes_color(qtbot):
     qtbot.addWidget(view)
     cards = [item for item in view._cards if isinstance(item, WorkstationCard)]
     assert [card.workstation.workstation_id for card in cards] == ["A", "B", "G"]
+    # Frei traegt den vollen Rahmen; belegt und ohne Status treten zurueck, damit
+    # das Raster nach Gewicht lesbar ist, bevor man die Farbe entziffern muss.
     assert "border: 4px" in cards[0].styleSheet()
-    assert "border: 4px" in cards[1].styleSheet()
+    assert "border: 2px" in cards[1].styleSheet()
     assert "border: 2px" in cards[2].styleSheet()
+
+
+def test_reported_session_carries_the_sid_the_portal_compares_against():
+    """The agent is the only component that can resolve this without a name cache."""
+    info = WTSSessionInfo(
+        session_id=2,
+        username="ChristianBecker",
+        domain="AzureAD",
+        sid="S-1-12-1-1-2-3-4",
+        is_console_session=True,
+    )
+
+    reported = info.to_dict()
+
+    assert reported["sid"] == "S-1-12-1-1-2-3-4"
+    assert reported["is_console_session"] is True
+
+
+def test_the_live_monitor_resolves_a_sid_for_every_session_with_a_user():
+    """Runs against the real machine: a logged-on session must yield a SID."""
+    with WTSMonitor() as monitor:
+        sessions = [item for item in monitor.get_all_sessions() if item.username]
+    if not sessions:
+        pytest.skip("Keine angemeldete Windows-Sitzung auf diesem Rechner.")
+    for session in sessions:
+        assert session.sid and session.sid.startswith("S-1-"), session.full_username
+
+
+def test_a_remote_monitor_reports_no_sid_instead_of_resolving_it_locally():
+    """Resolving the name here would answer about the wrong machine."""
+    monitor = WTSMonitor.__new__(WTSMonitor)
+    monitor.server_name = "SOMEWHERE-ELSE"
+
+    assert monitor._query_sid(2, "AzureAD" + chr(92) + "ChristianBecker") is None

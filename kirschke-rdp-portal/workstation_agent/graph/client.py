@@ -11,29 +11,41 @@ Features:
 - Session event submission
 - Admin command fetching
 - Access rule checking
+
+.. warning::
+   NOT INTEGRATED -- this module is not reached by the running pilot and has no
+   tests.  See docs/phase2-status.md before changing or enabling it; the token
+   cache in particular is known to be broken in both directions.
 """
 
 from __future__ import annotations
 
-import os
 import json
 import logging
+import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Any
+from datetime import UTC, datetime, timedelta
+from enum import Enum
 from pathlib import Path
 from threading import Lock
-from enum import Enum
+from typing import Any
 
 from msal import ConfidentialClientApplication
 
-from shared.schemas import (
-    WorkstationSchema,
-    SessionEventSchema,
-    AdminCommandSchema,
-    AccessRuleSchema,
+from shared.enums import (
+    AgentStatus,
+    EventResult,
+    EventSource,
+    EventType,
+    ManualFlagType,
+    SessionState,
 )
-from shared.enums import AgentStatus, SessionState, ManualFlagType, EventType, EventResult, EventSource
+from shared.schemas import (
+    AccessRuleSchema,
+    AdminCommandSchema,
+    SessionEventSchema,
+    WorkstationSchema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,54 +57,54 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AgentGraphConfig:
     """Configuration for agent Graph API client."""
-    
+
     # Tenant ID
     tenant_id: str = os.getenv("TENANT_ID", "")
-    
+
     # Agent client ID
     client_id: str = os.getenv("AGENT_CLIENT_ID", "")
-    
+
     # Authority URL
     authority: str = os.getenv("AUTHORITY", "")
-    
+
     # Certificate thumbprint
     certificate_thumbprint: str = os.getenv("AGENT_CERT_THUMBPRINT", "")
-    
+
     # Certificate store name
     certificate_store: str = os.getenv("AGENT_CERT_STORE", "My")
-    
+
     # Scopes
     scopes: list[str] = field(default_factory=lambda: [
         "https://graph.microsoft.com/.default",
     ])
-    
+
     # SharePoint site ID
     sharepoint_site_id: str = os.getenv("SHAREPOINT_SITE_ID", "")
-    
+
     # SharePoint list names
     workstations_list: str = os.getenv("SHAREPOINT_WORKSTATIONS_LIST", "RDP_Workstations")
     sessions_list: str = os.getenv("SHAREPOINT_SESSIONS_LIST", "RDP_SessionEvents")
     commands_list: str = os.getenv("SHAREPOINT_COMMANDS_LIST", "RDP_AdminCommands")
     access_rules_list: str = os.getenv("SHAREPOINT_ACCESS_RULES_LIST", "RDP_AccessRules")
-    
+
     # Token cache path
     token_cache_path: str = os.getenv("AGENT_TOKEN_CACHE_PATH", "")
-    
+
     @classmethod
-    def from_env(cls) -> "AgentGraphConfig":
+    def from_env(cls) -> AgentGraphConfig:
         """Create configuration from environment variables."""
         # Build authority if not set
         authority = os.getenv("AUTHORITY", "")
         if not authority and os.getenv("TENANT_ID"):
             authority = f"https://login.microsoftonline.com/{os.getenv('TENANT_ID')}"
-        
+
         # Set cache path if not set
         cache_path = os.getenv("AGENT_TOKEN_CACHE_PATH", "")
         if not cache_path:
             cache_dir = Path.home() / ".kirschke" / "rdp-agent" / "cache"
             cache_dir.mkdir(parents=True, exist_ok=True)
             cache_path = str(cache_dir / "graph_cache.json")
-        
+
         return cls(
             tenant_id=os.getenv("TENANT_ID", ""),
             client_id=os.getenv("AGENT_CLIENT_ID", ""),
@@ -102,7 +114,7 @@ class AgentGraphConfig:
             sharepoint_site_id=os.getenv("SHAREPOINT_SITE_ID", ""),
             token_cache_path=cache_path,
         )
-    
+
     def validate(self) -> bool:
         """Validate configuration."""
         required = [self.tenant_id, self.client_id, self.certificate_thumbprint]
@@ -115,10 +127,10 @@ class AgentGraphConfig:
 
 class AgentTokenCache:
     """Token cache for agent authentication."""
-    
+
     def __init__(self, cache_path: str):
         """Initialize the token cache.
-        
+
         Args:
             cache_path: Path to cache file
         """
@@ -126,17 +138,17 @@ class AgentTokenCache:
         self._cache: dict = {}
         self._lock = Lock()
         self._load()
-    
+
     def _load(self) -> None:
         """Load cache from file."""
         try:
             if Path(self.cache_path).exists():
-                with open(self.cache_path, "r", encoding="utf-8") as f:
+                with open(self.cache_path, encoding="utf-8") as f:
                     self._cache = json.load(f)
         except Exception as e:
             logger.warning(f"Failed to load agent token cache: {e}")
             self._cache = {}
-    
+
     def _save(self) -> None:
         """Save cache to file."""
         try:
@@ -144,18 +156,18 @@ class AgentTokenCache:
                 json.dump(self._cache, f, indent=2)
         except Exception as e:
             logger.warning(f"Failed to save agent token cache: {e}")
-    
+
     def get(self) -> dict:
         """Get cache dictionary."""
         with self._lock:
             return self._cache.copy()
-    
+
     def set(self, cache: dict) -> None:
         """Set cache dictionary."""
         with self._lock:
             self._cache = cache.copy()
             self._save()
-    
+
     def clear(self) -> None:
         """Clear cache."""
         with self._lock:
@@ -169,32 +181,32 @@ class AgentTokenCache:
 
 class CertificateHelper:
     """Helper for working with Windows certificates."""
-    
+
     @staticmethod
     def get_certificate_by_thumbprint(
         thumbprint: str,
         store_name: str = "My",
-    ) -> Optional[Any]:
+    ) -> Any | None:
         """Get a certificate by thumbprint from Windows certificate store.
-        
+
         Args:
             thumbprint: Certificate thumbprint (hex string, no spaces)
             store_name: Certificate store name (e.g., "My", "Root", "CA")
-            
+
         Returns:
             Certificate object or None if not found
         """
         try:
-            import win32crypt
             import win32con
-            
+            import win32crypt
+
             # Open certificate store
             store = win32crypt.CertOpenSystemStoreA(None, store_name.encode())
-            
+
             if not store:
                 logger.error(f"Failed to open certificate store: {store_name}")
                 return None
-            
+
             # Iterate through certificates
             cert = win32crypt.CertEnumCertificatesInStore(store)
             while cert:
@@ -203,50 +215,50 @@ class CertificateHelper:
                     cert,
                     win32con.CERT_HASH_PROP_ID
                 )
-                
+
                 if cert_hash:
                     # Format as hex string
                     formatted_hash = "".join(f"{b:02x}" for b in cert_hash).upper()
                     if formatted_hash.replace(":", "").replace(" ", "") == thumbprint.replace(":", "").replace(" ", ""):
                         return cert
-                
+
                 cert = win32crypt.CertEnumCertificatesInStore(store, cert)
-            
+
             win32crypt.CertCloseStore(store, 0)
-            
+
         except Exception as e:
             logger.error(f"Failed to get certificate by thumbprint: {e}")
-        
+
         return None
-    
+
     @staticmethod
-    def get_certificate_private_key(cert) -> Optional[Any]:
+    def get_certificate_private_key(cert) -> Any | None:
         """Get private key from a certificate.
-        
+
         Args:
             cert: Certificate object
-            
+
         Returns:
             Private key object or None
         """
         try:
-            import win32crypt
             import win32con
-            
+            import win32crypt
+
             # Try to get private key
             key_spec = win32crypt.CertGetCertificateContextProperty(
                 cert,
                 win32con.CERT_KEY_SPEC_PROP_ID
             )
-            
+
             if key_spec == win32con.AT_KEYEXCHANGE:
                 return cert
             elif key_spec == win32con.AT_SIGNATURE:
                 return cert
-            
+
         except Exception as e:
             logger.error(f"Failed to get private key: {e}")
-        
+
         return None
 
 
@@ -256,57 +268,57 @@ class CertificateHelper:
 
 class AgentGraphClient:
     """Microsoft Graph API client for the workstation agent.
-    
+
     This client uses certificate-based authentication to communicate with
     Microsoft Graph API on behalf of the agent application.
-    
+
     Example usage:
         client = AgentGraphClient()
         if client.authenticate():
             workstations = client.get_workstations()
     """
-    
-    def __init__(self, config: Optional[AgentGraphConfig] = None):
+
+    def __init__(self, config: AgentGraphConfig | None = None):
         """Initialize the agent Graph client.
-        
+
         Args:
             config: Optional configuration
         """
         self.config = config or AgentGraphConfig.from_env()
-        self._app: Optional[ConfidentialClientApplication] = None
-        self._cache: Optional[AgentTokenCache] = None
-        self._access_token: Optional[str] = None
-        self._token_expires: Optional[datetime] = None
+        self._app: ConfidentialClientApplication | None = None
+        self._cache: AgentTokenCache | None = None
+        self._access_token: str | None = None
+        self._token_expires: datetime | None = None
         self._initialized = False
-    
+
     def initialize(self) -> bool:
         """Initialize the Graph client.
-        
+
         Returns:
             True if initialization succeeded
         """
         if not self.config.validate():
             logger.error("Agent Graph configuration is incomplete")
             return False
-        
+
         try:
             # Create token cache
             self._cache = AgentTokenCache(self.config.token_cache_path)
-            
+
             # Create MSAL confidential client
             self._app = ConfidentialClientApplication(
                 client_id=self.config.client_id,
                 authority=self.config.authority,
                 client_credential=self._get_client_credential(),
             )
-            
+
             self._initialized = True
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize agent Graph client: {e}")
             return False
-    
+
     def _get_client_credential(self) -> Any:
         """Get client credential (certificate) for authentication."""
         try:
@@ -315,93 +327,93 @@ class AgentGraphClient:
                 self.config.certificate_thumbprint,
                 self.config.certificate_store,
             )
-            
+
             if not cert:
                 raise RuntimeError(
                     f"Certificate with thumbprint {self.config.certificate_thumbprint} "
                     f"not found in store {self.config.certificate_store}"
                 )
-            
+
             # Create credential from certificate
             return {
                 "private_key": cert,
                 "thumbprint": self.config.certificate_thumbprint,
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to get client credential: {e}")
             raise
-    
+
     def is_authenticated(self) -> bool:
         """Check if the client is authenticated.
-        
+
         Returns:
             True if authenticated
         """
         if not self._initialized:
             return False
-        
+
         if self._access_token and self._token_expires:
-            return datetime.now(timezone.utc) < self._token_expires
-        
+            return datetime.now(UTC) < self._token_expires
+
         return False
-    
+
     def authenticate(self) -> bool:
         """Authenticate with Microsoft Graph.
-        
+
         Returns:
             True if authentication succeeded
         """
         if not self._initialized:
             if not self.initialize():
                 return False
-        
+
         try:
             # Try to get token silently first
             result = self._app.acquire_token_silent(
                 scopes=self.config.scopes,
                 account=None,
             )
-            
+
             if result and "access_token" in result:
                 self._access_token = result["access_token"]
                 expires_in = result.get("expires_in", 3600)
-                self._token_expires = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+                self._token_expires = datetime.now(UTC) + timedelta(seconds=expires_in)
                 return True
-            
+
             # Try to acquire token for client
             result = self._app.acquire_token_for_client(
                 scopes=self.config.scopes,
             )
-            
+
             if result and "access_token" in result:
                 self._access_token = result["access_token"]
                 expires_in = result.get("expires_in", 3600)
-                self._token_expires = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+                self._token_expires = datetime.now(UTC) + timedelta(seconds=expires_in)
                 return True
-            
+
             logger.error(f"Authentication failed: {result.get('error_description', 'Unknown error')}")
             return False
-            
+
         except Exception as e:
             logger.error(f"Authentication failed: {e}")
             return False
-    
-    def get_access_token(self) -> Optional[str]:
+
+    def get_access_token(self) -> str | None:
         """Get the current access token.
-        
+
         Returns:
             Access token if authenticated, None otherwise
         """
         if not self.is_authenticated():
             if not self.authenticate():
                 return None
-        
+
         return self._access_token
-    
+
     def refresh_token(self) -> bool:
         """Refresh the access token.
-        
+
         Returns:
             True if token was refreshed
         """
@@ -409,48 +421,48 @@ class AgentGraphClient:
         self._access_token = None
         self._token_expires = None
         return self.authenticate()
-    
+
     def _make_request(
         self,
         method: str,
         url: str,
-        data: Optional[dict] = None,
-        params: Optional[dict] = None,
-        headers: Optional[dict] = None,
-    ) -> Optional[dict]:
+        data: dict | None = None,
+        params: dict | None = None,
+        headers: dict | None = None,
+    ) -> dict | None:
         """Make an HTTP request to Graph API.
-        
+
         Args:
             method: HTTP method (GET, POST, PATCH, PUT, DELETE)
             url: Request URL
             data: Request body
             params: Query parameters
             headers: Additional headers
-            
+
         Returns:
             Response data as dictionary, or None on failure
         """
         import requests
-        
+
         token = self.get_access_token()
         if not token:
             logger.error("No access token available")
             return None
-        
+
         # Build full URL
         if not url.startswith("http"):
             url = f"https://graph.microsoft.com/v1.0{url}"
-        
+
         # Build headers
         request_headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        
+
         if headers:
             request_headers.update(headers)
-        
+
         try:
             response = requests.request(
                 method=method,
@@ -460,71 +472,71 @@ class AgentGraphClient:
                 headers=request_headers,
                 timeout=30,
             )
-            
+
             if response.status_code >= 400:
                 logger.error(
                     f"Graph API request failed: {response.status_code} - {response.text}"
                 )
                 return None
-            
+
             if response.content:
                 return response.json()
-            
+
             return {}
-            
+
         except Exception as e:
             logger.error(f"Graph API request failed: {e}")
             return None
-    
+
     # =========================================================================
     # Workstation Operations
     # =========================================================================
-    
-    def get_workstation(self, workstation_id: str) -> Optional[WorkstationSchema]:
+
+    def get_workstation(self, workstation_id: str) -> WorkstationSchema | None:
         """Get workstation information from SharePoint.
-        
+
         Args:
             workstation_id: Workstation ID
-            
+
         Returns:
             WorkstationSchema if found, None otherwise
         """
         if not self.config.sharepoint_site_id:
             logger.error("SharePoint site ID not configured")
             return None
-        
+
         url = f"/sites/{self.config.sharepoint_site_id}/lists/{self.config.workstations_list}/items"
         params = {
             "$filter": f"WorkstationId eq '{workstation_id}'",
             "$expand": "fields",
             "$top": 1,
         }
-        
+
         result = self._make_request("GET", url, params=params)
         if not result:
             return None
-        
+
         # Parse the result
         items = result.get("value", [])
         if not items:
             return None
-        
+
         # Convert to WorkstationSchema
         from workstation_agent.graph.sharepoint import WorkstationConverter
         return WorkstationConverter.from_sharepoint(items[0].get("fields", {}))
-    
+
     def update_workstation_status(
         self,
         workstation_id: str,
         agent_status: AgentStatus,
         current_session_state: SessionState,
-        current_session_user: Optional[str] = None,
-        current_windows_session_id: Optional[int] = None,
-        agent_version: Optional[str] = None,
-        etag: Optional[str] = None,
+        current_session_user: str | None = None,
+        current_windows_session_id: int | None = None,
+        agent_version: str | None = None,
+        etag: str | None = None,
     ) -> bool:
         """Update workstation status in SharePoint.
-        
+
         Args:
             workstation_id: Workstation ID
             agent_status: Current agent status
@@ -533,14 +545,14 @@ class AgentGraphClient:
             current_windows_session_id: Current Windows session ID
             agent_version: Agent version
             etag: ETag for concurrency control
-            
+
         Returns:
             True if update succeeded
         """
         if not self.config.sharepoint_site_id:
             logger.error("SharePoint site ID not configured")
             return False
-        
+
         # First, find the item ID
         url = f"/sites/{self.config.sharepoint_site_id}/lists/{self.config.workstations_list}/items"
         params = {
@@ -548,67 +560,67 @@ class AgentGraphClient:
             "$select": "id,etag",
             "$top": 1,
         }
-        
+
         result = self._make_request("GET", url, params=params)
         if not result:
             return False
-        
+
         items = result.get("value", [])
         if not items:
             return False
-        
+
         item_id = items[0].get("id")
         item_etag = items[0].get("etag") or etag
-        
+
         if not item_id:
             return False
-        
+
         # Update the item
         update_url = f"/sites/{self.config.sharepoint_site_id}/lists/{self.config.workstations_list}/items/{item_id}"
-        
+
         data = {
             "AgentStatus": agent_status.value,
             "CurrentSessionState": current_session_state.value,
             "CurrentSessionUser": current_session_user,
             "CurrentWindowsSessionId": current_windows_session_id,
-            "AgentLastSeenUtc": datetime.now(timezone.utc).isoformat(),
+            "AgentLastSeenUtc": datetime.now(UTC).isoformat(),
         }
-        
+
         if agent_version:
             data["AgentVersion"] = agent_version
-        
+
         headers = {}
         if item_etag:
             headers["If-Match"] = item_etag
-        
+
         result = self._make_request("PATCH", update_url, data=data, headers=headers)
         return result is not None
-    
+
     def get_access_rules(self, workstation_id: str) -> list[AccessRuleSchema]:
         """Get access rules for a workstation.
-        
+
         Args:
             workstation_id: Workstation ID
-            
+
         Returns:
             List of AccessRuleSchema objects
         """
         if not self.config.sharepoint_site_id:
             return []
-        
+
         url = f"/sites/{self.config.sharepoint_site_id}/lists/{self.config.access_rules_list}/items"
         params = {
             "$filter": f"WorkstationId eq '{workstation_id}' or WorkstationId eq null",
             "$expand": "fields",
         }
-        
+
         result = self._make_request("GET", url, params=params)
         if not result:
             return []
-        
+
         rules = []
         from workstation_agent.graph.sharepoint import AccessRuleConverter
-        
+
         for item in result.get("value", []):
             if item.get("fields"):
                 try:
@@ -616,83 +628,83 @@ class AgentGraphClient:
                     rules.append(rule)
                 except Exception as e:
                     logger.warning(f"Failed to parse access rule: {e}")
-        
+
         return rules
-    
+
     # =========================================================================
     # Session Event Operations
     # =========================================================================
-    
+
     def create_session_event(self, event: SessionEventSchema) -> bool:
         """Create a session event in SharePoint.
-        
+
         Args:
             event: Session event to create
-            
+
         Returns:
             True if creation succeeded
         """
         if not self.config.sharepoint_site_id:
             logger.error("SharePoint site ID not configured")
             return False
-        
+
         url = f"/sites/{self.config.sharepoint_site_id}/lists/{self.config.sessions_list}/items"
-        
+
         from workstation_agent.graph.sharepoint import SessionEventConverter
         data = SessionEventConverter.to_sharepoint(event)
-        
+
         result = self._make_request("POST", url, data=data)
         return result is not None
-    
+
     def create_session_events(self, events: list[SessionEventSchema]) -> int:
         """Create multiple session events in SharePoint.
-        
+
         Args:
             events: List of session events to create
-            
+
         Returns:
             Number of events successfully created
         """
         if not self.config.sharepoint_site_id:
             return 0
-        
-        
+
+
         count = 0
         for event in events:
             if self.create_session_event(event):
                 count += 1
-        
+
         return count
-    
+
     # =========================================================================
     # Admin Command Operations
     # =========================================================================
-    
+
     def get_pending_commands(self, workstation_id: str) -> list[AdminCommandSchema]:
         """Get pending admin commands for a workstation.
-        
+
         Args:
             workstation_id: Workstation ID
-            
+
         Returns:
             List of AdminCommandSchema objects
         """
         if not self.config.sharepoint_site_id:
             return []
-        
+
         url = f"/sites/{self.config.sharepoint_site_id}/lists/{self.config.commands_list}/items"
         params = {
             "$filter": f"TargetWorkstationId eq '{workstation_id}' and Status eq 'pending'",
             "$expand": "fields",
         }
-        
+
         result = self._make_request("GET", url, params=params)
         if not result:
             return []
-        
+
         commands = []
         from workstation_agent.graph.sharepoint import AdminCommandConverter
-        
+
         for item in result.get("value", []):
             if item.get("fields"):
                 try:
@@ -700,30 +712,30 @@ class AgentGraphClient:
                     commands.append(cmd)
                 except Exception as e:
                     logger.warning(f"Failed to parse admin command: {e}")
-        
+
         return commands
-    
+
     def update_command_status(
         self,
         command: AdminCommandSchema,
         status: str,
-        result_message: Optional[str] = None,
-        etag: Optional[str] = None,
+        result_message: str | None = None,
+        etag: str | None = None,
     ) -> bool:
         """Update the status of an admin command.
-        
+
         Args:
             command: Command to update
             status: New status value
             result_message: Optional result message
             etag: Optional ETag for concurrency control
-            
+
         Returns:
             True if update succeeded
         """
         if not self.config.sharepoint_site_id:
             return False
-        
+
         # Find the command item
         url = f"/sites/{self.config.sharepoint_site_id}/lists/{self.config.commands_list}/items"
         params = {
@@ -731,36 +743,36 @@ class AgentGraphClient:
             "$select": "id,etag",
             "$top": 1,
         }
-        
+
         result = self._make_request("GET", url, params=params)
         if not result:
             return False
-        
+
         items = result.get("value", [])
         if not items:
             return False
-        
+
         item_id = items[0].get("id")
         item_etag = items[0].get("etag") or etag
-        
+
         if not item_id:
             return False
-        
+
         # Update the command
         update_url = f"/sites/{self.config.sharepoint_site_id}/lists/{self.config.commands_list}/items/{item_id}"
-        
+
         data = {
             "Status": status,
-            "ExecutedAtUtc": datetime.now(timezone.utc).isoformat(),
+            "ExecutedAtUtc": datetime.now(UTC).isoformat(),
         }
-        
+
         if result_message:
             data["ResultMessage"] = result_message
-        
+
         headers = {}
         if item_etag:
             headers["If-Match"] = item_etag
-        
+
         result = self._make_request("PATCH", update_url, data=data, headers=headers)
         return result is not None
 
@@ -774,15 +786,15 @@ class AgentGraphClient:
 
 class WorkstationConverter:
     """Convert WorkstationSchema to/from SharePoint list items."""
-    
+
     @staticmethod
-    def _format_enum(value) -> Optional[str]:
+    def _format_enum(value) -> str | None:
         if value is None:
             return None
         if isinstance(value, Enum):
             return value.value
         return str(value)
-    
+
     @staticmethod
     def _parse_enum(value, enum_class, default) -> Enum:
         if value is None:
@@ -791,12 +803,12 @@ class WorkstationConverter:
             return enum_class(value)
         except (ValueError, KeyError):
             return default
-    
+
     @staticmethod
     def from_sharepoint(item: dict) -> WorkstationSchema:
         """Convert SharePoint list item to WorkstationSchema."""
         from shared.schemas import ManualFlagSchema
-        
+
         def get_field(field_name: str, default=None) -> Any:
             field_mapping = {
                 "workstation_id": "WorkstationId",
@@ -833,12 +845,12 @@ class WorkstationConverter:
                 "manual_flag_set_at_utc": "ManualFlagSetAtUtc",
                 "manual_flag_expires_at_utc": "ManualFlagExpiresAtUtc",
             }
-            
+
             sp_field = field_mapping.get(field_name)
             if sp_field and sp_field in item:
                 return item[sp_field]
             return default
-        
+
         manual_flag = ManualFlagSchema(
             flag_type=WorkstationConverter._parse_enum(
                 get_field("manual_flag_flag_type"),
@@ -852,7 +864,7 @@ class WorkstationConverter:
             set_at_utc=WorkstationConverter._parse_datetime(get_field("manual_flag_set_at_utc")),
             expires_at_utc=WorkstationConverter._parse_datetime(get_field("manual_flag_expires_at_utc")),
         )
-        
+
         return WorkstationSchema(
             workstation_id=get_field("workstation_id", ""),
             display_name=get_field("display_name", ""),
@@ -890,9 +902,9 @@ class WorkstationConverter:
             manual_flag=manual_flag,
             etag=item.get("etag"),
         )
-    
+
     @staticmethod
-    def _parse_datetime(value) -> Optional[datetime]:
+    def _parse_datetime(value) -> datetime | None:
         if value is None:
             return None
         if isinstance(value, str):
@@ -901,7 +913,7 @@ class WorkstationConverter:
             except (ValueError, AttributeError):
                 return None
         return None
-    
+
     @staticmethod
     def _parse_list(value) -> list:
         if value is None:
@@ -919,7 +931,7 @@ class WorkstationConverter:
 
 class SessionEventConverter:
     """Convert SessionEventSchema to/from SharePoint."""
-    
+
     @staticmethod
     def to_sharepoint(event: SessionEventSchema) -> dict:
         """Convert SessionEventSchema to SharePoint list item."""
@@ -942,14 +954,14 @@ class SessionEventConverter:
             "CorrelationId": event.correlation_id,
             "AgentVersion": event.agent_version,
         }
-    
+
     @staticmethod
     def from_sharepoint(item: dict) -> SessionEventSchema:
         """Convert SharePoint list item to SessionEventSchema."""
         return SessionEventSchema(
             event_id=item.get("EventId", ""),
             timestamp_utc=datetime.fromisoformat(
-                item.get("TimestampUtc", datetime.now(timezone.utc).isoformat())
+                item.get("TimestampUtc", datetime.now(UTC).isoformat())
             ),
             event_type=EventType(item.get("EventType", "launch_requested")),
             workstation_id=item.get("WorkstationId", ""),
@@ -971,12 +983,12 @@ class SessionEventConverter:
 
 class AdminCommandConverter:
     """Convert AdminCommandSchema to/from SharePoint."""
-    
+
     @staticmethod
     def from_sharepoint(item: dict) -> AdminCommandSchema:
         """Convert SharePoint list item to AdminCommandSchema."""
-        from shared.enums import CommandType, CommandStatus
-        
+        from shared.enums import CommandStatus, CommandType
+
         return AdminCommandSchema(
             command_id=item.get("CommandId", ""),
             target_workstation_id=item.get("TargetWorkstationId", ""),
@@ -985,14 +997,14 @@ class AdminCommandConverter:
             requested_by_object_id=item.get("RequestedByObjectId", ""),
             requested_by_upn=item.get("RequestedByUpn", ""),
             requested_at_utc=datetime.fromisoformat(
-                item.get("RequestedAtUtc", datetime.now(timezone.utc).isoformat())
+                item.get("RequestedAtUtc", datetime.now(UTC).isoformat())
             ),
             expires_at_utc=datetime.fromisoformat(
-                item.get("ExpiresAtUtc", datetime.now(timezone.utc).isoformat())
+                item.get("ExpiresAtUtc", datetime.now(UTC).isoformat())
             ),
             reason=item.get("Reason"),
             status=CommandStatus(item.get("Status", "pending")),
-            executed_at_utc=datetime.fromisoformat(item.get("ExecutedAtUtc")) 
+            executed_at_utc=datetime.fromisoformat(item.get("ExecutedAtUtc"))
                 if item.get("ExecutedAtUtc") else None,
             result_message=item.get("ResultMessage"),
         )
@@ -1000,7 +1012,7 @@ class AdminCommandConverter:
 
 class AccessRuleConverter:
     """Convert AccessRuleSchema to/from SharePoint."""
-    
+
     @staticmethod
     def from_sharepoint(item: dict) -> AccessRuleSchema:
         """Convert SharePoint list item to AccessRuleSchema."""
@@ -1010,9 +1022,9 @@ class AccessRuleConverter:
             workstation_id=item.get("WorkstationId"),
             may_connect=item.get("MayConnect", True),
             may_set_calculation_flag=item.get("MaySetCalculationFlag", False),
-            valid_from_utc=datetime.fromisoformat(item.get("ValidFromUtc")) 
+            valid_from_utc=datetime.fromisoformat(item.get("ValidFromUtc"))
                 if item.get("ValidFromUtc") else None,
-            valid_until_utc=datetime.fromisoformat(item.get("ValidUntilUtc")) 
+            valid_until_utc=datetime.fromisoformat(item.get("ValidUntilUtc"))
                 if item.get("ValidUntilUtc") else None,
             enabled=item.get("Enabled", True),
         )
@@ -1022,12 +1034,12 @@ class AccessRuleConverter:
 # Factory and Exports
 # =============================================================================
 
-def create_agent_graph_client(config: Optional[AgentGraphConfig] = None) -> AgentGraphClient:
+def create_agent_graph_client(config: AgentGraphConfig | None = None) -> AgentGraphClient:
     """Create an AgentGraphClient instance.
-    
+
     Args:
         config: Optional configuration
-        
+
     Returns:
         AgentGraphClient instance
     """

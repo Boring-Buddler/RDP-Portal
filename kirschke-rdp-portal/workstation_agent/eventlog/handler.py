@@ -9,20 +9,21 @@ This module provides functionality to:
 
 from __future__ import annotations
 
-import os
 import json
-import uuid
 import logging
+import os
+import uuid
+from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Optional, Any
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
-from collections import deque
+from typing import Any
 
-from shared.enums import EventType, EventResult, EventSource
+from shared.enums import EventResult, EventSource, EventType
 from shared.schemas import SessionEventSchema
-from workstation_agent.wts.monitor import WTSSessionInfo, WTS_CONNECTSTATE_CLASS, WTSMonitor
+from shared.version import AGENT_VERSION
+from workstation_agent.wts.monitor import WTS_CONNECTSTATE_CLASS, WTSMonitor, WTSSessionInfo
 
 logger = logging.getLogger(__name__)
 
@@ -34,41 +35,41 @@ logger = logging.getLogger(__name__)
 @dataclass
 class EventLogConfig:
     """Configuration for event logging."""
-    
+
     # Maximum number of events to keep in memory
     max_events_in_memory: int = 1000
-    
+
     # Maximum age of events in memory (in seconds)
     max_event_age_seconds: int = 86400  # 24 hours
-    
+
     # Event log directory
     log_directory: str = os.getenv("AGENT_LOG_DIR", "")
-    
+
     # Whether to persist events to disk
     persist_events: bool = os.getenv("AGENT_PERSIST_EVENTS", "false").lower() == "true"
-    
+
     # Workstation ID (set by agent)
     workstation_id: str = ""
-    
+
     # Workstation hostname
     workstation_hostname: str = ""
-    
+
     # Agent version
-    agent_version: str = os.getenv("AGENT_VERSION", "1.0.0")
-    
+    agent_version: str = os.getenv("AGENT_VERSION", AGENT_VERSION)
+
     @classmethod
-    def from_env(cls) -> "EventLogConfig":
+    def from_env(cls) -> EventLogConfig:
         """Create configuration from environment variables."""
         import socket
-        
+
         hostname = socket.gethostname()
         workstation_id = os.getenv("WORKSTATION_ID", hostname)
-        
+
         # Set default log directory
         log_dir = os.getenv("AGENT_LOG_DIR", "")
         if not log_dir:
             log_dir = str(Path.home() / ".kirschke" / "rdp-agent" / "logs")
-        
+
         return cls(
             log_directory=log_dir,
             workstation_id=workstation_id,
@@ -83,30 +84,30 @@ class EventLogConfig:
 @dataclass
 class AgentSessionEvent:
     """Internal representation of a session event for the agent."""
-    
+
     event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     event_type: EventType = EventType.LAUNCH_REQUESTED
-    timestamp_utc: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp_utc: datetime = field(default_factory=lambda: datetime.now(UTC))
     workstation_id: str = ""
     workstation_hostname: str = ""
-    windows_session_id: Optional[int] = None
-    session_user_upn: Optional[str] = None
-    session_user_domain: Optional[str] = None
-    client_name: Optional[str] = None
-    client_ip: Optional[str] = None
-    actor_entra_object_id: Optional[str] = None
-    actor_upn: Optional[str] = None
-    result: Optional[EventResult] = None
-    reason: Optional[str] = None
+    windows_session_id: int | None = None
+    session_user_upn: str | None = None
+    session_user_domain: str | None = None
+    client_name: str | None = None
+    client_ip: str | None = None
+    actor_entra_object_id: str | None = None
+    actor_upn: str | None = None
+    result: EventResult | None = None
+    reason: str | None = None
     source: EventSource = EventSource.AGENT
-    correlation_id: Optional[str] = None
+    correlation_id: str | None = None
     agent_version: str = ""
-    
+
     # Additional metadata
     raw_data: dict = field(default_factory=dict)
     processed: bool = False
     sent_to_portal: bool = False
-    
+
     def to_schema(self) -> SessionEventSchema:
         """Convert to SessionEventSchema for transmission."""
         return SessionEventSchema(
@@ -128,7 +129,7 @@ class AgentSessionEvent:
             correlation_id=self.correlation_id,
             agent_version=self.agent_version,
         )
-    
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -160,15 +161,15 @@ class AgentSessionEvent:
 
 class EventQueue:
     """Queue for storing session events before transmission.
-    
+
     This class provides thread-safe storage for events that need to be
     sent to the portal. Events are stored in memory and optionally
     persisted to disk.
     """
-    
-    def __init__(self, config: Optional[EventLogConfig] = None):
+
+    def __init__(self, config: EventLogConfig | None = None):
         """Initialize the event queue.
-        
+
         Args:
             config: Optional event log configuration
         """
@@ -176,24 +177,24 @@ class EventQueue:
         self._events: deque[AgentSessionEvent] = deque()
         self._lock = Lock()
         self._event_history: dict[str, AgentSessionEvent] = {}
-        
+
         # Ensure log directory exists
         if self.config.persist_events and self.config.log_directory:
             Path(self.config.log_directory).mkdir(parents=True, exist_ok=True)
-        
+
         # Load persisted events if enabled
         if self.config.persist_events:
             self._load_persisted_events()
-    
+
     def _load_persisted_events(self) -> None:
         """Load events from disk."""
         if not self.config.log_directory:
             return
-        
+
         try:
             event_file = Path(self.config.log_directory) / "pending_events.json"
             if event_file.exists():
-                with open(event_file, "r", encoding="utf-8") as f:
+                with open(event_file, encoding="utf-8") as f:
                     events_data = json.load(f)
                     for event_data in events_data:
                         schema = SessionEventSchema.model_validate(event_data)
@@ -206,12 +207,12 @@ class EventQueue:
                         self._event_history[event.event_id] = event
         except Exception as e:
             logger.warning(f"Failed to load persisted events: {e}")
-    
+
     def _save_persisted_events(self) -> None:
         """Save events to disk."""
         if not self.config.persist_events or not self.config.log_directory:
             return
-        
+
         try:
             event_file = Path(self.config.log_directory) / "pending_events.json"
             events_data = [e.to_dict() for e in self._events]
@@ -219,10 +220,10 @@ class EventQueue:
             write_json_atomic(event_file, events_data)
         except Exception as e:
             logger.warning(f"Failed to save persisted events: {e}")
-    
+
     def add_event(self, event: AgentSessionEvent) -> None:
         """Add an event to the queue.
-        
+
         Args:
             event: Event to add
         """
@@ -234,28 +235,28 @@ class EventQueue:
                 event.workstation_hostname = self.config.workstation_hostname
             if not event.agent_version and self.config.agent_version:
                 event.agent_version = self.config.agent_version
-            
+
             # Add to queue
             self._events.append(event)
             self._event_history[event.event_id] = event
-            
+
             # Trim queue if too large
             while len(self._events) > self.config.max_events_in_memory:
                 old_event = self._events.popleft()
                 self._event_history.pop(old_event.event_id, None)
-            
+
             # Persist if enabled
             if self.config.persist_events:
                 self._save_persisted_events()
-        
+
         logger.debug(f"Event added: {event.event_id} ({event.event_type.value})")
-    
-    def get_events(self, limit: Optional[int] = None) -> list[AgentSessionEvent]:
+
+    def get_events(self, limit: int | None = None) -> list[AgentSessionEvent]:
         """Get events from the queue.
-        
+
         Args:
             limit: Maximum number of events to return
-            
+
         Returns:
             List of events
         """
@@ -263,22 +264,22 @@ class EventQueue:
             if limit:
                 return list(self._events)[:limit]
             return list(self._events)
-    
+
     def get_unsent_events(self) -> list[AgentSessionEvent]:
         """Get events that haven't been sent to the portal yet.
-        
+
         Returns:
             List of unsent events
         """
         with self._lock:
             return [e for e in self._events if not e.sent_to_portal]
-    
+
     def mark_event_sent(self, event_id: str) -> bool:
         """Mark an event as sent to the portal.
-        
+
         Args:
             event_id: ID of the event to mark as sent
-            
+
         Returns:
             True if event was found and marked
         """
@@ -288,10 +289,10 @@ class EventQueue:
                 self._save_persisted_events()
                 return True
             return False
-    
+
     def mark_all_sent(self) -> int:
         """Mark all events as sent.
-        
+
         Returns:
             Number of events marked as sent
         """
@@ -301,18 +302,18 @@ class EventQueue:
                 if not event.sent_to_portal:
                     event.sent_to_portal = True
                     count += 1
-            
+
             if self.config.persist_events:
                 self._save_persisted_events()
-            
+
             return count
-    
+
     def remove_event(self, event_id: str) -> bool:
         """Remove an event from the queue.
-        
+
         Args:
             event_id: ID of the event to remove
-            
+
         Returns:
             True if event was found and removed
         """
@@ -322,64 +323,64 @@ class EventQueue:
                 if event.event_id == event_id:
                     del self._events[i]
                     break
-            
+
             # Remove from history
             if event_id in self._event_history:
                 del self._event_history[event_id]
                 self._save_persisted_events()
                 return True
             return False
-    
+
     def clear(self) -> None:
         """Clear all events from the queue."""
         with self._lock:
             self._events.clear()
             self._event_history.clear()
-            
+
             if self.config.persist_events:
                 self._save_persisted_events()
-    
-    def get_event_by_id(self, event_id: str) -> Optional[AgentSessionEvent]:
+
+    def get_event_by_id(self, event_id: str) -> AgentSessionEvent | None:
         """Get an event by its ID.
-        
+
         Args:
             event_id: Event ID to find
-            
+
         Returns:
             Event if found, None otherwise
         """
         with self._lock:
             return self._event_history.get(event_id)
-    
+
     def count(self) -> int:
         """Get the number of events in the queue.
-        
+
         Returns:
             Number of events
         """
         with self._lock:
             return len(self._events)
-    
+
     def cleanup_old_events(self) -> int:
         """Remove events older than max_event_age_seconds.
-        
+
         Returns:
             Number of events removed
         """
         with self._lock:
-            cutoff = datetime.now(timezone.utc) - timedelta(
+            cutoff = datetime.now(UTC) - timedelta(
                 seconds=self.config.max_event_age_seconds
             )
-            
+
             removed = 0
             while self._events and self._events[0].timestamp_utc < cutoff:
                 old_event = self._events.popleft()
                 self._event_history.pop(old_event.event_id, None)
                 removed += 1
-            
+
             if removed > 0 and self.config.persist_events:
                 self._save_persisted_events()
-            
+
             return removed
 
 
@@ -389,19 +390,19 @@ class EventQueue:
 
 class SessionEventDetector:
     """Detect and create session events from WTS session changes.
-    
+
     This class monitors WTS session state changes and creates
     appropriate SessionEventSchema objects for transmission to the portal.
     """
-    
+
     def __init__(
         self,
-        config: Optional[EventLogConfig] = None,
-        event_queue: Optional[EventQueue] = None,
-        wts_monitor: Optional[WTSMonitor] = None,
+        config: EventLogConfig | None = None,
+        event_queue: EventQueue | None = None,
+        wts_monitor: WTSMonitor | None = None,
     ):
         """Initialize the session event detector.
-        
+
         Args:
             config: Optional event log configuration
             event_queue: Optional event queue for storing events
@@ -410,27 +411,27 @@ class SessionEventDetector:
         self.config = config or EventLogConfig.from_env()
         self.event_queue = event_queue or EventQueue(self.config)
         self.wts_monitor = wts_monitor or WTSMonitor()
-        
+
         # Track last known session states
         self._last_session_states: dict[int, WTSSessionInfo] = {}
-        
+
         # Track correlation IDs for multi-part events
-        self._correlation_id: Optional[str] = None
-    
+        self._correlation_id: str | None = None
+
     def detect_session_changes(self) -> list[AgentSessionEvent]:
         """Detect session changes and create events.
-        
+
         Returns:
             List of created events
         """
         events: list[AgentSessionEvent] = []
-        
+
         try:
             current_sessions = self.wts_monitor.get_all_sessions()
-            
+
             # Build dictionary of current sessions
             current_session_dict = {s.session_id: s for s in current_sessions}
-            
+
             # Check for new sessions
             for session_id, session in current_session_dict.items():
                 if session_id not in self._last_session_states:
@@ -447,7 +448,7 @@ class SessionEventDetector:
                         )
                         if event:
                             events.append(event)
-            
+
             # Check for ended sessions
             for session_id in list(self._last_session_states.keys()):
                 if session_id not in current_session_dict:
@@ -455,28 +456,28 @@ class SessionEventDetector:
                     event = self._create_session_end_event(old_session)
                     if event:
                         events.append(event)
-            
+
             # Update last known states
             self._last_session_states = current_session_dict.copy()
-            
+
         except Exception as e:
             logger.error(f"Failed to detect session changes: {e}")
-        
+
         return events
-    
-    def _create_session_start_event(self, session: WTSSessionInfo) -> Optional[AgentSessionEvent]:
+
+    def _create_session_start_event(self, session: WTSSessionInfo) -> AgentSessionEvent | None:
         """Create an event for a new session.
-        
+
         Args:
             session: Session information
-            
+
         Returns:
             AgentSessionEvent if event should be created
         """
         if not session.is_rdp_session:
             # Skip console, service, and listener sessions.
             return None
-        
+
         # Determine event type based on connect state
         if session.connect_state == WTS_CONNECTSTATE_CLASS.WTSConnectQuery:
             event_type = EventType.RDP_LOGON
@@ -487,7 +488,7 @@ class SessionEventDetector:
             event_type = EventType.RDP_LOGON
         else:
             return None
-        
+
         event = AgentSessionEvent(
             event_type=event_type,
             workstation_id=self.config.workstation_id,
@@ -503,49 +504,42 @@ class SessionEventDetector:
             agent_version=self.config.agent_version,
             correlation_id=self._correlation_id or str(uuid.uuid4())[:8],
         )
-        
+
         self.event_queue.add_event(event)
         return event
-    
+
     def _create_session_state_change_event(
         self, old_session: WTSSessionInfo, new_session: WTSSessionInfo
-    ) -> Optional[AgentSessionEvent]:
+    ) -> AgentSessionEvent | None:
         """Create an event for a session state change.
-        
+
         Args:
             old_session: Previous session state
             new_session: New session state
-            
+
         Returns:
-            AgentSessionEvent if event should be created
+            AgentSessionEvent for a known RDP lifecycle transition, otherwise None.
         """
-        if old_session.connect_state == new_session.connect_state:
+        old_state = old_session.connect_state
+        new_state = new_session.connect_state
+        if old_state == new_state or old_state is None or new_state is None:
+            # An unknown state carries no reportable transition. WTSSessionInfo
+            # leaves connect_state at None when WTSQuerySessionInformation fails.
             return None
-        
-        # Map state transitions to event types
-        transition_mapping = {
-            (WTS_CONNECTSTATE_CLASS.WTSConnectQuery, WTS_CONNECTSTATE_CLASS.WTSActive): EventType.RDP_LOGON,
-            (WTS_CONNECTSTATE_CLASS.WTSConnectQuery, WTS_CONNECTSTATE_CLASS.WTSConnected): EventType.RDP_LOGON,
-            (WTS_CONNECTSTATE_CLASS.WTSActive, WTS_CONNECTSTATE_CLASS.WTSDisconnected): EventType.RDP_DISCONNECT,
-            (WTS_CONNECTSTATE_CLASS.WTSConnected, WTS_CONNECTSTATE_CLASS.WTSDisconnected): EventType.RDP_DISCONNECT,
-            (WTS_CONNECTSTATE_CLASS.WTSDisconnected, WTS_CONNECTSTATE_CLASS.WTSActive): EventType.RDP_RECONNECT,
-            (WTS_CONNECTSTATE_CLASS.WTSDisconnected, WTS_CONNECTSTATE_CLASS.WTSConnected): EventType.RDP_RECONNECT,
-            (WTS_CONNECTSTATE_CLASS.WTSActive, WTS_CONNECTSTATE_CLASS.WTSIdle): EventType.RDP_DISCONNECT,
-        }
-        
-        transition = (old_session.connect_state, new_session.connect_state)
-        event_type = transition_mapping.get(transition)
-        
-        if not event_type:
-            # Generic state change
-            event_type = EventType.LAUNCH_REQUESTED  # Will be overridden
-        
-        # For disconnect/reconnect, use specific event types
-        if new_session.connect_state == WTS_CONNECTSTATE_CLASS.WTSDisconnected:
-            event_type = EventType.RDP_DISCONNECT
-        elif old_session.connect_state == WTS_CONNECTSTATE_CLASS.WTSDisconnected:
-            event_type = EventType.RDP_RECONNECT
-        
+
+        event_type = self._transition_event_type(old_state, new_state)
+        if event_type is None:
+            # There is no event type for a generic state change. Recording one as
+            # LAUNCH_REQUESTED would put a portal-initiated event in the audit
+            # trail for something the agent merely observed.
+            logger.debug(
+                "No session event for transition %s -> %s on session %s",
+                old_state.name,
+                new_state.name,
+                new_session.session_id,
+            )
+            return None
+
         event = AgentSessionEvent(
             event_type=event_type,
             workstation_id=self.config.workstation_id,
@@ -556,27 +550,44 @@ class SessionEventDetector:
             client_name=new_session.client_name,
             client_ip=new_session.client_address,
             result=EventResult.SUCCESS,
-            reason=f"State changed from {old_session.connect_state.name} to {new_session.connect_state.name}",
+            reason=f"State changed from {old_state.name} to {new_state.name}",
             source=EventSource.AGENT,
             agent_version=self.config.agent_version,
             correlation_id=self._correlation_id or str(uuid.uuid4())[:8],
         )
-        
+
         self.event_queue.add_event(event)
         return event
-    
-    def _create_session_end_event(self, session: WTSSessionInfo) -> Optional[AgentSessionEvent]:
+
+    @staticmethod
+    def _transition_event_type(
+        old_state: WTS_CONNECTSTATE_CLASS, new_state: WTS_CONNECTSTATE_CLASS
+    ) -> EventType | None:
+        """Classify one WTS state transition, or return None if it is not an event."""
+        # Leaving or entering the disconnected state decides first: it covers
+        # every source/target state, including ones absent from the table below.
+        if new_state == WTS_CONNECTSTATE_CLASS.WTSDisconnected:
+            return EventType.RDP_DISCONNECT
+        if old_state == WTS_CONNECTSTATE_CLASS.WTSDisconnected:
+            return EventType.RDP_RECONNECT
+        return {
+            (WTS_CONNECTSTATE_CLASS.WTSConnectQuery, WTS_CONNECTSTATE_CLASS.WTSActive): EventType.RDP_LOGON,
+            (WTS_CONNECTSTATE_CLASS.WTSConnectQuery, WTS_CONNECTSTATE_CLASS.WTSConnected): EventType.RDP_LOGON,
+            (WTS_CONNECTSTATE_CLASS.WTSActive, WTS_CONNECTSTATE_CLASS.WTSIdle): EventType.RDP_DISCONNECT,
+        }.get((old_state, new_state))
+
+    def _create_session_end_event(self, session: WTSSessionInfo) -> AgentSessionEvent | None:
         """Create an event for an ended session.
-        
+
         Args:
             session: Session that ended
-            
+
         Returns:
             AgentSessionEvent if event should be created
         """
         if not session.is_rdp_session:
             return None
-        
+
         event = AgentSessionEvent(
             event_type=EventType.RDP_LOGOFF,
             workstation_id=self.config.workstation_id,
@@ -592,39 +603,39 @@ class SessionEventDetector:
             agent_version=self.config.agent_version,
             correlation_id=self._correlation_id or str(uuid.uuid4())[:8],
         )
-        
+
         self.event_queue.add_event(event)
         return event
-    
-    def _format_upn(self, username: Optional[str], domain: Optional[str]) -> Optional[str]:
+
+    def _format_upn(self, username: str | None, domain: str | None) -> str | None:
         """Format username and domain as UPN.
-        
+
         Args:
             username: Username
             domain: Domain
-            
+
         Returns:
             Formatted UPN (user@domain) or None
         """
         if not username:
             return None
-        
+
         if domain and domain != "":
             # Try to format as UPN
             return f"{username}@{domain}"
-        
+
         return username
-    
-    def get_current_session_event(self) -> Optional[AgentSessionEvent]:
+
+    def get_current_session_event(self) -> AgentSessionEvent | None:
         """Get an event for the current session (for manual flag setting).
-        
+
         Returns:
             AgentSessionEvent for current session
         """
         current_session = self.wts_monitor.get_current_session()
         if not current_session:
             return None
-        
+
         event = AgentSessionEvent(
             event_type=EventType.MANUAL_FLAG_SET,
             workstation_id=self.config.workstation_id,
@@ -638,26 +649,26 @@ class SessionEventDetector:
             source=EventSource.AGENT,
             agent_version=self.config.agent_version,
         )
-        
+
         return event
-    
+
     def log_manual_flag_event(
         self,
         flag_type: str,
-        set_by_upn: Optional[str],
-        set_by_object_id: Optional[str],
-        reason: Optional[str] = None,
-        project: Optional[str] = None,
-    ) -> Optional[AgentSessionEvent]:
+        set_by_upn: str | None,
+        set_by_object_id: str | None,
+        reason: str | None = None,
+        project: str | None = None,
+    ) -> AgentSessionEvent | None:
         """Log a manual flag event.
-        
+
         Args:
             flag_type: Type of flag being set
             set_by_upn: UPN of user setting the flag
             set_by_object_id: Object ID of user setting the flag
             reason: Reason for setting the flag
             project: Project reference
-            
+
         Returns:
             AgentSessionEvent that was created
         """
@@ -672,27 +683,27 @@ class SessionEventDetector:
             source=EventSource.AGENT,
             agent_version=self.config.agent_version,
         )
-        
+
         self.event_queue.add_event(event)
         return event
-    
+
     def log_admin_command_event(
         self,
         command_type: str,
         requested_by_upn: str,
         requested_by_object_id: str,
         result: EventResult,
-        result_message: Optional[str] = None,
-    ) -> Optional[AgentSessionEvent]:
+        result_message: str | None = None,
+    ) -> AgentSessionEvent | None:
         """Log an admin command execution event.
-        
+
         Args:
             command_type: Type of command executed
             requested_by_upn: UPN of requester
             requested_by_object_id: Object ID of requester
             result: Result of the command
             result_message: Additional result message
-            
+
         Returns:
             AgentSessionEvent that was created
         """
@@ -702,23 +713,23 @@ class SessionEventDetector:
             "clear_manual_flag": EventType.MANUAL_FLAG_CLEARED,
             "refresh_status": EventType.LAUNCH_REQUESTED,
         }
-        
+
         event_type = event_type_mapping.get(command_type, EventType.ADMIN_OVERRIDE)
-        
+
         # For successful commands, use COMPLETED variant
         if result == EventResult.SUCCESS and command_type in ["disconnect_session", "logoff_session"]:
             if command_type == "disconnect_session":
                 event_type = EventType.ADMIN_DISCONNECT_COMPLETED
             elif command_type == "logoff_session":
                 event_type = EventType.ADMIN_LOGOFF_COMPLETED
-        
+
         # For failed commands, use FAILED variant
         if result == EventResult.FAILED and command_type in ["disconnect_session", "logoff_session"]:
             if command_type == "disconnect_session":
                 event_type = EventType.ADMIN_DISCONNECT_FAILED
             elif command_type == "logoff_session":
                 event_type = EventType.ADMIN_LOGOFF_FAILED
-        
+
         event = AgentSessionEvent(
             event_type=event_type,
             workstation_id=self.config.workstation_id,
@@ -730,7 +741,7 @@ class SessionEventDetector:
             source=EventSource.AGENT,
             agent_version=self.config.agent_version,
         )
-        
+
         self.event_queue.add_event(event)
         return event
 
@@ -739,12 +750,12 @@ class SessionEventDetector:
 # Factory and Exports
 # =============================================================================
 
-def create_event_queue(config: Optional[EventLogConfig] = None) -> EventQueue:
+def create_event_queue(config: EventLogConfig | None = None) -> EventQueue:
     """Create an EventQueue instance.
-    
+
     Args:
         config: Optional event log configuration
-        
+
     Returns:
         EventQueue instance
     """
@@ -752,17 +763,17 @@ def create_event_queue(config: Optional[EventLogConfig] = None) -> EventQueue:
 
 
 def create_session_event_detector(
-    config: Optional[EventLogConfig] = None,
-    event_queue: Optional[EventQueue] = None,
-    wts_monitor: Optional[WTSMonitor] = None,
+    config: EventLogConfig | None = None,
+    event_queue: EventQueue | None = None,
+    wts_monitor: WTSMonitor | None = None,
 ) -> SessionEventDetector:
     """Create a SessionEventDetector instance.
-    
+
     Args:
         config: Optional event log configuration
         event_queue: Optional event queue
         wts_monitor: Optional WTS monitor
-        
+
     Returns:
         SessionEventDetector instance
     """

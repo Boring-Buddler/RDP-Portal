@@ -3,28 +3,28 @@
 # Phase 2: Microsoft Graph integration
 # For Phase 1, mock data is used
 
-from portal_app.graph.mock_graph import MockGraphClient
 from portal_app.graph.client import (
     GraphAPIError,
-    GraphRateLimitError,
     GraphAuthError,
-    GraphNotFoundError,
+    GraphClient,
     GraphClientConfig,
+    GraphHTTPClient,
+    GraphNotFoundError,
+    GraphRateLimitError,
     GraphResponse,
     PaginatedResponse,
-    GraphHTTPClient,
-    GraphClient,
     create_graph_client,
 )
+from portal_app.graph.mock_graph import MockGraphClient
 from portal_app.graph.sharepoint import (
-    SharePointConfig,
-    SharePointFieldMappings,
-    SharePointDataConverter,
-    WorkstationConverter,
-    SessionEventConverter,
-    AdminCommandConverter,
     AccessRuleConverter,
+    AdminCommandConverter,
+    SessionEventConverter,
+    SharePointConfig,
+    SharePointDataConverter,
+    SharePointFieldMappings,
     SharePointManager,
+    WorkstationConverter,
     create_sharepoint_manager,
 )
 

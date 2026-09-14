@@ -22,7 +22,7 @@ def inspect_pilot(storage: Path | None = None) -> list[dict[str, str]]:
 
     add("Windows", "ok" if sys.platform == "win32" else "error", sys.platform)
     launcher = RDPSessionLauncher()
-    add("RDP-Client", "ok" if launcher._find_mstsc() else "error", "mstsc.exe im System gesucht")
+    add("RDP-Client", "ok" if launcher.rdp_client_available() else "error", "mstsc.exe im System gesucht")
     store = LocalStore(storage / "portal-state.json" if storage else None)
     if not store.path.exists():
         add("Inventar", "error", "Noch keine portal-state.json; zuerst Testmaschine registrieren.")
@@ -36,7 +36,7 @@ def inspect_pilot(storage: Path | None = None) -> list[dict[str, str]]:
     generator = RDPFileGenerator()
     for machine in machines:
         try:
-            generator._validate_profile(machine.get_rdp_profile())
+            generator.validate_profile(machine.get_rdp_profile())
             add(f"RDP-Profil {machine.workstation_id}", "ok", "Ziel und Optionen gültig")
         except Exception as exc:
             add(f"RDP-Profil {machine.workstation_id}", "error", str(exc))

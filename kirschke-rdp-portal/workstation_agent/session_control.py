@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from ipaddress import ip_address
 import threading
+from datetime import UTC, datetime
+from ipaddress import ip_address
 
-from shared.enums import SessionState
+from shared.session_identity import ACTIVE_SESSION_STATES
 from workstation_agent.wts.monitor import WTSMonitor, WTSSessionInfo
 
-
-ACTIVE_STATES = {
-    SessionState.CONNECTED,
-    SessionState.DISCONNECTED,
-    SessionState.RECONNECTED,
-    SessionState.LOGON,
-}
+#: Kept as a module name for readability; the rule itself lives in shared so the
+#: agent's authorization and the portal's display cannot drift apart.
+ACTIVE_STATES = ACTIVE_SESSION_STATES
 
 
 def _machine_aliases(value: str | None) -> set[str]:
@@ -36,7 +32,7 @@ def _parse_time(value: object, label: str) -> datetime:
         raise ValueError(f"{label} ist ungültig.") from exc
     if parsed.tzinfo is None:
         raise ValueError(f"{label} enthält keine Zeitzone.")
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 class AgentSessionController:
@@ -62,7 +58,7 @@ class AgentSessionController:
             raise ValueError("Die Sitzung wird vom Agenten nicht mehr als aktiv gemeldet.")
         if session.full_username.casefold() != username.strip().casefold():
             raise ValueError("Der Benutzer der Sitzung hat sich geändert.")
-        if session.login_time is None or session.login_time.astimezone(timezone.utc) != login_time:
+        if session.login_time is None or session.login_time.astimezone(UTC) != login_time:
             raise ValueError("Der Anmeldezeitpunkt der Sitzung hat sich geändert.")
         return session
 
@@ -74,7 +70,7 @@ class AgentSessionController:
         if not isinstance(request_id, str) or not 16 <= len(request_id) <= 64:
             raise ValueError("Die Abmeldeanfrage besitzt keine gültige Vorgangs-ID.")
         requested_at = _parse_time(command.get("requested_at_utc"), "Der Anfragezeitpunkt")
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         age = (now - requested_at).total_seconds()
         if age < -5 or age > 30:
             raise PermissionError("Die Abmeldeanfrage ist nicht mehr aktuell.")
@@ -92,10 +88,20 @@ class AgentSessionController:
         requester = command.get("requester_identity")
         if not isinstance(requester, str) or requester.strip().casefold() != session.full_username.casefold():
             raise PermissionError("Die Sitzung gehört nicht zum angemeldeten Portal-Benutzer.")
+        if not session.is_rdp_session:
+            # A console session has no RDP client, so there is nothing Windows can
+            # attest about the requester.  The named pipe is reached through the
+            # shared PortalLeser account, which identifies the portal but not the
+            # person, so the request carries no proof at all here.
+            raise PermissionError(
+                "Das ist eine lokale Konsolensitzung. Für sie kann Windows keinen "
+                "anfragenden RDP-Client bestätigen; möglich sind nur die Abmeldung "
+                "am Gerät selbst oder die administrative Abmeldung."
+            )
         reported_client = _machine_aliases(session.client_name) | _machine_aliases(
             getattr(session, "client_address", None)
         )
-        if not session.is_rdp_session or not (reported_client & _machine_aliases(client_computer)):
+        if not (reported_client & _machine_aliases(client_computer)):
             raise PermissionError(
                 "Der anfragende Rechner stimmt nicht mit dem vom Agenten gemeldeten RDP-Client überein."
             )

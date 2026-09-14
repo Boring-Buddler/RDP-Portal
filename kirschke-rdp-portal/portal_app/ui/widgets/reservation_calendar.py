@@ -22,11 +22,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 
 from portal_app.models.reservation import Reservation
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
+from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 
 RESERVATION_COLORS = (
     ("Blau", "#5d86a4"),

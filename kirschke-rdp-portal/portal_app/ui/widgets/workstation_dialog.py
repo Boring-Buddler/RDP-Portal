@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import ipaddress
+from collections.abc import Mapping
 from dataclasses import replace
-from typing import Mapping
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -19,9 +19,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 
 from portal_app.models.workstation import Workstation
+from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 from shared.enums import ConnectionTargetMode
 from shared.validation import RDPProfileValidator, RDPValidationError
 

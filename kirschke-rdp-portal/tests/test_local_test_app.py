@@ -1,6 +1,7 @@
-import sys
 import json
-from datetime import datetime, timedelta, timezone
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from PySide6.QtWidgets import QApplication
@@ -15,32 +16,42 @@ from portal_app.models.workstation import (
 )
 from portal_app.rdp.generator import RDPFileGenerator
 from portal_app.rdp.launcher import RDPSessionLauncher
-from portal_app.services.agent_status import LocalAgentStatusService
-from portal_app.services.local_store import LocalStore, StoreConflictError
-from portal_app.services.local_identity import detect_initial_user
-from portal_app.services.directory_users import discover_windows_domain_accounts
-from portal_app.services.active_directory_sync import check_active_directory_readiness, sync_rdp_group_members
-from portal_app.services.windows_admin_auth import (
-    check_windows_admin_authorization,
-    test_password_fallback_allowed as is_test_password_fallback_allowed,
+from portal_app.services.active_directory_sync import (
+    check_active_directory_readiness,
+    sync_rdp_group_members,
 )
 from portal_app.services.admin_security import LocalAdminPasswordStore, directory_mode
-from portal_app.services.machine_discovery import MachineDiscovery, _ipconfig_network_details, discover_remote_machine
+from portal_app.services.agent_status import LocalAgentStatusService
+from portal_app.services.directory_users import discover_windows_domain_accounts
+from portal_app.services.local_identity import detect_initial_user
+from portal_app.services.local_store import LocalStore, StoreConflictError
+from portal_app.services.machine_discovery import (
+    MachineDiscovery,
+    _ipconfig_network_details,
+    discover_remote_machine,
+)
 from portal_app.services.rdp_diagnostics import clear_saved_rdp_credentials, run_rdp_diagnostics
+from portal_app.services.windows_admin_auth import (
+    check_windows_admin_authorization,
+)
+from portal_app.services.windows_admin_auth import (
+    test_password_fallback_allowed as is_test_password_fallback_allowed,
+)
 from portal_app.ui.main_window import MainWindow
-from portal_app.ui.widgets.ping_tool import PingToolWidget
+from portal_app.ui.widgets.machine_registration_wizard import MachineRegistrationWizard
 from portal_app.ui.widgets.management_pages import AdministrationWidget, SettingsWidget
+from portal_app.ui.widgets.ping_tool import PingToolWidget
+from portal_app.ui.widgets.rdp_access_dialog import RDPAccessDialog
 from portal_app.ui.widgets.reservation_calendar import ReservationCalendarWidget, ReservationDialog
 from portal_app.ui.widgets.session_log import event_to_export_row
-from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
 from portal_app.ui.widgets.workstation_cards import WorkstationCard
+from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
 from portal_app.ui.widgets.workstation_dialog import WorkstationDialog
-from portal_app.ui.widgets.machine_registration_wizard import MachineRegistrationWizard
-from portal_app.ui.widgets.rdp_access_dialog import RDPAccessDialog
 from shared.agent_snapshot import AgentSnapshot, load_agent_snapshots, write_agent_snapshot
 from shared.enums import AgentStatus, ConnectionTargetMode, EventResult, EventType, SessionState
+from shared.windows_tools import powershell, system32_tool
 from workstation_agent.service import AgentConfig, WorkstationAgent
-from workstation_agent.wts.monitor import WTSSessionInfo, WTS_CONNECTSTATE_CLASS
+from workstation_agent.wts.monitor import WTS_CONNECTSTATE_CLASS, WTSSessionInfo
 
 
 def test_local_store_roundtrip(tmp_path):
@@ -259,7 +270,11 @@ def test_ad_group_sync_uses_current_windows_context_without_passwords(monkeypatc
     assert result.success
     assert result.added == ["becker"]
     assert result.removed == ["altuser"]
-    assert captured["args"][:3] == ["powershell.exe", "-NoProfile", "-NonInteractive"]
+    # PowerShell must be started from its absolute System32 path so a
+    # powershell.exe next to the portal cannot take over the AD change.
+    assert captured["args"][0] == powershell()
+    assert Path(captured["args"][0]).is_absolute()
+    assert captured["args"][1:3] == ["-NoProfile", "-NonInteractive"]
     assert "-ExecutionPolicy" not in captured["args"]
     assert "Import-Module ActiveDirectory" in captured["args"][-1]
     assert "password" not in captured["args"][-1].casefold()
@@ -661,8 +676,11 @@ def test_server_identity_warning_is_only_suppressed_after_explicit_trust(tmp_pat
     )
     untrusted_content = open(untrusted_path, encoding="utf-8").read()
 
-    assert "authentication level:i:0" in trusted_content
-    assert "authentication level:i:0" not in untrusted_content
+    # Level 2 warns and allows continuing; level 0 would skip server
+    # authentication entirely and hide a man-in-the-middle.
+    assert "authentication level:i:2" in trusted_content
+    assert "authentication level:i:0" not in trusted_content
+    assert "authentication level" not in untrusted_content
 
 
 def test_workstation_dialog_accepts_ip_only_profile(qtbot):
@@ -753,7 +771,8 @@ def test_clear_saved_rdp_credentials_removes_only_selected_target(monkeypatch):
 
     assert success
     assert "TERMSRV/192.168.2.68" in message
-    assert calls == [["cmdkey", "/delete:TERMSRV/192.168.2.68"]]
+    assert calls == [[system32_tool("cmdkey.exe"), "/delete:TERMSRV/192.168.2.68"]]
+    assert Path(calls[0][0]).is_absolute()
 
 
 @pytest.mark.parametrize(
@@ -859,13 +878,19 @@ def test_detail_warns_for_disconnected_session(qtbot):
     workstation = create_test_workstation()
     workstation.current_session_state = SessionState.DISCONNECTED
     workstation.current_session_user = "user@kirschke.local"
+    # Ohne aktuelle Agent-Meldung waere die Maschine grau und "Status ungeprueft";
+    # geprueft werden soll hier aber die fremde Sitzung.
+    workstation.agent_status = AgentStatus.ONLINE
+    workstation.agent_status_source = "live"
     detail = WorkstationDetailWidget(MockUser.create_user())
     qtbot.addWidget(detail)
 
     detail.set_workstation(workstation)
 
-    assert detail.connect_btn.isEnabled()
-    assert detail.connect_btn.text() == "Sitzung öffnen …"
+    # Fremde Sitzung: besetzt statt waehlbar - eine fremde Anmeldung uebernimmt
+    # man nicht mehr ueber die Kontoauswahl.
+    assert not detail.connect_btn.isEnabled()
+    assert detail.connect_btn.text() == "Maschine besetzt"
     assert not detail.session_warning.isHidden()
     assert "Getrennt" in detail.session_warning_text.text()
 
@@ -890,7 +915,7 @@ def test_local_agent_snapshot_updates_matching_machine(
         workstation_id=workstation.workstation_id,
         hostname=workstation.hostname,
         agent_version="1.1.0-test",
-        observed_at_utc=datetime.now(timezone.utc) - timedelta(seconds=age_seconds),
+        observed_at_utc=datetime.now(UTC) - timedelta(seconds=age_seconds),
         current_session_state=SessionState.DISCONNECTED,
         current_session_user="KIRSCHKE\\testuser",
         current_windows_session_id=17,
@@ -975,8 +1000,16 @@ def test_agent_config_reads_json_file(tmp_path, monkeypatch):
     assert config.publish_local_status is True
 
 
-def test_fixed_admin_password_is_no_longer_accepted():
-    assert not MainWindow._is_admin_password_valid("Kirschke")
+def test_fixed_admin_password_is_no_longer_accepted(tmp_path):
+    """There is no built-in password, and an unconfigured store accepts nothing."""
+    store = LocalAdminPasswordStore(tmp_path / "admin-security.json")
+    assert store.is_configured() is False
+    for candidate in ("Kirschke", "kirschke", "", "Kirschke2026"):
+        assert store.verify_password(candidate) is False
+    # Once a password is set, only that one verifies.
+    store.set_password("Korrektes-Kennwort-2026")
+    assert store.verify_password("Kirschke") is False
+    assert store.verify_password("Korrektes-Kennwort-2026") is True
 
 
 def test_session_event_export_contains_audit_fields():

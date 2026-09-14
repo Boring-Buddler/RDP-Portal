@@ -29,17 +29,22 @@ dependencies = [
     "pydantic>=2.7.0",
     "requests>=2.31.0",
     "pywin32>=306; sys_platform == 'win32'",
-    "pytest>=8.0.0",
-    "ruff>=0.3.0",
-    "mypy>=1.8.0",
-    "pyright>=1.1.350",
 ]
 
 [project.optional-dependencies]
+# Test and analysis tooling belongs here, not in the runtime dependencies: an
+# installed portal must not pull ruff, mypy and pyright onto an office machine.
 dev = [
+    "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
     "pytest-qt>=4.4.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+    "pyright>=1.1.350",
     "pyinstaller>=6.0.0",
+    # Real stubs for the Windows API surface this project leans on; without them
+    # every win32* import is an unactionable type error.
+    "types-pywin32>=306; sys_platform == 'win32'",
 ]
 
 [project.scripts]
@@ -75,7 +80,33 @@ ignore = [
     "E501",  # line too long (handled by black)
     "S101",  # assert used
     "B008",  # do not perform function calls in argument defaults
+    # Enum members are persisted to JSON state files through .value. Converting
+    # these ten enums to StrEnum changes what str()/f-strings produce and needs
+    # its own reviewed change, not a drive-by lint fix.
+    "UP042", # str + Enum instead of StrEnum
+    # S603 fires on every subprocess call and cannot tell a reviewed one from an
+    # unsafe one. All calls here pass a list (never shell=True) with argv[0]
+    # resolved to an absolute path, which is the part that actually matters and is
+    # enforced by a test rather than by this rule:
+    # tests/test_windows_tools.py::test_no_subprocess_call_starts_a_bare_executable_name
+    # S607, the rule that catches a partial executable path, stays enabled.
+    "S603", # subprocess call without shell=True
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Names below are prescribed by a framework or by the Windows API and must match
+# it exactly; renaming them would break the override or the MSDN cross-reference.
+"portal_app/ui/**" = ["N802"]          # Qt event handlers: closeEvent, paintEvent
+"portal_app/app.py" = ["N802"]         # Qt: eventFilter
+"workstation_agent/service.py" = ["N802", "T201"]  # pywin32 SvcDoRun/SvcStop; --status prints JSON
+"workstation_agent/wts/monitor.py" = ["N801"]  # ctypes structs mirror WTS_* API names
+# Console entry points: stdout is their interface, not a stray debug print.
+"portal_app/preflight.py" = ["T201"]
+"deployment/package_pilot.py" = ["T201"]
+# Unintegrated Phase 2 modules; see docs/phase2-status.md before changing.
+"portal_app/graph/client.py" = ["UP046"]
+# Test fixtures legitimately contain sample passwords.
+"tests/**" = ["S105", "S106"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -92,6 +123,52 @@ strict_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 
+# pywin32, msal and PySide6 ship no usable stubs for what is used here. Without
+# this every import of them produced an unactionable error.
+[[tool.mypy.overrides]]
+module = [
+    "win32api",
+    "win32con",
+    "win32cred",
+    "win32event",
+    "win32file",
+    "win32net",
+    "win32netcon",
+    "win32pipe",
+    "win32security",
+    "win32service",
+    "win32serviceutil",
+    "win32ts",
+    "win32wnet",
+    "pywintypes",
+    "ntsecuritycon",
+    "msal",
+]
+ignore_missing_imports = true
+
+# PySide6 accepts the unscoped enum shorthand (Qt.AlignCenter) at runtime, but its
+# stubs only declare the scoped form (Qt.AlignmentFlag.AlignCenter). That produced
+# 235 attr-defined errors across the UI and buried every real finding. Only that
+# error class is silenced here, and only for the UI layer; the logic layers stay
+# fully checked. Migrating the UI to scoped enums would remove the need for this.
+[[tool.mypy.overrides]]
+module = ["portal_app.ui.*", "portal_app.app"]
+disable_error_code = ["attr-defined"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+# Unintegrated and untested; see docs/phase2-status.md. Kept out of the strict
+# scope so its errors do not mask problems in the code that actually runs.
+[[tool.mypy.overrides]]
+module = [
+    "portal_app.auth.*",
+    "portal_app.graph.*",
+    "workstation_agent.graph.*",
+    "workstation_agent.outbox.*",
+    "workstation_agent.commands.*",
+]
+ignore_errors = true
+
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
@@ -107,6 +184,15 @@ qt_api = "pyside6"
 [tool.coverage.run]
 source = ["portal_app", "workstation_agent", "shared"]
 branch = true
+omit = [
+    # Unintegrated and untested by design; docs/phase2-status.md records that.
+    # Left out so the figure describes the code that actually runs in the pilot.
+    "portal_app/auth/*",
+    "portal_app/graph/*",
+    "workstation_agent/graph/*",
+    "workstation_agent/outbox/*",
+    "workstation_agent/commands/*",
+]
 
 [tool.coverage.report]
 exclude_lines = [

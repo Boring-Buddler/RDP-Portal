@@ -1,10 +1,10 @@
 """Bounded Windows named-pipe protocol for status and verified local logoff."""
-from contextlib import contextmanager
-from datetime import datetime, timezone
 import json
 import re
 import time
 import uuid
+from contextlib import contextmanager
+from datetime import UTC, datetime
 
 PIPE_NAME = "KirschkeRDPStatus-v1"
 MAX_MESSAGE = 65536
@@ -135,7 +135,7 @@ def request_agent_logoff(
     request = {
         "protocol": "LOGOFF/1",
         "request_id": str(uuid.uuid4()),
-        "requested_at_utc": datetime.now(timezone.utc).isoformat(),
+        "requested_at_utc": datetime.now(UTC).isoformat(),
         "session_id": session_id,
         "username": username,
         "login_time": login_time,

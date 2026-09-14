@@ -10,6 +10,8 @@ import socket
 import subprocess
 from dataclasses import dataclass
 
+from shared.windows_tools import powershell, system32_tool
+
 IPV4_PATTERN = r"\d{1,3}(?:\.\d{1,3}){3}"
 
 
@@ -141,7 +143,7 @@ def _local_network_details() -> dict[str, str]:
     )
     try:
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            [powershell(), "-NoProfile", "-NonInteractive", "-Command", command],
             capture_output=True,
             check=False,
             text=True,
@@ -163,7 +165,7 @@ def _ipconfig_network_details() -> dict[str, str]:
     """Parse Windows' built-in ipconfig as a fallback for restricted CIM setups."""
     try:
         result = subprocess.run(
-            ["ipconfig", "/all"],
+            [system32_tool("ipconfig.exe"), "/all"],
             capture_output=True,
             check=False,
             text=True,

@@ -1,6 +1,7 @@
 """Explicit live agent request without blocking the UI thread."""
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QVBoxLayout
+
 from shared.status_pipe import request_snapshot
 
 

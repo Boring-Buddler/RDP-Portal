@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from portal_app.models.session import SessionEvent
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
+from portal_app.ui.machine_actions import CONSOLE_LOGOFF_HINT, describe_actions
 from portal_app.ui.widgets.flag_dialog import FlagDialog
 from portal_app.ui.widgets.login_account_selector import LoginAccountSelector
 from shared.enums import ManualFlagType
@@ -388,34 +389,31 @@ class WorkstationDetailWidget(QWidget):
         else:
             self.flag_value.setText(ws.get_status_display())
             self.flag_reason.setText(ws.manual_flag_reason or "Ohne Begründung")
-        can_connect = ws.can_connect(
-            self.user.get_rdp_username(),
-            self.user.windows_identity,
-        )
+        from portal_app.rdp import has_active_rdp_session
+
         self.reservation_label.setText(ws.reservation_message)
         self.reservation_label.setVisible(bool(ws.reservation_message))
-        owned = ws.owned_sessions(self.user.windows_identity)
-        may_logoff = bool(owned) and not ws.reservation_block_reason
-        connected_own = any(
-            item.get("session_state") in ("connected", "reconnected", "logon")
-            for item in owned
+        actions = describe_actions(
+            ws,
+            self.user,
+            window_open=has_active_rdp_session(ws.workstation_id),
         )
-        connected_own = connected_own and may_logoff
-        disconnected_own = may_logoff and not connected_own
-        self.connect_btn.setVisible(not connected_own)
-        self.connect_btn.setEnabled(can_connect or ws.can_choose_session())
-        self.connect_btn.setText(("Wiederverbinden" if disconnected_own else "RDP verbinden") if can_connect else "Zugang belegt")
-        if ws.reservation_block_reason:
-            self.connect_btn.setText("Reserviert")
-        elif not can_connect and ws.can_choose_session():
-            self.connect_btn.setText("Sitzung öffnen …")
-        self.connect_btn.setToolTip(ws.reservation_message)
-        self.logoff_btn.setVisible(may_logoff)
-        self.logoff_btn.setEnabled(may_logoff and any(type(item.get("session_id")) is int and item["session_id"] > 0 and item.get("login_time") for item in owned))
-        self.logoff_btn.setToolTip("Passendes Anmeldekonto wählen. Die Abmeldung benötigt Windows-Berechtigungen für deine eigene Sitzung.")
+        may_logoff = actions.logoff_visible
+        self.connect_btn.setVisible(True)
+        self.connect_btn.setText(actions.primary_text)
+        self.connect_btn.setEnabled(actions.primary_enabled)
+        self.connect_btn.setToolTip(actions.primary_tooltip or ws.reservation_message)
+        self.logoff_btn.setVisible(actions.logoff_visible)
+        self.logoff_btn.setEnabled(actions.logoff_enabled)
+        self.logoff_btn.setToolTip(actions.logoff_tooltip)
         self.session_warning.setVisible(ws.has_active_session())
         if ws.has_active_session():
-            if may_logoff:
+            if actions.owns_console_session:
+                self.session_warning_text.setText(
+                    f"Status: {ws.get_status_display()} · Benutzer: {ws.get_session_user_display()}. "
+                    + CONSOLE_LOGOFF_HINT
+                )
+            elif may_logoff:
                 self.session_warning_text.setText(
                     f"Status: {ws.get_status_display()} · Benutzer: {ws.get_session_user_display()}. "
                     "Windows prüft Benutzerkennung, Sitzungsnummer und Anmeldezeit erneut, bevor es die Abmeldung annimmt."

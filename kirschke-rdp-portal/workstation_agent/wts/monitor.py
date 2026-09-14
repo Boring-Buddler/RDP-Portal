@@ -8,7 +8,7 @@ import os
 import socket
 from ctypes import wintypes
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import IntEnum
 from typing import Any
 
@@ -68,13 +68,23 @@ class WTSINFOW(ctypes.Structure):
              "ConnectTime", "DisconnectTime", "LastInputTime", "LogonTime", "CurrentTime")]
 
 
+class SID_AND_ATTRIBUTES(ctypes.Structure):
+    _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+
+class TOKEN_USER(ctypes.Structure):
+    _fields_ = [("User", SID_AND_ATTRIBUTES)]
+
+
 WTS_CURRENT_SERVER_HANDLE = wintypes.HANDLE(0)
 NO_CONSOLE_SESSION = 0xFFFFFFFF
 AF_INET = 2
 AF_INET6 = 23
+TOKEN_USER_CLASS = 1  # TOKEN_INFORMATION_CLASS.TokenUser
 
 wtsapi32 = ctypes.WinDLL("Wtsapi32.dll", use_last_error=True)
 kernel32 = ctypes.WinDLL("Kernel32.dll", use_last_error=True)
+advapi32 = ctypes.WinDLL("Advapi32.dll", use_last_error=True)
 
 wtsapi32.WTSOpenServerW.argtypes = [wintypes.LPWSTR]
 wtsapi32.WTSOpenServerW.restype = wintypes.HANDLE
@@ -104,6 +114,90 @@ kernel32.ProcessIdToSessionId.argtypes = [wintypes.DWORD, ctypes.POINTER(wintype
 kernel32.ProcessIdToSessionId.restype = wintypes.BOOL
 kernel32.WTSGetActiveConsoleSessionId.argtypes = []
 kernel32.WTSGetActiveConsoleSessionId.restype = wintypes.DWORD
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.CloseHandle.restype = wintypes.BOOL
+kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+kernel32.LocalFree.restype = ctypes.c_void_p
+wtsapi32.WTSQueryUserToken.argtypes = [wintypes.ULONG, ctypes.POINTER(wintypes.HANDLE)]
+wtsapi32.WTSQueryUserToken.restype = wintypes.BOOL
+advapi32.GetTokenInformation.argtypes = [
+    wintypes.HANDLE,
+    ctypes.c_int,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+]
+advapi32.GetTokenInformation.restype = wintypes.BOOL
+advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+advapi32.LookupAccountNameW.argtypes = [
+    wintypes.LPCWSTR,
+    wintypes.LPCWSTR,
+    ctypes.c_void_p,
+    ctypes.POINTER(wintypes.DWORD),
+    wintypes.LPWSTR,
+    ctypes.POINTER(wintypes.DWORD),
+    ctypes.POINTER(wintypes.DWORD),
+]
+advapi32.LookupAccountNameW.restype = wintypes.BOOL
+
+
+def _sid_to_string(sid_address: int | None) -> str | None:
+    """Render one in-memory SID as ``S-1-...``."""
+    if not sid_address:
+        return None
+    text = wintypes.LPWSTR()
+    if not advapi32.ConvertSidToStringSidW(ctypes.c_void_p(sid_address), ctypes.byref(text)):
+        return None
+    try:
+        return text.value or None
+    finally:
+        kernel32.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+
+
+def _token_user_sid(token: wintypes.HANDLE) -> str | None:
+    """Read the account SID out of one access token."""
+    size = wintypes.DWORD()
+    advapi32.GetTokenInformation(token, TOKEN_USER_CLASS, None, 0, ctypes.byref(size))
+    if not size.value:
+        return None
+    buffer = ctypes.create_string_buffer(size.value)
+    if not advapi32.GetTokenInformation(
+        token, TOKEN_USER_CLASS, buffer, size.value, ctypes.byref(size)
+    ):
+        return None
+    return _sid_to_string(ctypes.cast(buffer, ctypes.POINTER(TOKEN_USER)).contents.User.Sid)
+
+
+def _looked_up_sid(name: str | None) -> str | None:
+    """Resolve ``DOMAIN\\user`` to a SID on this machine, or ``None``.
+
+    Only a fallback.  For Entra accounts this lookup depends on the local cache
+    knowing the name, which is exactly the fragility the SID is meant to remove.
+    """
+    if not name:
+        return None
+    sid_size = wintypes.DWORD(0)
+    domain_size = wintypes.DWORD(0)
+    use = wintypes.DWORD(0)
+    advapi32.LookupAccountNameW(
+        None, name, None, ctypes.byref(sid_size), None, ctypes.byref(domain_size), ctypes.byref(use)
+    )
+    if not sid_size.value:
+        return None
+    sid = ctypes.create_string_buffer(sid_size.value)
+    domain = ctypes.create_unicode_buffer(max(1, domain_size.value))
+    if not advapi32.LookupAccountNameW(
+        None,
+        name,
+        sid,
+        ctypes.byref(sid_size),
+        domain,
+        ctypes.byref(domain_size),
+        ctypes.byref(use),
+    ):
+        return None
+    return _sid_to_string(ctypes.cast(sid, ctypes.c_void_p).value)
 
 
 @dataclass
@@ -122,6 +216,10 @@ class WTSSessionInfo:
     login_time: datetime | None = None
     last_input_time: datetime | None = None
     is_console_session: bool = False
+    #: The account SID, the only name form Windows authorizes against.  The agent
+    #: is the one component that can resolve it without a name cache, because it
+    #: runs as SYSTEM on the machine that owns the session.
+    sid: str | None = None
 
     @property
     def full_username(self) -> str:
@@ -150,6 +248,7 @@ class WTSSessionInfo:
             "login_time": self.login_time.isoformat() if self.login_time else None,
             "last_input_time": self.last_input_time.isoformat() if self.last_input_time else None,
             "is_console_session": self.is_console_session,
+            "sid": self.sid,
         }
 
 
@@ -244,6 +343,34 @@ class WTSMonitor:
         finally:
             self._free_buffer(address)
 
+    def _query_sid(self, session_id: int, full_username: str | None) -> str | None:
+        """Resolve the account SID of one session, preferring its own token.
+
+        ``WTSQueryUserToken`` needs SE_TCB_NAME and has no server parameter, so
+        this only works where the agent already is: as SYSTEM, on the machine that
+        owns the session.  That is the point -- the SID comes from the token
+        Windows issued, not from resolving a name that an Entra machine may or may
+        not have cached.  A remote monitor deliberately reports no SID rather than
+        resolving the name against the wrong machine.
+        """
+        if self.server_name or not full_username:
+            return None
+        try:
+            token = wintypes.HANDLE()
+            if wtsapi32.WTSQueryUserToken(wintypes.ULONG(session_id), ctypes.byref(token)):
+                try:
+                    sid = _token_user_sid(token)
+                finally:
+                    kernel32.CloseHandle(token)
+                if sid:
+                    return sid
+            return _looked_up_sid(full_username)
+        except OSError:
+            # A missing SID degrades the portal to name comparison; it must never
+            # cost the whole status snapshot.
+            logger.debug("SID der Sitzung %s nicht ermittelbar", session_id, exc_info=True)
+            return None
+
     @staticmethod
     def _map_connect_state_to_session_state(
         connect_state: WTS_CONNECTSTATE_CLASS | None,
@@ -291,14 +418,17 @@ class WTSMonitor:
                 if size >= ctypes.sizeof(WTSINFOW):
                     ticks = ctypes.cast(address, ctypes.POINTER(WTSINFOW)).contents.LogonTime
                     if ticks > 0:
-                        login_time = datetime.fromtimestamp(ticks / 10_000_000 - 11644473600, timezone.utc)
+                        login_time = datetime.fromtimestamp(ticks / 10_000_000 - 11644473600, UTC)
             finally:
                 self._free_buffer(address)
+        username = self._query_text(session_id, WTS_INFO_CLASS.WTSUserName)
+        domain = self._query_text(session_id, WTS_INFO_CLASS.WTSDomainName)
         return WTSSessionInfo(
             login_time=login_time,
             session_id=session_id,
-            username=self._query_text(session_id, WTS_INFO_CLASS.WTSUserName),
-            domain=self._query_text(session_id, WTS_INFO_CLASS.WTSDomainName),
+            username=username,
+            domain=domain,
+            sid=self._query_sid(session_id, f"{domain}\\{username}" if domain and username else username),
             display_name=station_name,
             client_name=self._query_text(session_id, WTS_INFO_CLASS.WTSClientName),
             client_address=self._query_client_address(session_id),
@@ -435,7 +565,7 @@ class SessionChangeNotifier:
                     "old_state": old_state.name if old_state is not None else None,
                     "new_state": new_state.name if new_state is not None else None,
                     "change_type": change_type,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                 }
             )
         return result

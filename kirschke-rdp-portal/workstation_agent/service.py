@@ -13,26 +13,27 @@ Features:
 - Handles manual flags
 """
 
-import os
-import time
 import json
 import logging
+import os
 import socket
-import win32serviceutil
-import win32service
-import win32event
+import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 from pathlib import Path
 
+import win32event
+import win32service
+import win32serviceutil
+
+from shared.agent_snapshot import AgentSnapshot, write_agent_snapshot
 from shared.enums import (
     AgentStatus,
-    SessionState,
-    ManualFlagType,
     CommandType,
+    ManualFlagType,
+    SessionState,
 )
-from shared.agent_snapshot import AgentSnapshot, write_agent_snapshot
+from shared.version import AGENT_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -44,29 +45,29 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AgentConfig:
     """Configuration for the workstation agent."""
-    
+
     # Workstation identification
     workstation_id: str = os.getenv("WORKSTATION_ID", "")
     hostname: str = socket.gethostname()
-    
+
     # Agent settings
-    agent_version: str = os.getenv("AGENT_VERSION", "1.3.0")
+    agent_version: str = os.getenv("AGENT_VERSION", AGENT_VERSION)
     poll_interval: int = 30  # environment is parsed safely in from_env
-    
+
     # Microsoft Entra ID settings
     tenant_id: str = os.getenv("TENANT_ID", "")
     client_id: str = os.getenv("AGENT_CLIENT_ID", "")
     authority: str = os.getenv("AUTHORITY", "")
     certificate_thumbprint: str = os.getenv("AGENT_CERT_THUMBPRINT", "")
     certificate_store: str = os.getenv("AGENT_CERT_STORE", "My")
-    
+
     # SharePoint settings
     sharepoint_site_id: str = os.getenv("SHAREPOINT_SITE_ID", "")
     workstations_list: str = os.getenv("SHAREPOINT_WORKSTATIONS_LIST", "RDP_Workstations")
     sessions_list: str = os.getenv("SHAREPOINT_SESSIONS_LIST", "RDP_SessionEvents")
     commands_list: str = os.getenv("SHAREPOINT_COMMANDS_LIST", "RDP_AdminCommands")
     access_rules_list: str = os.getenv("SHAREPOINT_ACCESS_RULES_LIST", "RDP_AccessRules")
-    
+
     # Logging settings
     log_level: str = os.getenv("AGENT_LOG_LEVEL", "INFO")
     log_file: str = os.getenv("AGENT_LOG_FILE", "")
@@ -74,7 +75,7 @@ class AgentConfig:
     status_directory: str = os.getenv("AGENT_STATUS_DIR", "")
     live_status_enabled: bool = False
     live_status_reader: str = "PortalLeser"
-    
+
     @classmethod
     def from_env(cls) -> "AgentConfig":
         """Create configuration from environment variables."""
@@ -109,23 +110,23 @@ class AgentConfig:
         authority = configured_value("authority", "AUTHORITY")
         if not authority and tenant_id:
             authority = f"https://login.microsoftonline.com/{tenant_id}"
-        
+
         # Set workstation ID from hostname if not set
         workstation_id = configured_value("workstation_id", "WORKSTATION_ID")
         if not workstation_id:
             workstation_id = socket.gethostname()
-        
+
         # Set default log file
         log_file = configured_value("log_file", "AGENT_LOG_FILE")
         if not log_file:
             log_dir = Path.home() / ".kirschke" / "rdp-agent" / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_file = str(log_dir / "agent.log")
-        
+
         return cls(
             workstation_id=workstation_id,
             hostname=socket.gethostname(),
-            agent_version=configured_value("agent_version", "AGENT_VERSION", "1.3.0"),
+            agent_version=configured_value("agent_version", "AGENT_VERSION", AGENT_VERSION),
             poll_interval=configured_integer("poll_interval", "AGENT_POLL_INTERVAL", 30),
             tenant_id=tenant_id,
             client_id=configured_value("client_id", "AGENT_CLIENT_ID"),
@@ -144,7 +145,7 @@ class AgentConfig:
             live_status_enabled=configured_value("live_status_enabled", "AGENT_LIVE_STATUS", "false").lower() == "true",
             live_status_reader=configured_value("live_status_reader", "AGENT_LIVE_READER", "PortalLeser"),
         )
-    
+
     def validate(self) -> bool:
         """Validate required configuration."""
         # For Phase 1, we can run with minimal config
@@ -170,38 +171,38 @@ class AgentConfig:
 @dataclass
 class AgentState:
     """Current state of the agent."""
-    
+
     # Agent status
     status: AgentStatus = AgentStatus.OFFLINE
-    
+
     # Last activity timestamps
-    last_poll_time: Optional[datetime] = None
-    last_event_time: Optional[datetime] = None
-    last_command_check_time: Optional[datetime] = None
-    last_status_update_time: Optional[datetime] = None
-    
+    last_poll_time: datetime | None = None
+    last_event_time: datetime | None = None
+    last_command_check_time: datetime | None = None
+    last_status_update_time: datetime | None = None
+
     # Workstation information
     workstation_id: str = ""
     workstation_hostname: str = ""
-    
+
     # Current session information
     current_session_state: SessionState = SessionState.NONE
-    current_session_user: Optional[str] = None
-    current_windows_session_id: Optional[int] = None
-    
+    current_session_user: str | None = None
+    current_windows_session_id: int | None = None
+
     # Manual flag
     manual_flag_type: ManualFlagType = ManualFlagType.NONE
-    
+
     # Counters
     events_submitted: int = 0
     commands_executed: int = 0
     errors: int = 0
-    
+
     def update_session_info(
         self,
         session_state: SessionState,
-        session_user: Optional[str] = None,
-        windows_session_id: Optional[int] = None,
+        session_user: str | None = None,
+        windows_session_id: int | None = None,
     ) -> None:
         """Update current session information."""
         changed = (
@@ -213,16 +214,16 @@ class AgentState:
         self.current_session_user = session_user
         self.current_windows_session_id = windows_session_id
         if changed:
-            self.last_event_time = datetime.now(timezone.utc)
-    
+            self.last_event_time = datetime.now(UTC)
+
     def increment_events_submitted(self) -> None:
         """Increment the events submitted counter."""
         self.events_submitted += 1
-    
+
     def increment_commands_executed(self) -> None:
         """Increment the commands executed counter."""
         self.commands_executed += 1
-    
+
     def increment_errors(self) -> None:
         """Increment the error counter."""
         self.errors += 1
@@ -234,22 +235,22 @@ class AgentState:
 
 class CommandHandler:
     """Handle execution of admin commands."""
-    
+
     def __init__(self):
         """Initialize the command handler."""
         pass
-    
+
     def execute_command(self, command: dict) -> tuple[bool, str]:
         """Execute an admin command.
-        
+
         Args:
             command: Command dictionary with type and parameters
-            
+
         Returns:
             Tuple of (success, message)
         """
         command_type = command.get("command_type", "")
-        
+
         try:
             if command_type == CommandType.REFRESH_STATUS.value:
                 return self._execute_refresh_status(command)
@@ -263,39 +264,39 @@ class CommandHandler:
                 return False, f"Unknown command type: {command_type}"
         except Exception as e:
             return False, f"Command execution failed: {str(e)}"
-    
+
     def _execute_refresh_status(self, command: dict) -> tuple[bool, str]:
         """Execute refresh status command.
-        
+
         Args:
             command: Command dictionary
-            
+
         Returns:
             Tuple of (success, message)
         """
         # This command just forces the agent to update its status
         return True, "Status refreshed"
-    
+
     def _execute_disconnect_session(self, command: dict) -> tuple[bool, str]:
         """Execute disconnect session command.
-        
+
         Args:
             command: Command dictionary
-            
+
         Returns:
             Tuple of (success, message)
         """
         target_session_id = command.get("target_windows_session_id")
-        
+
         if target_session_id is None:
             return False, "Target session ID not specified"
-        
+
         try:
             import ctypes
-            
+
             # Use WTS API to disconnect session
             wtsapi32 = ctypes.windll.Wtsapi32
-            
+
             # WTSDisconnectSession function
             wtsapi32.WTSDisconnectSession.argtypes = [
                 ctypes.c_void_p,
@@ -303,42 +304,42 @@ class CommandHandler:
                 ctypes.c_bool,
             ]
             wtsapi32.WTSDisconnectSession.restype = ctypes.c_bool
-            
+
             # Disconnect the session
             result = wtsapi32.WTSDisconnectSession(
                 None,  # Local machine
                 target_session_id,
                 False,  # Don't wait for disconnect
             )
-            
+
             if result:
                 return True, f"Session {target_session_id} disconnected"
             else:
                 return False, f"Failed to disconnect session {target_session_id}"
-                
+
         except Exception as e:
             return False, f"Failed to disconnect session: {str(e)}"
-    
+
     def _execute_logoff_session(self, command: dict) -> tuple[bool, str]:
         """Execute logoff session command.
-        
+
         Args:
             command: Command dictionary
-            
+
         Returns:
             Tuple of (success, message)
         """
         target_session_id = command.get("target_windows_session_id")
-        
+
         if target_session_id is None:
             return False, "Target session ID not specified"
-        
+
         try:
             import ctypes
-            
+
             # Use WTS API to log off session
             wtsapi32 = ctypes.windll.Wtsapi32
-            
+
             # WTSLogoffSession function
             wtsapi32.WTSLogoffSession.argtypes = [
                 ctypes.c_void_p,
@@ -346,28 +347,28 @@ class CommandHandler:
                 ctypes.c_bool,
             ]
             wtsapi32.WTSLogoffSession.restype = ctypes.c_bool
-            
+
             # Log off the session
             result = wtsapi32.WTSLogoffSession(
                 None,  # Local machine
                 target_session_id,
                 False,  # Don't wait for logoff
             )
-            
+
             if result:
                 return True, f"Session {target_session_id} logged off"
             else:
                 return False, f"Failed to log off session {target_session_id}"
-                
+
         except Exception as e:
             return False, f"Failed to log off session: {str(e)}"
-    
+
     def _execute_clear_manual_flag(self, command: dict) -> tuple[bool, str]:
         """Execute clear manual flag command.
-        
+
         Args:
             command: Command dictionary
-            
+
         Returns:
             Tuple of (success, message)
         """
@@ -382,17 +383,17 @@ class CommandHandler:
 
 class WorkstationAgent:
     """Main workstation agent class.
-    
+
     This class orchestrates all agent activities:
     - Monitoring RDP sessions
     - Submitting events to SharePoint
     - Executing admin commands
     - Updating workstation status
     """
-    
-    def __init__(self, config: Optional[AgentConfig] = None):
+
+    def __init__(self, config: AgentConfig | None = None):
         """Initialize the workstation agent.
-        
+
         Args:
             config: Optional agent configuration
         """
@@ -401,11 +402,11 @@ class WorkstationAgent:
             workstation_id=self.config.workstation_id,
             workstation_hostname=self.config.hostname,
         )
-        
+
         # Initialize components
         self._initialize_logging()
         self.command_handler = CommandHandler()
-        
+
         # Lazy-loaded components
         self._wts_monitor = None
         self._event_detector = None
@@ -415,16 +416,16 @@ class WorkstationAgent:
         self._session_history = None
         self._status_server = None
         self._session_controller = None
-        
+
         # Service control
         self._running = False
-        
+
         logger.info(f"Workstation agent initialized: {self.config.workstation_id}")
-    
+
     def _initialize_logging(self) -> None:
         """Initialize logging configuration."""
         log_level = getattr(logging, self.config.log_level.upper(), logging.INFO)
-        
+
         # Configure root logger
         logging.basicConfig(
             level=log_level,
@@ -433,7 +434,7 @@ class WorkstationAgent:
                 logging.StreamHandler(),
             ],
         )
-        
+
         # Add file handler if configured
         if self.config.log_file:
             try:
@@ -457,22 +458,22 @@ class WorkstationAgent:
                 # directory denied by an inherited/legacy configuration must not
                 # prevent the agent from publishing its online snapshot.
                 logger.warning("Agent log file is unavailable (%s); continuing without file log", exc)
-        
+
         logger.info(f"Logging configured: level={log_level}, file={self.config.log_file}")
-    
+
     def _get_wts_monitor(self):
         """Get or create WTS monitor."""
         if self._wts_monitor is None:
             from workstation_agent.wts.monitor import WTSMonitor
             self._wts_monitor = WTSMonitor()
         return self._wts_monitor
-    
+
     def _get_event_detector(self):
         """Get or create event detector."""
         if self._event_detector is None:
             from workstation_agent.eventlog.handler import (
-                SessionEventDetector,
                 EventLogConfig,
+                SessionEventDetector,
             )
             event_config = EventLogConfig(
                 workstation_id=self.config.workstation_id,
@@ -483,13 +484,13 @@ class WorkstationAgent:
                 event_config, event_queue=self._get_event_queue(), wts_monitor=self._get_wts_monitor()
             )
         return self._event_detector
-    
+
     def _get_event_queue(self):
         """Get or create event queue."""
         if self._event_queue is None:
             from workstation_agent.eventlog.handler import (
-                EventQueue,
                 EventLogConfig,
+                EventQueue,
             )
             event_config = EventLogConfig(
                 workstation_id=self.config.workstation_id,
@@ -498,13 +499,13 @@ class WorkstationAgent:
             )
             self._event_queue = EventQueue(event_config)
         return self._event_queue
-    
+
     def _get_graph_client(self):
         """Get or create Graph client."""
         if self._graph_client is None:
             from workstation_agent.graph.client import (
-                AgentGraphConfig,
                 AgentGraphClient,
+                AgentGraphConfig,
             )
             graph_config = AgentGraphConfig(
                 tenant_id=self.config.tenant_id,
@@ -520,28 +521,28 @@ class WorkstationAgent:
             )
             self._graph_client = AgentGraphClient(graph_config)
         return self._graph_client
-    
+
     def start(self) -> bool:
         """Start the agent.
-        
+
         Returns:
             True if agent started successfully
         """
         if not self.config.validate():
             logger.error("Agent configuration is invalid")
             return False
-        
+
         self._running = True
         self.state.status = AgentStatus.ONLINE
-        self.state.last_poll_time = datetime.now(timezone.utc)
-        
+        self.state.last_poll_time = datetime.now(UTC)
+
         logger.info(f"Workstation agent started: {self.config.workstation_id}")
 
         self._refresh_session_state()
         self._publish_local_snapshot()
         if self.config.live_status_enabled:
-            from workstation_agent.status_server import StatusServer
             from workstation_agent.session_control import AgentSessionController
+            from workstation_agent.status_server import StatusServer
             self._session_controller = AgentSessionController(
                 self.config.workstation_id,
                 self._after_agent_logoff,
@@ -552,15 +553,15 @@ class WorkstationAgent:
                 logoff_handler=self._session_controller.handle,
             )
             self._status_server.start()
-        
+
         # Run initial sync
         if self.config.has_graph_configuration():
             self._sync_with_portal()
         else:
             logger.info("Graph synchronization disabled: no complete external configuration")
-        
+
         return True
-    
+
     def stop(self) -> None:
         """Stop the agent."""
         self._running = False
@@ -574,12 +575,12 @@ class WorkstationAgent:
         if self._wts_monitor is not None:
             self._wts_monitor.close()
             self._wts_monitor = None
-        
+
         logger.info("Workstation agent stopped")
-    
+
     def poll(self) -> None:
         """Perform a polling cycle.
-        
+
         This method should be called periodically to:
         - Detect session changes
         - Submit events
@@ -588,36 +589,36 @@ class WorkstationAgent:
         """
         if not self._running:
             return
-        
+
         try:
             logger.debug(f"Polling cycle started: {self.config.workstation_id}")
-            
+
             # Update timestamp
-            self.state.last_poll_time = datetime.now(timezone.utc)
+            self.state.last_poll_time = datetime.now(UTC)
 
             # Read the actual Windows RDP session state first.
             self._refresh_session_state()
-            
+
             # 1. Detect session changes and create events
             self._detect_session_changes()
-            
+
             # 2. Submit queued events to portal
             self._submit_events()
-            
+
             # 3. Check for and execute admin commands
             self._check_admin_commands()
-            
+
             # 4. Update workstation status
             self._update_status()
-            
+
             # 5. Cleanup old events
             self._cleanup_old_events()
 
             # 6. Publish the local test snapshot even without Graph credentials.
             self._publish_local_snapshot()
-            
+
             logger.debug(f"Polling cycle completed: {self.config.workstation_id}")
-            
+
         except Exception as e:
             logger.error(f"Polling cycle failed: {str(e)}")
             self.state.increment_errors()
@@ -688,7 +689,7 @@ class WorkstationAgent:
                 workstation_id=self.config.workstation_id,
                 hostname=self.config.hostname,
                 agent_version=self.config.agent_version,
-                observed_at_utc=datetime.now(timezone.utc),
+                observed_at_utc=datetime.now(UTC),
                 agent_status=self.state.status,
                 current_session_state=self.state.current_session_state,
                 current_session_user=self.state.current_session_user,
@@ -701,20 +702,20 @@ class WorkstationAgent:
         except OSError as e:
             logger.error(f"Failed to publish local agent status: {str(e)}")
             self.state.increment_errors()
-    
+
     def _detect_session_changes(self) -> None:
         """Detect RDP session changes and create events."""
         try:
             detector = self._get_event_detector()
             events = detector.detect_session_changes()
-            
+
             for event in events:
                 logger.info(f"Session event detected: {event.event_type.value}")
                 self.state.increment_events_submitted()
-            
+
         except Exception as e:
             logger.error(f"Failed to detect session changes: {str(e)}")
-    
+
     def _submit_events(self) -> None:
         """Submit queued events to the portal."""
         if not self.config.has_graph_configuration():
@@ -722,18 +723,18 @@ class WorkstationAgent:
         try:
             queue = self._get_event_queue()
             unsent_events = queue.get_unsent_events()
-            
+
             if not unsent_events:
                 return
-            
+
             graph_client = self._get_graph_client()
-            
+
             # Authenticate if needed
             if not graph_client.is_authenticated():
                 if not graph_client.authenticate():
                     logger.warning("Graph authentication failed, will retry later")
                     return
-            
+
             # Submit each event
             for event in unsent_events:
                 try:
@@ -746,10 +747,10 @@ class WorkstationAgent:
                 except Exception as e:
                     logger.error(f"Failed to submit event {event.event_id}: {str(e)}")
                     self.state.increment_errors()
-                    
+
         except Exception as e:
             logger.error(f"Failed to submit events: {str(e)}")
-    
+
     def _check_admin_commands(self) -> None:
         """Check for and execute pending admin commands."""
         # The pilot has no verified command authorization, durable claim or replay
@@ -763,13 +764,13 @@ class WorkstationAgent:
             return
         try:
             graph_client = self._get_graph_client()
-            
+
             # Authenticate if needed
             if not graph_client.is_authenticated():
                 if not graph_client.authenticate():
                     logger.warning("Graph authentication failed, will retry later")
                     return
-            
+
             # Update status
             success = graph_client.update_workstation_status(
                 workstation_id=self.config.workstation_id,
@@ -779,43 +780,43 @@ class WorkstationAgent:
                 current_windows_session_id=self.state.current_windows_session_id,
                 agent_version=self.config.agent_version,
             )
-            
+
             if success:
-                self.state.last_status_update_time = datetime.now(timezone.utc)
+                self.state.last_status_update_time = datetime.now(UTC)
                 logger.debug("Workstation status updated")
             else:
                 logger.warning("Failed to update workstation status")
-                
+
         except Exception as e:
             logger.error(f"Failed to update status: {str(e)}")
-    
+
     def _sync_with_portal(self) -> None:
         """Perform initial synchronization with the portal."""
         try:
             logger.info("Starting initial synchronization with portal...")
-            
+
             # Get workstation info from portal
             graph_client = self._get_graph_client()
-            
+
             if graph_client.authenticate():
                 workstation = graph_client.get_workstation(self.config.workstation_id)
-                
+
                 if workstation:
                     # Update our state from portal
                     self.state.manual_flag_type = workstation.manual_flag.flag_type
                     self.state.current_session_state = workstation.current_session_state
                     self.state.current_session_user = workstation.current_session_user
                     self.state.current_windows_session_id = workstation.current_windows_session_id
-                    
+
                     logger.info(f"Synchronized with portal: {self.config.workstation_id}")
                 else:
                     logger.warning(f"Workstation not found in portal: {self.config.workstation_id}")
             else:
                 logger.warning("Graph authentication failed during initial sync")
-                
+
         except Exception as e:
             logger.error(f"Initial sync failed: {str(e)}")
-    
+
     def _cleanup_old_events(self) -> None:
         """Clean up old events from the queue."""
         try:
@@ -825,25 +826,25 @@ class WorkstationAgent:
                 logger.debug(f"Cleaned up {removed} old events")
         except Exception as e:
             logger.error(f"Failed to cleanup old events: {str(e)}")
-    
+
     def run(self) -> None:
         """Run the agent main loop.
-        
+
         This method runs the agent until stopped.
         """
         if not self.start():
             return
-        
+
         logger.info(f"Agent main loop started: {self.config.workstation_id}")
-        
+
         while self._running:
             try:
                 # Perform polling cycle
                 self.poll()
-                
+
                 # Sleep for the configured interval
                 time.sleep(self.config.poll_interval)
-                
+
             except KeyboardInterrupt:
                 logger.info("Agent interrupted by user")
                 self.stop()
@@ -851,7 +852,7 @@ class WorkstationAgent:
             except Exception as e:
                 logger.error(f"Agent error: {str(e)}")
                 time.sleep(5)  # Wait before retrying
-        
+
         logger.info("Agent main loop stopped")
 
 
@@ -861,68 +862,68 @@ class WorkstationAgent:
 
 class RDPWorkstationAgentService(win32serviceutil.ServiceFramework):
     """Windows Service for RDP Workstation Agent."""
-    
+
     _svc_name_ = "RDPWorkstationAgent"
     _svc_display_name_ = "Kirschke RDP Workstation Agent"
     _svc_description_ = "Monitors RDP sessions and communicates with Kirschke RDP Portal"
-    
+
     def __init__(self, args):
         """Initialize the service."""
         win32serviceutil.ServiceFramework.__init__(self, args)
         self.agent = None
         self._stop_event = win32event.CreateEvent(None, 0, 0, None)
-    
+
     def SvcDoRun(self):
         """Service main loop."""
         import servicemanager
-        
+
         try:
             # Initialize agent
             config = AgentConfig.from_env()
             self.agent = WorkstationAgent(config)
-            
+
             if not self.agent.start():
                 servicemanager.LogErrorMsg(f"Failed to start agent: {config.workstation_id}")
                 return
-            
+
             servicemanager.LogInfoMsg(f"Agent service started: {config.workstation_id}")
-            
+
             # Run the agent
             while True:
                 # Perform polling cycle
                 self.agent.poll()
-                
+
                 # Wait for poll interval or stop signal
                 wait_result = win32event.WaitForSingleObject(
                     self._stop_event,
                     config.poll_interval * 1000
                 )
-                
+
                 if wait_result == win32event.WAIT_OBJECT_0:
                     # Stop signal received
                     break
-            
+
         except Exception as e:
             servicemanager.LogErrorMsg(f"Service error: {str(e)}")
         finally:
             if self.agent:
                 self.agent.stop()
             servicemanager.LogInfoMsg("Agent service stopped")
-    
+
     def SvcStop(self):
         """Stop the service."""
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
         win32event.SetEvent(self._stop_event)
         self.ReportServiceStatus(win32service.SERVICE_STOPPED)
-    
+
     def SvcPause(self):
         """Pause the service."""
         self.ReportServiceStatus(win32service.SERVICE_PAUSED)
-    
+
     def SvcContinue(self):
         """Continue the service."""
         self.ReportServiceStatus(win32service.SERVICE_RUNNING)
-    
+
     def SvcShutdown(self):
         """Handle system shutdown."""
         self.SvcStop()
@@ -935,7 +936,7 @@ class RDPWorkstationAgentService(win32serviceutil.ServiceFramework):
 def main():
     """Main entry point for command-line execution."""
     import argparse
-    
+
     parser = argparse.ArgumentParser(
         description="Kirschke RDP Workstation Agent"
     )
@@ -979,12 +980,12 @@ def main():
         type=str,
         help="Path to the agent JSON configuration file",
     )
-    
+
     args = parser.parse_args()
 
     if args.config:
         os.environ["AGENT_CONFIG_PATH"] = args.config
-    
+
     # Set debug logging if requested
     if args.debug:
         os.environ["AGENT_LOG_LEVEL"] = "DEBUG"
@@ -1007,7 +1008,7 @@ def main():
         }
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
-    
+
     if any([args.install, args.uninstall, args.start, args.stop]):
         parser.error("Windows service deployment is not supported by the pilot. Use deployment/Install-Agent.cmd (scheduled task).")
 
@@ -1015,7 +1016,7 @@ def main():
     if args.run or not any([args.install, args.uninstall, args.start, args.stop]):
         config = AgentConfig.from_env()
         agent = WorkstationAgent(config)
-        
+
         try:
             agent.run()
         except KeyboardInterrupt:

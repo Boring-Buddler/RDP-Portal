@@ -1,16 +1,109 @@
 """Native Windows signout, authorized by Windows rather than shared JSON files."""
 from datetime import datetime
-import subprocess
-import sys
 
+from portal_app.services.agent_identity import match_agent, mismatch_message
+from shared.session_identity import is_active_session, is_console_session, session_username
 from shared.status_pipe import request_agent_logoff, request_snapshot
 
+#: Shown whenever this portal process is not the account that owns the session.
+NOT_YOUR_SESSION = (
+    "Die Sitzung gehört nicht deinem aktuellen Windows-Konto. "
+    "Verbinde dich mit dem Sitzungskonto erneut und melde dich dort "
+    "über Start → Benutzer → Abmelden ab."
+)
 
-def _session_username(session: dict) -> str:
-    return session.get("full_username") or (
-        ((session.get("domain") + "\\") if session.get("domain") else "")
-        + (session.get("username") or "")
+#: A local console session has no RDP client, so nothing about the requester can
+#: be proven to the agent.  See :mod:`workstation_agent.session_control`.
+CONSOLE_SESSION_NOT_OWN = (
+    "Das ist eine lokale Konsolensitzung am Gerät selbst. Für sie kann Windows "
+    "keinen anfragenden RDP-Client bestätigen, deshalb lässt der Agent die normale "
+    "Abmeldung nicht zu. Möglich sind: am Gerät abmelden, die Sitzung per RDP "
+    "übernehmen und dort abmelden, oder die administrative Abmeldung."
+)
+
+
+def _process_sid() -> str:
+    """The SID of the Windows account this portal process runs as."""
+    import win32api
+    import win32con
+    import win32security
+
+    token = win32security.OpenProcessToken(
+        win32api.GetCurrentProcess(),
+        win32con.TOKEN_QUERY,
     )
+    try:
+        return str(
+            win32security.ConvertSidToStringSid(
+                win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+            )
+        )
+    finally:
+        token.Close()
+
+
+def _require_own_account(session: dict, username: str) -> None:
+    """Refuse unless this portal process runs as the account owning the session.
+
+    The SID the agent read from the session's own token decides.  It is the form
+    Windows authorizes against, and unlike a name it does not depend on this PC
+    having the account cached -- the lookup that fails for Entra accounts whose
+    profile lives only on the target.  Resolving the name locally stays as a
+    fallback for agents too old to report a SID.
+    """
+    import win32security
+
+    caller = _process_sid()
+    reported = str(session.get("sid") or "").strip()
+    if reported:
+        if reported.casefold() != caller.casefold():
+            raise ValueError(NOT_YOUR_SESSION)
+        return
+    try:
+        session_sid = win32security.ConvertSidToStringSid(
+            win32security.LookupAccountName(None, username)[0]
+        )
+    except Exception as exc:
+        raise ValueError(
+            "Der Agent hat für diese Sitzung keine Windows-SID gemeldet, und der "
+            "Kontoname lässt sich auf diesem Portal-PC nicht auflösen. Das ist bei "
+            "Entra-Konten normal, deren Profil nur auf dem Zielrechner existiert. "
+            "Agent aktualisieren oder am Zielrechner abmelden."
+        ) from exc
+    if session_sid.casefold() != caller.casefold():
+        raise ValueError(NOT_YOUR_SESSION)
+
+
+def _require_matching_agent(snapshot, expected_agent_id, hostnames) -> None:
+    """Refuse to act unless the agent that answered belongs to this machine.
+
+    Uses the same rule the status channel uses, so a machine cannot show a healthy
+    live status and then refuse every logoff over a mismatch nobody can see.
+
+    ``hostnames`` carries the machine's own host names as additional evidence, for
+    the usual case where no agent was assigned by hand and the portal's generated
+    machine ID therefore differs from what the agent calls itself.  ``None`` means
+    somebody pinned the mapping explicitly, and then only the ID may decide.
+    """
+    if not expected_agent_id:
+        return
+    match = match_agent(
+        expected_id=expected_agent_id,
+        assigned_explicitly=hostnames is None,
+        hostnames=hostnames or set(),
+        reported_id=snapshot.workstation_id,
+        reported_hostname=snapshot.hostname,
+    )
+    if not match:
+        raise ValueError(
+            mismatch_message(
+                expected_agent_id,
+                expected_agent_id,
+                snapshot.workstation_id,
+                snapshot.hostname,
+                match.reason,
+            )
+        )
 
 
 def _verified_status_session(
@@ -19,8 +112,14 @@ def _verified_status_session(
     session_id: int,
     username: str,
     expected_time: datetime,
-) -> dict:
-    """Read a fresh STATUS/1 response and reject a changed/reused session ID."""
+    hostnames: set[str] | None = None,
+) -> tuple[dict, object]:
+    """Read a fresh STATUS/1 response and reject a changed/reused session ID.
+
+    Returns the verified session together with the snapshot it came from: the
+    agent identifies itself by its own ID, and that is the one the logoff request
+    has to carry, not the portal's generated machine ID.
+    """
     try:
         snapshot, _elapsed = request_snapshot(target)
     except Exception as exc:
@@ -31,27 +130,18 @@ def _verified_status_session(
             f"Die Sitzung konnte nicht frisch über den Agentstatus geprüft werden "
             f"(Fehler {code or type(exc).__name__})."
         ) from exc
-    if (
-        expected_agent_id
-        and snapshot.workstation_id.strip().casefold()
-        != expected_agent_id.strip().casefold()
-    ):
-        raise ValueError(
-            "Der antwortende Agent passt nicht zur Maschine. Agent-Zuordnung prüfen."
-        )
+    _require_matching_agent(snapshot, expected_agent_id, hostnames)
     session = next(
         (
             item
             for item in snapshot.rdp_sessions
-            if item.get("session_id") == session_id
-            and item.get("session_state")
-            in ("connected", "disconnected", "reconnected", "logon")
+            if item.get("session_id") == session_id and is_active_session(item)
         ),
         None,
     )
     if session is None:
         raise ValueError("Die Sitzung wird vom Agenten nicht mehr als aktiv gemeldet.")
-    if _session_username(session).casefold() != username.casefold():
+    if session_username(session).casefold() != username.casefold():
         raise ValueError("Der Benutzer der Sitzung hat sich geändert.")
     actual_login = session.get("login_time")
     try:
@@ -60,43 +150,7 @@ def _verified_status_session(
         raise ValueError("Der aktuelle Anmeldezeitpunkt ist nicht prüfbar.") from exc
     if actual_time is None or actual_time.tzinfo is None or actual_time != expected_time:
         raise ValueError("Der Anmeldezeitpunkt der Sitzung hat sich geändert.")
-    return session
-
-
-def _helper_command(target: str, session_id: int) -> list[str]:
-    if getattr(sys, "frozen", False):
-        return [sys.executable, "--session-logoff-helper", target, str(session_id)]
-    return [
-        sys.executable,
-        "-m",
-        "portal_app.session_logoff_helper",
-        target,
-        str(session_id),
-    ]
-
-
-def _request_windows_logoff(target: str, session_id: int) -> None:
-    """Keep native WTS failures outside the long-running Qt process."""
-    try:
-        result = subprocess.run(
-            _helper_command(target, session_id),
-            check=False,
-            timeout=30,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            "Die Windows-Abmeldung hat innerhalb von 30 Sekunden nicht geantwortet."
-        ) from exc
-    except OSError as exc:
-        raise RuntimeError(
-            "Der geschützte Windows-Hilfsprozess für die Abmeldung konnte nicht gestartet werden."
-        ) from exc
-    if result.returncode:
-        raise OSError(
-            result.returncode,
-            f"Windows hat die Abmeldung abgelehnt (Fehler {result.returncode}).",
-        )
+    return session, snapshot
 
 
 def _confirm_session_ended(
@@ -105,6 +159,7 @@ def _confirm_session_ended(
     session_id: int,
     username: str,
     expected_time: datetime,
+    hostnames: set[str] | None = None,
 ) -> None:
     """Accept success only after STATUS/1 no longer reports the exact old session."""
     try:
@@ -117,15 +172,13 @@ def _confirm_session_ended(
             "Windows hat den Abmeldeaufruf beendet, aber der Agent konnte das "
             f"Sitzungsende nicht bestätigen (Fehler {code or type(exc).__name__})."
         ) from exc
-    if (
-        expected_agent_id
-        and snapshot.workstation_id.strip().casefold()
-        != expected_agent_id.strip().casefold()
-    ):
+    try:
+        _require_matching_agent(snapshot, expected_agent_id, hostnames)
+    except ValueError as exc:
         raise RuntimeError(
             "Nach der Windows-Abmeldung antwortet ein anderer Agent. "
-            "Das Sitzungsende ist nicht bestätigt."
-        )
+            f"Das Sitzungsende ist damit nicht bestätigt.\n\n{exc}"
+        ) from exc
     for session in snapshot.rdp_sessions:
         try:
             observed_time = datetime.fromisoformat(session.get("login_time") or "")
@@ -133,9 +186,8 @@ def _confirm_session_ended(
             observed_time = None
         if (
             session.get("session_id") == session_id
-            and session.get("session_state")
-            in ("connected", "disconnected", "reconnected", "logon")
-            and _session_username(session).casefold() == username.casefold()
+            and is_active_session(session)
+            and session_username(session).casefold() == username.casefold()
             and observed_time == expected_time
         ):
             raise RuntimeError(
@@ -154,12 +206,9 @@ def _logoff_session(
     *,
     require_owner: bool,
     admin_credentials: tuple[str, str] | None = None,
+    hostnames: set[str] | None = None,
 ) -> None:
     """Reject stale/reused IDs and let Windows authorize the final WTS request."""
-    import win32api
-    import win32con
-    import win32security
-
     if not target or type(session_id) is not int or session_id <= 0 or not username or not login_time:
         raise ValueError("Keine eindeutig identifizierte Sitzung. Aktuelle Agent-Meldung abwarten.")
     try:
@@ -169,38 +218,24 @@ def _logoff_session(
     if expected_time.tzinfo is None:
         raise ValueError("Der Anmeldezeitpunkt enthält keine Zeitzone.")
     verified_target = status_target or target
-    _verified_status_session(
+    verified, snapshot = _verified_status_session(
         verified_target,
         expected_agent_id,
         session_id,
         username,
         expected_time,
+        hostnames,
     )
+    # From here on the agent is addressed by the ID it calls itself. The portal's
+    # machine ID is generated and routinely differs; the agent checks the ID in the
+    # request against its own and would refuse anything else.
+    agent_id = snapshot.workstation_id or expected_agent_id
     if require_owner:
-        try:
-            session_sid, _, _ = win32security.LookupAccountName(None, username)
-        except Exception as exc:
-            raise ValueError(
-                "Die Windows-Benutzerkennung der Sitzung kann auf diesem Portal-PC "
-                "nicht dem aktuellen Konto zugeordnet werden."
-            ) from exc
-        token = win32security.OpenProcessToken(
-            win32api.GetCurrentProcess(),
-            win32con.TOKEN_QUERY,
-        )
-        try:
-            caller_sid = win32security.GetTokenInformation(
-                token,
-                win32security.TokenUser,
-            )[0]
-        finally:
-            token.Close()
-        if session_sid != caller_sid:
-            raise ValueError(
-                "Die Sitzung gehört nicht deinem aktuellen Windows-Konto. "
-                "Verbinde dich mit dem Sitzungskonto erneut und melde dich dort "
-                "über Start → Benutzer → Abmelden ab."
-            )
+        if is_console_session(verified):
+            # Refuse here rather than letting the agent do it, so the reason
+            # names the console session instead of a mismatched RDP client.
+            raise ValueError(CONSOLE_SESSION_NOT_OWN)
+        _require_own_account(verified, username)
     # Check the read-only live status again immediately before asking Windows.
     _verified_status_session(
         verified_target,
@@ -208,6 +243,7 @@ def _logoff_session(
         session_id,
         username,
         expected_time,
+        hostnames,
     )
     # The local SYSTEM agent performs the final WTS call. For an own session it
     # independently checks user and RDP client computer; an administrative
@@ -218,7 +254,7 @@ def _logoff_session(
         username,
         login_time,
         username,
-        expected_agent_id,
+        agent_id,
         administrative=not require_owner,
         credentials=admin_credentials,
     )
@@ -228,6 +264,7 @@ def _logoff_session(
         session_id,
         username,
         expected_time,
+        hostnames,
     )
 
 
@@ -238,6 +275,7 @@ def logoff_own_session(
     login_time: str,
     expected_agent_id: str | None = None,
     status_target: str | None = None,
+    hostnames: set[str] | None = None,
 ) -> None:
     """Sign out only a session whose Windows SID matches the portal process token."""
     _logoff_session(
@@ -248,6 +286,7 @@ def logoff_own_session(
         expected_agent_id,
         status_target,
         require_owner=True,
+        hostnames=hostnames,
     )
 
 
@@ -259,6 +298,7 @@ def logoff_admin_session(
     expected_agent_id: str | None = None,
     status_target: str | None = None,
     admin_credentials: tuple[str, str] | None = None,
+    hostnames: set[str] | None = None,
 ) -> None:
     """Request an emergency signout; the target Windows host enforces admin rights."""
     _logoff_session(
@@ -270,6 +310,7 @@ def logoff_admin_session(
         status_target,
         require_owner=False,
         admin_credentials=admin_credentials,
+        hostnames=hostnames,
     )
 
 

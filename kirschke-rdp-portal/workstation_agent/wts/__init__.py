@@ -2,11 +2,11 @@
 
 from workstation_agent.wts.monitor import (
     WTS_CONNECTSTATE_CLASS,
-    WTSSessionInfo,
-    WTSMonitor,
     SessionChangeNotifier,
-    get_wts_monitor,
+    WTSMonitor,
+    WTSSessionInfo,
     get_session_change_notifier,
+    get_wts_monitor,
 )
 
 __all__ = [

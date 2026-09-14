@@ -1,8 +1,8 @@
 """Session event logging and handling for Kirschke RDP Workstation Portal Agent."""
 
 from workstation_agent.eventlog.handler import (
-    EventLogConfig,
     AgentSessionEvent,
+    EventLogConfig,
     EventQueue,
     SessionEventDetector,
     create_event_queue,

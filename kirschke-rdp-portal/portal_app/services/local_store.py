@@ -12,9 +12,16 @@ from portal_app.models.reservation import Reservation
 from portal_app.models.session import SessionEvent
 from portal_app.models.user import MockUser
 from portal_app.models.workstation import Workstation
-from shared.schemas import SessionEventSchema, WorkstationSchema
-from shared.file_io import file_lock, write_json_atomic
 from shared.agent_paths import default_portal_directory, expand_directory, resolve_agent_directory
+from shared.file_io import file_lock, write_json_atomic
+from shared.schemas import SessionEventSchema, WorkstationSchema
+
+#: Rotate the append-only event log once it passes this size.
+EVENT_LOG_MAX_BYTES = 4_000_000
+#: Events kept in the live log after a rotation.
+EVENT_LOG_KEEP_LINES = 5_000
+#: Upper bound on what one load_events() call parses.
+EVENT_LOG_MAX_LINES = 20_000
 
 
 class StoreConflictError(RuntimeError):
@@ -207,6 +214,8 @@ class LocalStore:
             rdp_username=data.get("rdp_username"),
             rdp_domain=data.get("rdp_domain"),
             windows_identity=fallback.windows_identity,
+            windows_sid=fallback.windows_sid,
+            own_accounts=LocalStore._normalise_accounts(data.get("own_accounts", [])),
         )
 
     @staticmethod
@@ -219,6 +228,10 @@ class LocalStore:
             "role": user.role.value,
             "rdp_username": user.rdp_username,
             "rdp_domain": user.rdp_domain,
+            # The process identity and its SID are detected at startup and stay
+            # unpersisted on purpose; these claimed extra accounts are the one part
+            # of the identity picture the person maintains themselves.
+            "own_accounts": list(user.own_accounts),
         }
 
     def _load_preferences(self, fallback: MockUser, legacy_data: dict | None = None) -> MockUser:
@@ -496,21 +509,27 @@ class LocalStore:
         self._state_signature = self._signature(self.path) if data == local_data else None
 
     def load_events(self) -> list[SessionEvent]:
-        """Load the append-only portal event log; malformed individual lines are skipped."""
+        """Load the append-only portal event log; malformed individual lines are skipped.
+
+        Only the newest ``EVENT_LOG_MAX_LINES`` lines are parsed. The file is
+        rotated on append, so this bounds both the read and the Pydantic
+        validation regardless of how long the pilot has been running.
+        """
         if not self.events_path.exists():
             return []
         events: list[SessionEvent] = []
         try:
-            for line in self.events_path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    schema = SessionEventSchema.model_validate_json(line)
-                    events.append(SessionEvent.from_schema(schema))
-                except ValueError:
-                    continue
+            lines = self.events_path.read_text(encoding="utf-8").splitlines()
         except OSError:
             return []
+        for line in lines[-EVENT_LOG_MAX_LINES:]:
+            if not line.strip():
+                continue
+            try:
+                schema = SessionEventSchema.model_validate_json(line)
+                events.append(SessionEvent.from_schema(schema))
+            except ValueError:
+                continue
         return events
 
     def append_event(self, event: SessionEvent) -> None:
@@ -520,8 +539,38 @@ class LocalStore:
         with file_lock(self.events_path.with_suffix(".lock")):
             with self.events_path.open("a", encoding="utf-8") as event_file:
                 event_file.write(serialized + "\n")
+            self._rotate_event_log()
         # Do not acknowledge unrelated state changes while appending an event.
         self._events_signature = self._signature(self.events_path)
+
+    def _rotate_event_log(self) -> None:
+        """Keep the newest events and move the rest aside. Caller holds the lock.
+
+        Without this the log grew without bound and every read parsed all of it.
+        The previous generation is kept as one ``.1`` file so a pilot audit can
+        still reach older events.
+        """
+        try:
+            if self.events_path.stat().st_size <= EVENT_LOG_MAX_BYTES:
+                return
+            lines = self.events_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        if len(lines) <= EVENT_LOG_KEEP_LINES:
+            return
+        archive = self.events_path.with_suffix(self.events_path.suffix + ".1")
+        retained = lines[-EVENT_LOG_KEEP_LINES:]
+        try:
+            # Append the rotated-out events so the archive keeps its history, then
+            # replace the live log atomically with what we keep.
+            with archive.open("a", encoding="utf-8") as stream:
+                stream.write("\n".join(lines[:-EVENT_LOG_KEEP_LINES]) + "\n")
+            temporary = self.events_path.with_suffix(self.events_path.suffix + ".tmp")
+            temporary.write_text("\n".join(retained) + "\n", encoding="utf-8")
+            os.replace(temporary, self.events_path)
+        except OSError:
+            # A failed rotation must never lose the event that was just written.
+            return
 
     def initialize_event_log(self) -> None:
         """Create the empty append-only log on first portal startup."""
@@ -530,7 +579,11 @@ class LocalStore:
         self._remember_signatures()
 
     def relocate(self, directory: Path, move_files: bool = True) -> None:
-        """Switch storage folders and copy-verify existing state and event files first."""
+        """Switch storage folders and copy-verify existing state and event files first.
+
+        Holds the state lock for the whole copy-and-remove so a second portal
+        instance cannot write into the folder that is being moved away.
+        """
         previous_directory = self.directory
         target_directory = directory.expanduser().resolve()
         target_directory.mkdir(parents=True, exist_ok=True)
@@ -540,29 +593,30 @@ class LocalStore:
         if target_directory == self.directory:
             self._save_directory_config()
             return
-        pairs = [
-            (source, target)
-            for source, target in (
-                (self.path, target_state),
-                (self.events_path, target_events),
-                (self.directory_users_path, target_directory_users),
-            )
-            if source.exists()
-        ]
-        for _, target in pairs:
-            if target.exists():
-                raise FileExistsError(f"Zieldatei existiert bereits: {target.name}")
-        for source, target in pairs:
-            shutil.copy2(source, target)
-            if source.suffix == ".json":
-                json.loads(target.read_text(encoding="utf-8"))
-        # The reference is written before the original files are removed.  If
-        # it cannot be written, the original data remains intact.
-        self._save_directory_config(target_directory)
-        self._write_redirect_marker(previous_directory, target_directory)
-        if move_files:
-            for source, _ in pairs:
-                source.unlink()
+        with file_lock(self.path.with_suffix(".lock")):
+            pairs = [
+                (source, target)
+                for source, target in (
+                    (self.path, target_state),
+                    (self.events_path, target_events),
+                    (self.directory_users_path, target_directory_users),
+                )
+                if source.exists()
+            ]
+            for _, target in pairs:
+                if target.exists():
+                    raise FileExistsError(f"Zieldatei existiert bereits: {target.name}")
+            for source, target in pairs:
+                shutil.copy2(source, target)
+                if source.suffix == ".json":
+                    json.loads(target.read_text(encoding="utf-8"))
+            # The reference is written before the original files are removed.  If
+            # it cannot be written, the original data remains intact.
+            self._save_directory_config(target_directory)
+            self._write_redirect_marker(previous_directory, target_directory)
+            if move_files:
+                for source, _ in pairs:
+                    source.unlink()
         self.path = target_state
         self.events_path = target_events
         self.directory_users_path = target_directory_users

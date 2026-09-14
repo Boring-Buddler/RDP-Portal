@@ -1,15 +1,15 @@
 """UI components for Kirschke RDP Workstation Portal."""
 
+from portal_app.ui.design import Colors, DesignSystem, Typography
 from portal_app.ui.main_window import MainWindow
-from portal_app.ui.design import DesignSystem, Colors, Typography
 from portal_app.ui.widgets import (
-    WorkstationTableWidget,
-    WorkstationDetailWidget,
+    ConnectButton,
+    FlagDialog,
     SessionLogWidget,
     StatusBadgeWidget,
-    FlagDialog,
-    ConnectButton,
     WorkstationCardsWidget,
+    WorkstationDetailWidget,
+    WorkstationTableWidget,
 )
 
 __all__ = [

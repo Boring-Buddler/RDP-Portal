@@ -18,3 +18,8 @@
 # Build output
 **/build/
 **/dist/
+
+# Coverage output
+**/.coverage
+**/.coverage.*
+**/htmlcov/

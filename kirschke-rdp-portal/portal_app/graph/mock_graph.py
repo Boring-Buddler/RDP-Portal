@@ -1,16 +1,15 @@
 """Mock Microsoft Graph client for Phase 1 development."""
 
-from typing import Optional
 from dataclasses import dataclass
 
 
 @dataclass
 class MockGraphClient:
     """Mock Microsoft Graph client for development."""
-    
+
     base_url: str = "https://graph.microsoft.com/v1.0"
-    
-    def get_user(self, user_id: Optional[str] = None) -> dict:
+
+    def get_user(self, user_id: str | None = None) -> dict:
         """Mock get user."""
         return {
             "id": user_id or "mock-user-id",
@@ -18,7 +17,7 @@ class MockGraphClient:
             "userPrincipalName": "user@prof-kirschke.de",
             "mail": "user@prof-kirschke.de",
         }
-    
+
     def get_users(self) -> list[dict]:
         """Mock get users."""
         return [
@@ -35,7 +34,7 @@ class MockGraphClient:
                 "mail": "user2@prof-kirschke.de",
             },
         ]
-    
+
     def get_groups(self) -> list[dict]:
         """Mock get groups."""
         return [
@@ -50,7 +49,7 @@ class MockGraphClient:
                 "description": "Administrators of RDP Portal",
             },
         ]
-    
+
     def get_group_members(self, group_id: str) -> list[dict]:
         """Mock get group members."""
         return [
@@ -60,7 +59,7 @@ class MockGraphClient:
                 "userPrincipalName": "user1@prof-kirschke.de",
             }
         ]
-    
+
     def get_sharepoint_list_items(self, site_id: str, list_name: str) -> list[dict]:
         """Mock get SharePoint list items."""
         if list_name == "RDP_Workstations":
@@ -77,16 +76,16 @@ class MockGraphClient:
                 }
             ]
         return []
-    
+
     def create_sharepoint_list_item(self, site_id: str, list_name: str, data: dict) -> dict:
         """Mock create SharePoint list item."""
         return {
             "id": "new-id",
             "fields": data,
         }
-    
+
     def update_sharepoint_list_item(
-        self, site_id: str, list_name: str, item_id: str, data: dict, etag: Optional[str] = None
+        self, site_id: str, list_name: str, item_id: str, data: dict, etag: str | None = None
     ) -> dict:
         """Mock update SharePoint list item."""
         return {

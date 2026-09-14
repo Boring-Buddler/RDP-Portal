@@ -1,38 +1,63 @@
 """Explicit confirmation and background native signout."""
+import logging
+
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QDialog, QLabel, QLineEdit, QPushButton, QVBoxLayout
 
 from portal_app.services.session_control import logoff_admin_session, logoff_own_session
+from shared.session_identity import session_username
+
+logger = logging.getLogger(__name__)
 
 
 class LogoffWorker(QThread):
     result = Signal(bool, str)
 
-    def __init__(self, arguments, administrative=False, credentials=None, parent=None):
+    def __init__(self, arguments, administrative=False, credentials=None, parent=None,
+                 hostnames=None):
         super().__init__(parent)
         self.arguments = arguments
         self.administrative = administrative
         self.credentials = credentials
+        self.hostnames = hostnames
 
     def run(self):
         try:
             operation = logoff_admin_session if self.administrative else logoff_own_session
             if self.administrative:
-                operation(*self.arguments, admin_credentials=self.credentials)
+                operation(*self.arguments, admin_credentials=self.credentials,
+                          hostnames=self.hostnames)
             else:
-                operation(*self.arguments)
+                operation(*self.arguments, hostnames=self.hostnames)
             self.result.emit(True, "Windows hat die Sitzung abgemeldet. Der Agent hat das Sitzungsende "
                              "frisch bestätigt; die Anzeige wird aktualisiert.")
         except (ValueError, RuntimeError, PermissionError) as exc:
             self.result.emit(False, str(exc))
         except Exception as exc:
+            # Everything the portal itself refuses carries its own reason above.
+            # Reaching this point means a Windows call failed, so name which one:
+            # the old text described a direct remote session call the portal no
+            # longer makes, which made "Fehler 5" unexplainable.
+            logger.exception("Abmeldung fehlgeschlagen")
             code = getattr(exc, "winerror", None)
             if code is None and exc.args and isinstance(exc.args[0], int):
                 code = exc.args[0]
-            self.result.emit(False, f"Windows-Abmeldung nicht möglich (Fehler {code or type(exc).__name__}). "
-                             "Der direkte Zugriff auf die Windows-Sitzungsverwaltung benötigt eigene "
-                             "Windows-Berechtigungen und Netzwerkzugriff; der lesbare Statusordner genügt nicht. "
-                             "Du kannst dich erneut verbinden und auf dem Zielrechner Start → Benutzer → Abmelden wählen.")
+            detail = f"{type(exc).__name__}: {exc}".strip()
+            hint = ""
+            if code == 5:
+                hint = (
+                    "\n\nFehler 5 ist „Zugriff verweigert“. Die Abmeldung läuft über den "
+                    "Agent-Kanal des Zielrechners; das Portal-Konto braucht dort Zugriff "
+                    "auf die Named Pipe (Lesekonto PortalLeser). Prüfe, ob der Agent läuft "
+                    "und ob dieser Portal-PC am Zielrechner angemeldet ist."
+                )
+            self.result.emit(
+                False,
+                f"Die Abmeldung wurde von Windows abgebrochen (Fehler {code or type(exc).__name__})."
+                f"{hint}\n\nDetails: {detail}\n\n"
+                "Alternativ kannst du dich verbinden und auf dem Zielrechner "
+                "Start → Benutzer → Abmelden wählen.",
+            )
 
 
 class SessionLogoffDialog(QDialog):
@@ -48,13 +73,14 @@ class SessionLogoffDialog(QDialog):
         administrative=False,
         expected_agent_id=None,
         status_target=None,
+        hostnames=None,
     ):
         super().__init__(parent)
         self.worker = None
         self.administrative = administrative
         self.setWindowTitle("Vom Zielrechner abmelden")
         self.setMinimumWidth(520)
-        username = session.get("full_username") or ((session.get("domain") + "\\") if session.get("domain") else "") + (session.get("username") or "")
+        username = session_username(session)
         self.arguments = (
             target,
             session["session_id"],
@@ -63,6 +89,9 @@ class SessionLogoffDialog(QDialog):
             expected_agent_id,
             status_target,
         )
+        # Zusaetzliche Hinweise darauf, dass der antwortende Agent zu dieser
+        # Maschine gehoert -- None heisst: die Zuordnung wurde von Hand gesetzt.
+        self.hostnames = hostnames
         layout = QVBoxLayout(self)
         security_note = (
             "Windows prüft die unten eingegebenen administrativen Zugangsdaten direkt am Zielrechner. "
@@ -119,7 +148,8 @@ class SessionLogoffDialog(QDialog):
         self.confirm.setEnabled(False)
         self.cancel.setEnabled(False)
         self.status.setText("Windows prüft die Sitzung und fordert die Abmeldung an …")
-        self.worker = LogoffWorker(self.arguments, self.administrative, credentials, self)
+        self.worker = LogoffWorker(self.arguments, self.administrative, credentials, self,
+                                   hostnames=self.hostnames)
         self.worker.result.connect(self._finished_request)
         self.worker.finished.connect(lambda: self.cancel.setEnabled(True))
         self.worker.start()

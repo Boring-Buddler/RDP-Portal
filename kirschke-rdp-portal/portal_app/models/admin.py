@@ -1,9 +1,9 @@
 """Admin command model for Kirschke RDP Workstation Portal."""
 
-from datetime import datetime, timedelta
-from typing import Optional
 from dataclasses import dataclass
-from shared.enums import CommandType, CommandStatus
+from datetime import datetime, timedelta
+
+from shared.enums import CommandStatus, CommandType
 from shared.schemas import AdminCommandSchema
 from shared.validation import generate_test_entra_id, generate_test_upn
 
@@ -11,27 +11,27 @@ from shared.validation import generate_test_entra_id, generate_test_upn
 @dataclass
 class AdminCommand:
     """An admin command to be executed by the workstation agent."""
-    
+
     command_id: str
     target_workstation_id: str
-    target_windows_session_id: Optional[int]
+    target_windows_session_id: int | None
     command_type: CommandType
     requested_by_object_id: str
     requested_by_upn: str
     requested_at_utc: datetime
     expires_at_utc: datetime
-    reason: Optional[str] = None
+    reason: str | None = None
     status: CommandStatus = CommandStatus.PENDING
-    executed_at_utc: Optional[datetime] = None
-    result_message: Optional[str] = None
-    
+    executed_at_utc: datetime | None = None
+    result_message: str | None = None
+
     def __post_init__(self):
         """Validate and initialize after creation."""
         if isinstance(self.command_type, str):
             self.command_type = CommandType(self.command_type)
         if isinstance(self.status, str):
             self.status = CommandStatus(self.status)
-    
+
     def to_schema(self) -> AdminCommandSchema:
         """Convert to Pydantic schema."""
         return AdminCommandSchema(
@@ -48,7 +48,7 @@ class AdminCommand:
             executed_at_utc=self.executed_at_utc,
             result_message=self.result_message,
         )
-    
+
     @classmethod
     def from_schema(cls, schema: AdminCommandSchema) -> "AdminCommand":
         """Create from Pydantic schema."""
@@ -66,31 +66,31 @@ class AdminCommand:
             executed_at_utc=schema.executed_at_utc,
             result_message=schema.result_message,
         )
-    
+
     def is_expired(self) -> bool:
         """Check if the command has expired."""
         return datetime.now() > self.expires_at_utc
-    
+
     def is_pending(self) -> bool:
         """Check if the command is still pending."""
         return self.status == CommandStatus.PENDING and not self.is_expired()
-    
+
     def can_be_executed(self) -> bool:
         """Check if the command can be executed."""
         return self.is_pending()
-    
+
     def mark_executed(self, result_message: str = "Success") -> None:
         """Mark the command as executed."""
         self.status = CommandStatus.EXECUTED
         self.executed_at_utc = datetime.now()
         self.result_message = result_message
-    
+
     def mark_failed(self, result_message: str) -> None:
         """Mark the command as failed."""
         self.status = CommandStatus.FAILED
         self.executed_at_utc = datetime.now()
         self.result_message = result_message
-    
+
     def get_display_type(self) -> str:
         """Get human-readable command type."""
         type_names = {
@@ -100,7 +100,7 @@ class AdminCommand:
             CommandType.CLEAR_MANUAL_FLAG: "Flag entfernen",
         }
         return type_names.get(self.command_type, str(self.command_type))
-    
+
     def get_display_status(self) -> str:
         """Get human-readable status."""
         status_names = {
@@ -122,12 +122,12 @@ def create_mock_admin_commands(count: int = 5) -> list[AdminCommand]:
         CommandType.LOGOFF_SESSION,
         CommandType.CLEAR_MANUAL_FLAG,
     ]
-    
+
     base_time = datetime.now() - timedelta(hours=1)
-    
+
     for i in range(count):
         command_type = command_types[i % len(command_types)]
-        
+
         command = AdminCommand(
             command_id=f"CMD-{i:05d}",
             target_workstation_id=workstation_ids[i % len(workstation_ids)],
@@ -143,7 +143,7 @@ def create_mock_admin_commands(count: int = 5) -> list[AdminCommand]:
             result_message="Erfolgreich ausgefuehrt" if i % 3 == 0 else None,
         )
         commands.append(command)
-    
+
     return commands
 
 

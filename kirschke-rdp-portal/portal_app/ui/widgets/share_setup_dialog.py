@@ -1,6 +1,14 @@
 """Per-user Windows SMB connection setup with background connection checks."""
 from PySide6.QtCore import QThread, Signal
-from PySide6.QtWidgets import QCheckBox, QDialog, QFormLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QFormLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+)
 
 from portal_app.services.share_connection import connect_share
 

@@ -7,14 +7,13 @@ constants as specified in the Kirschke_Corporate_Design_Masterprompt.
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import QApplication, QWidget
 
-
 # =============================================================================
 # Brand Colors
 # =============================================================================
 
 class BrandColors:
     """Kirschke brand colors."""
-    
+
     BLUE: QColor = QColor("#668BB0")
     CHARCOAL: QColor = QColor("#231F20")
     GREEN: QColor = QColor("#778C77")
@@ -27,7 +26,7 @@ class BrandColors:
 
 class NeutralColors:
     """Neutral colors for backgrounds, surfaces, and text."""
-    
+
     BACKGROUND: QColor = QColor("#F4F5F2")
     PAPER: QColor = QColor("#F7F7F3")
     SURFACE: QColor = QColor("#FFFFFF")
@@ -43,7 +42,7 @@ class NeutralColors:
 
 class InteractionColors:
     """Colors for interactive elements (buttons, inputs, etc.)."""
-    
+
     FOCUS: QColor = QColor("#1F5F99")
     HOVER: QColor = QColor("#91B2D6")
     ACTIVE: QColor = QColor("#6F91B8")
@@ -55,11 +54,20 @@ class InteractionColors:
 
 class StatusColors:
     """Colors for status indicators."""
-    
+
     SUCCESS: QColor = QColor("#3F6F4B")
     WARNING: QColor = QColor("#8A611F")
     ERROR: QColor = QColor("#9B2F2F")
     INFO: QColor = QColor("#1F5F99")
+    #: Your own session is holding a machine while no portal window is open.
+    ATTENTION: QColor = QColor("#CC7A29")
+    #: Somebody else has this machine -- signed in, or booked for later.  One
+    #: colour for both, because the question a person asks the dashboard is "can I
+    #: use it", and the answer is the same either way.  Placed in the middle of the
+    #: only real gap on the wheel (blue 208 deg to red 360 deg): every warm tone
+    #: tried here sat too close to ATTENTION's orange, and this hue keeps 74 deg to
+    #: its nearest neighbour where the earlier violet kept only 54 deg.
+    TAKEN: QColor = QColor("#8C4C9E")
 
 
 # =============================================================================
@@ -68,13 +76,13 @@ class StatusColors:
 
 class Colors:
     """Complete color palette combining all color categories."""
-    
+
     # Brand
     brand_blue = BrandColors.BLUE
     brand_charcoal = BrandColors.CHARCOAL
     brand_green = BrandColors.GREEN
     brand_light_blue = BrandColors.LIGHT_BLUE
-    
+
     # Neutral
     background = NeutralColors.BACKGROUND
     paper = NeutralColors.PAPER
@@ -83,17 +91,19 @@ class Colors:
     border = NeutralColors.BORDER
     text = NeutralColors.TEXT
     text_muted = NeutralColors.TEXT_MUTED
-    
+
     # Interaction
     focus = InteractionColors.FOCUS
     hover = InteractionColors.HOVER
     active = InteractionColors.ACTIVE
-    
+
     # Status
     success = StatusColors.SUCCESS
     warning = StatusColors.WARNING
     error = StatusColors.ERROR
     info = StatusColors.INFO
+    attention = StatusColors.ATTENTION
+    taken = StatusColors.TAKEN
 
 
 # =============================================================================
@@ -102,7 +112,7 @@ class Colors:
 
 class Typography:
     """Typography based on the Windows/Qt system font and scalable point sizes."""
-    
+
     # Font sizes
     FONT_SIZE_XS = 8
     FONT_SIZE_SM = 8
@@ -111,18 +121,18 @@ class Typography:
     FONT_SIZE_XL = 11
     FONT_SIZE_2XL = 13
     FONT_SIZE_3XL = 16
-    
+
     # Font weights
     FONT_WEIGHT_NORMAL = QFont.Normal
     FONT_WEIGHT_MEDIUM = QFont.Medium
     FONT_WEIGHT_SEMIBOLD = QFont.DemiBold
     FONT_WEIGHT_BOLD = QFont.Bold
-    
+
     # Line heights
     LINE_HEIGHT_TIGHT = 1.2
     LINE_HEIGHT_NORMAL = 1.5
     LINE_HEIGHT_RELAXED = 1.75
-    
+
     @staticmethod
     def get_font(size: int = FONT_SIZE_BASE, weight: int = FONT_WEIGHT_NORMAL) -> QFont:
         """Create a font with specified size and weight."""
@@ -131,42 +141,42 @@ class Typography:
         font.setPointSize(size)
         font.setWeight(weight)
         return font
-    
+
     @classmethod
     def heading_1(cls) -> QFont:
         """Heading 1 font."""
         return cls.get_font(cls.FONT_SIZE_3XL, cls.FONT_WEIGHT_BOLD)
-    
+
     @classmethod
     def heading_2(cls) -> QFont:
         """Heading 2 font."""
         return cls.get_font(cls.FONT_SIZE_2XL, cls.FONT_WEIGHT_BOLD)
-    
+
     @classmethod
     def heading_3(cls) -> QFont:
         """Heading 3 font."""
         return cls.get_font(cls.FONT_SIZE_XL, cls.FONT_WEIGHT_SEMIBOLD)
-    
+
     @classmethod
     def body(cls) -> QFont:
         """Body text font."""
         return cls.get_font(cls.FONT_SIZE_BASE, cls.FONT_WEIGHT_NORMAL)
-    
+
     @classmethod
     def body_small(cls) -> QFont:
         """Small body text font."""
         return cls.get_font(cls.FONT_SIZE_SM, cls.FONT_WEIGHT_NORMAL)
-    
+
     @classmethod
     def button(cls) -> QFont:
         """Button text font."""
         return cls.get_font(cls.FONT_SIZE_BASE, cls.FONT_WEIGHT_MEDIUM)
-    
+
     @classmethod
     def label(cls) -> QFont:
         """Label text font."""
         return cls.get_font(cls.FONT_SIZE_SM, cls.FONT_WEIGHT_NORMAL)
-    
+
     @classmethod
     def code(cls) -> QFont:
         """Code/monospace font."""
@@ -180,7 +190,7 @@ class Typography:
 
 class Spacing:
     """Spacing values in pixels."""
-    
+
     NONE = 0
     XXS = 2
     XS = 4
@@ -190,7 +200,7 @@ class Spacing:
     XL = 32
     XXL = 48
     XXXL = 64
-    
+
     @classmethod
     def get(cls, size: str) -> int:
         """Get spacing value by name."""
@@ -203,7 +213,7 @@ class Spacing:
 
 class BorderRadius:
     """Border radius values in pixels."""
-    
+
     NONE = 0
     SM = 2
     MD = 4
@@ -218,7 +228,7 @@ class BorderRadius:
 
 class Shadows:
     """Shadow definitions. Kirschke design uses minimal shadows."""
-    
+
     NONE = ()
     SM = (0, 1, 2, 0.1)  # x, y, blur, opacity
     MD = (0, 2, 4, 0.15)
@@ -231,7 +241,7 @@ class Shadows:
 
 class AgentStatusColors:
     """Colors for different agent status states."""
-    
+
     ONLINE = StatusColors.SUCCESS
     STALE = StatusColors.WARNING
     OFFLINE = NeutralColors.TEXT_MUTED
@@ -244,7 +254,7 @@ class AgentStatusColors:
 
 class SessionStateColors:
     """Colors for different session states."""
-    
+
     NONE = NeutralColors.TEXT_MUTED
     LOGON = StatusColors.INFO
     CONNECTED = StatusColors.SUCCESS
@@ -259,7 +269,7 @@ class SessionStateColors:
 
 class ManualFlagColors:
     """Colors for different manual flag types."""
-    
+
     NONE = "transparent"
     CALCULATION_RUNNING = StatusColors.INFO
     MAINTENANCE = StatusColors.WARNING
@@ -272,7 +282,7 @@ class ManualFlagColors:
 
 class StyleSheets:
     """Predefined Qt style sheets for common widgets."""
-    
+
     @classmethod
     def main_window(cls) -> str:
         """Style sheet for the main window."""
@@ -281,7 +291,7 @@ class StyleSheets:
                 background-color: {Colors.background.name()};
             }}
         """
-    
+
     @classmethod
     def central_widget(cls) -> str:
         """Style sheet for central widget."""
@@ -290,7 +300,7 @@ class StyleSheets:
                 background-color: {Colors.paper.name()};
             }}
         """
-    
+
     @classmethod
     def button_primary(cls) -> str:
         """Style sheet for primary buttons."""
@@ -318,7 +328,7 @@ class StyleSheets:
                 border-color: {Colors.border.name()};
             }}
         """
-    
+
     @classmethod
     def button_secondary(cls) -> str:
         """Style sheet for secondary buttons."""
@@ -345,7 +355,7 @@ class StyleSheets:
                 border-color: {Colors.border.name()};
             }}
         """
-    
+
     @classmethod
     def button_danger(cls) -> str:
         """Style sheet for danger buttons (e.g., logoff)."""
@@ -366,7 +376,7 @@ class StyleSheets:
                 border-color: #a02f2f;
             }}
         """
-    
+
     @classmethod
     def input_field(cls) -> str:
         """Style sheet for input fields."""
@@ -390,7 +400,7 @@ class StyleSheets:
                 color: {Colors.text_muted.name()};
             }}
         """
-    
+
     @classmethod
     def table_view(cls) -> str:
         """Style sheet for table views."""
@@ -423,7 +433,7 @@ class StyleSheets:
                 background-color: {Colors.paper.name()};
             }}
         """
-    
+
     @classmethod
     def status_badge(cls, status_color: str) -> str:
         """Style sheet for status badges."""
@@ -437,7 +447,7 @@ class StyleSheets:
                 font-weight: {Typography.FONT_WEIGHT_SEMIBOLD};
             }}
         """
-    
+
     @classmethod
     def card(cls) -> str:
         """Style sheet for card widgets."""
@@ -457,28 +467,28 @@ class StyleSheets:
 
 class DesignSystem:
     """Main design system class providing easy access to all design elements."""
-    
+
     colors = Colors
     typography = Typography
     spacing = Spacing
     border_radius = BorderRadius
     shadows = Shadows
     styles = StyleSheets
-    
+
     # Status-specific colors
     agent_status = AgentStatusColors
     session_state = SessionStateColors
     manual_flag = ManualFlagColors
-    
+
     @classmethod
     def apply_to(cls, widget: QWidget) -> None:
         """Apply base styles to a widget."""
         widget.setStyleSheet(cls.styles.central_widget())
-        
+
         # Set font
         font = cls.typography.body()
         widget.setFont(font)
-        
+
         # Set palette
         from PySide6.QtGui import QPalette
         palette = widget.palette()

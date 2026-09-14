@@ -5,7 +5,7 @@ from __future__ import annotations
 import ctypes
 import sys
 
-from PySide6.QtCore import QProcess, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QProcess, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -190,7 +190,9 @@ class AdministrationWidget(QWidget):
         if not active_directory:
             self.active_directory_status.setText(
                 "No-AD-Modus: RDP-Konten werden direkt auf dem Ziel-PC in der lokalen Gruppe "
-                "‚Remotedesktopbenutzer‘ verwaltet. Das Portal speichert keine Windows-Berechtigungen."
+                "mit der SID S-1-5-32-555 verwaltet — je nach Systemsprache "
+                "‚Remotedesktopbenutzer‘ oder ‚Remote Desktop Users‘. "
+                "Das Portal speichert keine Windows-Berechtigungen."
             )
 
     def _choose_storage_directory(self) -> None:

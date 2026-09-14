@@ -1,17 +1,16 @@
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from portal_app.models.user import MockUser
 from portal_app.models.workstation import Workstation
-from portal_app.services.local_store import LocalStore
 from portal_app.services.agent_status import LocalAgentStatusService
+from portal_app.services.local_store import LocalStore
 from portal_app.ui.main_window import MainWindow
 from shared.agent_paths import default_agent_directory, expand_directory, resolve_agent_directory
 from shared.agent_snapshot import AgentSnapshot, write_agent_snapshot
-from shared.enums import AgentStatus
-from shared.enums import SessionState
-from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from shared.enums import AgentStatus, SessionState
 
 
 def test_userprofile_default_matches_requested_sharepoint_folder(monkeypatch, tmp_path):
@@ -120,7 +119,7 @@ def test_mismatched_and_stale_files_explain_actual_cause(tmp_path):
     assert "passen nicht" in ws.agent_diagnostic
     assert "OTHER.json" in service.last_report
     assert service.last_file_count == 1 and service.last_match_count == 0
-    write_agent_snapshot(AgentSnapshot("PILOT", "target", "1", observed_at_utc=datetime.now(timezone.utc) - timedelta(minutes=10)), tmp_path)
+    write_agent_snapshot(AgentSnapshot("PILOT", "target", "1", observed_at_utc=datetime.now(UTC) - timedelta(minutes=10)), tmp_path)
     service.apply([ws])
     assert ws.agent_status == AgentStatus.OFFLINE
     assert service.last_match_count == 1
@@ -150,6 +149,7 @@ def test_different_ip_addresses_do_not_match_as_short_hostnames(tmp_path):
 
 def test_new_json_updates_dashboard_details_report_and_restart(tmp_path, monkeypatch, qtbot):
     from PySide6.QtWidgets import QApplication, QLabel
+
     from portal_app.ui.widgets.workstation_cards import WorkstationCard
 
     store = LocalStore(tmp_path / "portal-state.json")
@@ -228,6 +228,7 @@ def test_machine_fallback_paths_survive_restart_independently(tmp_path):
 
 def test_nb05_assignment_updates_real_card_and_survives_restart(tmp_path, monkeypatch, qtbot):
     from PySide6.QtWidgets import QLabel
+
     from portal_app.ui.widgets.workstation_cards import WorkstationCard
 
     store = LocalStore(tmp_path / "portal-state.json")
@@ -236,7 +237,7 @@ def test_nb05_assignment_updates_real_card_and_survives_restart(tmp_path, monkey
     store.set_agent_status_directory(directory)
     write_agent_snapshot(AgentSnapshot("NB05", "NB05", "1.0.0"), directory)
     for old_id in ("NB05-PC12", "NB05-PC12-2"):
-        write_agent_snapshot(AgentSnapshot(old_id, "NB05", "1.0.0", observed_at_utc=datetime.now(timezone.utc) - timedelta(days=1)), directory)
+        write_agent_snapshot(AgentSnapshot(old_id, "NB05", "1.0.0", observed_at_utc=datetime.now(UTC) - timedelta(days=1)), directory)
     monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
     window = MainWindow(automatic_live_status=False)
     qtbot.addWidget(window)
