@@ -121,6 +121,9 @@ class MainWindow(QMainWindow):
         # Set by a non-blocking poll whose reservation change still needs a view
         # refresh once the background folder scan delivers.
         self._reservation_change_pending = False
+        # Gesetzt, wenn der eingestellte Speicherort nicht nutzbar war. Wird
+        # gezeigt, sobald ein Fenster da ist, an dem ein Dialog haengen kann.
+        self._storage_fallback_notice = ""
         self._load_data()
         self._create_ui()
         self._update_storage_status("Gemeinsamer Speicher bereit")
@@ -129,6 +132,8 @@ class MainWindow(QMainWindow):
         # A crash or "End task" skips the cleanup in closeEvent, and the leftover
         # .rdp files name the target machine and the user.
         self._cleanup_stale_rdp_files()
+        if self._storage_fallback_notice:
+            QTimer.singleShot(0, self._show_storage_fallback_notice)
         self.rdp_poll_timer = QTimer(self)
         self.rdp_poll_timer.setInterval(1500)
         self.rdp_poll_timer.timeout.connect(self._poll_rdp_sessions)
@@ -157,8 +162,61 @@ class MainWindow(QMainWindow):
         self._saved_workstations = deepcopy(self.workstations)
         self._saved_user = deepcopy(self.current_user)
         if not self.store.path.exists():
-            self.store.save(self._saved_workstations, self._saved_user, self.reservations, self.store.theme_mode)
-        self.store.initialize_event_log()
+            self._save_initial_state()
+        try:
+            self.store.initialize_event_log()
+        except OSError as exc:
+            # Das Ereignisprotokoll legt seinen Ordner selbst an und war damit der
+            # zweite Weg, auf dem ein unerreichbarer Speicherort das Portal noch
+            # vor dem ersten Fenster beendet hat. Ohne Protokoll laesst sich
+            # arbeiten; ohne Portal nicht.
+            logger.warning("Ereignisprotokoll nicht nutzbar: %s", exc)
+
+    def _save_initial_state(self) -> None:
+        """Write the first state file, and survive a storage location that is gone.
+
+        The default location sits inside the synchronised SharePoint folder. On a
+        PC where that folder does not exist, creating it walks all the way up to
+        C:/Users and is refused there -- which ended the portal with an unhandled
+        traceback before any window appeared, on a machine that was otherwise
+        perfectly able to run it.
+
+        Falling back to a local folder keeps the portal usable. It also stops the
+        state from being shared, so the reason is reported rather than left for
+        somebody to notice when a colleague's machines fail to show up.
+        """
+        try:
+            self.store.save(
+                self._saved_workstations, self._saved_user, self.reservations, self.store.theme_mode
+            )
+            return
+        except OSError as exc:
+            intended = self.store.directory
+            logger.warning("Speicherort %s nicht nutzbar: %s", intended, exc)
+        try:
+            local = self.store.use_local_fallback()
+            self.store.save(
+                self._saved_workstations, self._saved_user, self.reservations, self.store.theme_mode
+            )
+        except OSError as exc:
+            self._storage_fallback_notice = (
+                "Das Portal konnte keinen Speicherort anlegen. Es startet, merkt "
+                f"sich aber nichts.\n\nZuletzt versucht: {self.store.directory}\n{exc}"
+            )
+            return
+        self._storage_fallback_notice = (
+            f"Der eingestellte Speicherort ist auf diesem PC nicht erreichbar:\n{intended}\n\n"
+            f"Das Portal arbeitet vorerst lokal unter:\n{local}\n\n"
+            "Maschinen und Reservierungen werden dabei NICHT mit den anderen "
+            "Portalen geteilt. Den Speicherort im Admin-Bereich korrigieren, sobald "
+            "der gemeinsame Ordner verfügbar ist."
+        )
+
+    def _show_storage_fallback_notice(self) -> None:
+        """Say once that the portal is not writing where it was configured to."""
+        notice, self._storage_fallback_notice = self._storage_fallback_notice, ""
+        if notice:
+            QMessageBox.warning(self, "Speicherort nicht erreichbar", notice)
 
     def _apply_local_agent_fallbacks(self) -> None:
         """Attach client-local fallback paths to freshly loaded shared machines."""

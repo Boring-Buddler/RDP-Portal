@@ -15,7 +15,13 @@ def main() -> int:
         if "--check" in sys.argv:
             return 0
         powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-        args = [str(powershell), "-NoProfile", "-STA", "-File", str(script), "-SourceDirectory", str(payload)]
+        # -ExecutionPolicy Bypass gilt nur fuer diesen einen Prozess und aendert
+        # die Systemrichtlinie nicht. Ohne das scheitert das Setup auf jedem PC,
+        # dessen Richtlinie das Laden von Skripten verbietet -- mit einer Meldung
+        # ueber about_Execution_Policies, die wie ein Rechteproblem aussieht und
+        # auch als Administrator unveraendert wiederkommt.
+        args = [str(powershell), "-NoProfile", "-ExecutionPolicy", "Bypass", "-STA",
+                "-File", str(script), "-SourceDirectory", str(payload)]
         if "--uninstall" in sys.argv:
             args.append("-Uninstall")
         result = subprocess.run(args, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)

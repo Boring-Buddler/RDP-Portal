@@ -13,10 +13,17 @@ from shared.agent_snapshot import AgentSnapshot, write_agent_snapshot
 from shared.enums import AgentStatus, SessionState
 
 
-def test_userprofile_default_matches_requested_sharepoint_folder(monkeypatch, tmp_path):
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    expected = tmp_path / "Prof. Dr.-Ing. Dieter Kirschke GmbH & Co. KG" / "IB Kirschke - Dokumente" / "90" / "_K.I. Strategie" / "Testprogramme" / "RDP-Portal" / "remote" / "agenten-status"
+def test_the_default_status_folder_is_local(monkeypatch, tmp_path):
+    """Frueher zeigte er in einen SharePoint-Ordner, der nur auf einem PC existierte."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lokal"))
+    expected = tmp_path / "lokal" / "KirschkeRDPPortal" / "daten" / "agenten-status"
+
     assert default_agent_directory() == expected
+
+
+def test_environment_variables_in_a_configured_path_still_expand(monkeypatch, tmp_path):
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
     assert expand_directory("%userprofile%/status") == tmp_path / "status"
 
 

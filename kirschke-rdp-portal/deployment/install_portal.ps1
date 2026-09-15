@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([string]$SourceDirectory, [switch]$Uninstall, [switch]$NoUi)
 $ErrorActionPreference = 'Stop'
 $installDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\KirschkeRDPPortal'
@@ -56,12 +56,12 @@ if ($NoUi) {
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'Kirschke RDP Portal – Setup'
+$form.Text = "Kirschke RDP Portal $portalVersion – Setup"
 $form.ClientSize = New-Object System.Drawing.Size(570, 220)
 $form.StartPosition = 'CenterScreen'
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
 $label = New-Object System.Windows.Forms.Label
-$label.Text = "Portal 0.2.12 für diesen Benutzer installieren.`n`nAlte installierte Programmdateien werden vor der Neuinstallation entfernt. Maschinen, Reservierungen und Einstellungen bleiben erhalten.`n`nZiel: $installDirectory"
+$label.Text = "Portal $portalVersion für diesen Benutzer installieren.`n`nAlte installierte Programmdateien werden vor der Neuinstallation entfernt. Maschinen, Reservierungen und Einstellungen bleiben erhalten.`n`nZiel: $installDirectory"
 $label.Location = New-Object System.Drawing.Point(20, 20)
 $label.Size = New-Object System.Drawing.Size(530, 140)
 $form.Controls.Add($label)

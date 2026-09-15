@@ -10,6 +10,29 @@ imports it from here.
 
 from __future__ import annotations
 
+# 0.6.1: both setup windows name the version they are about to install. The
+# portal setup had the number hardcoded and it had gone three versions stale --
+# it offered to install 0.2.12 while 0.5.x sat in the package. Along the way:
+# every PowerShell script with German text now carries a byte order mark, without
+# which Windows PowerShell 5.1 reads the file as ANSI and mangles it -- an en dash
+# then even breaks the parser.
+# 0.6.0: the SharePoint folder is no longer the default storage location. It was
+# a guess about how one person's OneDrive is laid out, and it failed differently
+# on every PC that did not match -- refused halfway up the profile, or refused
+# inside a synced library the account may not write to. The portal now stores
+# locally unless a shared folder is set in the admin area, and an installation
+# that already keeps its state in the old folder keeps finding it there.
+# 0.5.5: the shared storage folder is used only when the synchronised library is
+# actually present. The profile part always came from %USERPROFILE%; the folder
+# chain under it was the assumption that broke. Creating it anyway produced a
+# look-alike that never syncs, so everyone would believe they share a state that
+# in truth exists once per machine. Without the library the portal stays local.
+# 0.5.4: two things that made the portal unusable on a colleague's PC. The setup
+# started PowerShell without -ExecutionPolicy Bypass, so a machine whose policy
+# forbids scripts refused to install -- as administrator too, with a message that
+# reads like a rights problem. And the first run died with an unhandled traceback
+# when the configured storage folder could not be created: it now falls back to a
+# local folder and says so, instead of never showing a window.
 # 0.5.3: your own session without a window is now blue/orange dashed instead of
 # solid orange, so the orange dash means one thing everywhere -- somebody holds
 # the machine without being connected -- while the base colour says who. Border
@@ -75,7 +98,7 @@ from __future__ import annotations
 # 0.3.1: one machine state decides colour and buttons; orange marks an own session
 # holding a machine with no portal window, violet a foreign reservation.
 # 0.3.0: typed Windows identity, SID-based session ownership, one button matrix.
-PORTAL_VERSION = "0.5.3"
+PORTAL_VERSION = "0.6.1"
 # 1.4.0: every reported session carries its account SID, so the portal no longer
 # has to resolve Entra names against a cache that may not know them.
 AGENT_VERSION = "1.5.0"

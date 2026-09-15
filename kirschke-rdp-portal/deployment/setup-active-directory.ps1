@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Prepares Active Directory groups for the Kirschke RDP Portal.
 

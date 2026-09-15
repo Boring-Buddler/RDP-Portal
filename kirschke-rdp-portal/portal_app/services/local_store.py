@@ -12,7 +12,13 @@ from portal_app.models.reservation import Reservation
 from portal_app.models.session import SessionEvent
 from portal_app.models.user import MockUser
 from portal_app.models.workstation import Workstation
-from shared.agent_paths import default_portal_directory, expand_directory, resolve_agent_directory
+from shared.agent_paths import (
+    default_portal_directory,
+    expand_directory,
+    legacy_portal_directory,
+    local_app_directory,
+    resolve_agent_directory,
+)
 from shared.file_io import file_lock, write_json_atomic
 from shared.schemas import SessionEventSchema, WorkstationSchema
 
@@ -62,6 +68,37 @@ class LocalStore:
         return default_portal_directory()
 
     @staticmethod
+    def local_directory() -> Path:
+        """The storage location on this PC itself.
+
+        Used in two situations: as the regular location on a PC where the
+        synchronised library is not present at all, and as the emergency exit
+        when the configured location turns out to be unwritable.
+
+        %LOCALAPPDATA% is always a real local disk, never a network path --
+        which is the point. A fallback that could itself be unreachable would
+        only move the problem somewhere else.
+        """
+        return local_app_directory() / "lokal"
+
+    def use_local_fallback(self) -> Path:
+        """Move this store to the local directory and return where it now writes.
+
+        Deliberately not silent for the caller: machines and reservations stop
+        being shared with the other portals until the location is corrected, and
+        that has to be said rather than discovered.
+        """
+        directory = self.local_directory()
+        directory.mkdir(parents=True, exist_ok=True)
+        self.path = directory / "portal-state.json"
+        self.events_path = self.path.parent / "portal-events.jsonl"
+        self.directory_users_path = self.path.parent / "portal-directory-users.json"
+        self._state_signature = None
+        self._events_signature = None
+        self._directory_users_signature = None
+        return directory
+
+    @staticmethod
     def _config_path() -> Path:
         local_data = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.cwd())
         return Path(local_data) / "KirschkeRDPPortal" / "storage-config.json"
@@ -75,13 +112,23 @@ class LocalStore:
         except (OSError, ValueError, TypeError, AttributeError):
             pass
         # If the local configuration was removed, a redirect marker in the
-        # original SharePoint folder still makes a previous move recoverable.
-        marker = self.default_directory() / "storage-location.json"
+        # folder this portal used to default to still makes a previous move
+        # recoverable.
+        marker = legacy_portal_directory() / "storage-location.json"
         try:
             location = json.loads(marker.read_text(encoding="utf-8")).get("storage_directory")
             if location:
                 return expand_directory(location)
         except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        # Eine Installation, die ihren Stand bereits im frueheren Standardordner
+        # fuehrt, muss ihn dort weiter finden. Erkannt wird das an der Datei, nicht
+        # am Ordner: ein leerer Ordner beweist nichts, und angelegt wird er nie.
+        legacy = legacy_portal_directory()
+        try:
+            if (legacy / "portal-state.json").is_file():
+                return legacy
+        except OSError:
             pass
         return self.default_directory()
 

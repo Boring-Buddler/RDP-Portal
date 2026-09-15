@@ -13,10 +13,90 @@ Das Testpaket vollständig in einen neuen Ordner entpacken. Das alte Portal schl
 und im neuen Ordner die Datei `Client\Kirschke-RDP-Portal.exe` starten.
 Den gesamten Client-Ordner zusammenlassen. Python ist auf dem Test-PC nicht erforderlich.
 Das vorhandene Inventar bleibt erhalten.
-Im Kopf des geöffneten Portals muss **TEST 0.5.3** stehen. Falls dort eine ältere
+Im Kopf des geöffneten Portals muss **TEST 0.6.1** stehen. Falls dort eine ältere
 Version steht, die Verknüpfung auf die EXE im frisch entpackten Client-Ordner ändern.
 
 Aus dem Quellcode: im Projektordner `python3.13 -m portal_app.app` ausführen.
+
+## Update 0.6.1: Versionsnummer in den Installationsfenstern
+
+Der Agent bleibt bei 1.5.0.
+
+Beide Setups nennen jetzt die Version, die sie installieren — im Fenstertitel
+und im Text. Im Portal-Setup stand die Nummer fest im Quelltext und war drei
+Versionen alt: Es bot an, „Portal 0.2.12“ zu installieren, während 0.5.x
+im Paket lag. Sie kommt jetzt aus derselben Quelle wie überall sonst.
+
+Nebenbei behoben: Die PowerShell-Skripte mit deutschem Text tragen jetzt alle
+eine Byte-Order-Marke. Ohne sie liest Windows PowerShell 5.1 die Datei als ANSI
+und zeigt Umlaute verstümmelt an — bei einem Gedankenstrich bricht das Skript
+sogar ab. Betroffen waren unter anderem `Statusfreigabe-einrichten.ps1` und die
+AD-Einrichtung.
+
+## Update 0.6.0: der SharePoint-Ordner ist kein Standard mehr
+
+Der Agent bleibt bei 1.5.0.
+
+Das Portal speichert jetzt **standardmäßig lokal** unter
+`%LOCALAPPDATA%\KirschkeRDPPortal\daten`. Der frühere Standard war ein fest
+verdrahteter Pfad in einer synchronisierten SharePoint-Bibliothek — also eine
+Annahme darüber, wie das OneDrive einer bestimmten Person aufgebaut ist. Auf
+jedem PC, der nicht dazu passte, scheiterte sie anders: einmal oben im
+Profilordner, einmal innerhalb der Bibliothek an einem Unterordner, in den das
+Konto nicht schreiben darf.
+
+**Ein gemeinsamer Ordner ist jetzt eine bewusste Einstellung** im Admin-Bereich
+unter *Speicherort*, keine Vermutung mehr.
+
+**Bestehende Installationen verlieren nichts.** Liegt im alten Ordner bereits
+eine `portal-state.json`, wird sie weiter verwendet. Erkannt wird das an der
+Datei, nicht am Ordner — ein leerer Ordner beweist nichts, und angelegt wird er
+nie.
+
+Der Standardordner für Agent-Statusdateien liegt aus demselben Grund jetzt
+ebenfalls lokal. Je Maschine eingestellte Pfade sind davon unberührt.
+
+## Update 0.5.5: Speicherort nur dort, wo er wirklich liegt
+
+Der Agent bleibt bei 1.5.0.
+
+Der gemeinsame Speicherort wird jetzt **nur noch verwendet, wenn die
+synchronisierte Dokumentbibliothek auf dem PC tatsächlich vorhanden ist**.
+Fehlt sie, arbeitet das Portal von vornherein lokal unter `%LOCALAPPDATA%`.
+
+Der Profilteil des Pfades kam schon immer aus `%USERPROFILE%` — die Annahme,
+die brach, war die Ordnerkette darunter. Legte das Portal sie trotzdem an,
+entstand ein **Abbild, das nie synchronisiert**: Jeder hätte geglaubt, einen
+gemeinsamen Stand zu haben, den es in Wahrheit einmal pro Rechner gab. Das ist
+schlimmer als gar kein gemeinsamer Ordner, deshalb wird er nicht mehr angelegt.
+
+Ein im Admin-Bereich ausdrücklich eingestellter Speicherort hat weiterhin
+Vorrang vor beidem.
+
+## Update 0.5.4: Setup und Erststart auf fremden PCs
+
+Der Agent bleibt bei 1.5.0. **Dieses Update ist für die Verteilung wichtig** —
+ohne es lässt sich das Portal auf manchen PCs gar nicht installieren.
+
+**Setup lief nicht: „Die Ausführung von Skripts ist deaktiviert“**
+Das Setup startete PowerShell ohne `-ExecutionPolicy Bypass`. Auf einem PC,
+dessen Richtlinie das Laden von Skripten verbietet, brach es deshalb ab — auch
+als Administrator, denn Adminrechte ändern an der Richtlinie nichts. Der
+Schalter gilt nur für diesen einen Vorgang; die Systemrichtlinie bleibt
+unverändert. Dasselbe galt für `Install-Agent.cmd` und ist dort ebenfalls
+behoben.
+
+**Erststart stürzte ab: „[WinError 5] Zugriff verweigert: C:\\Users\\...“**
+Der Speicherort liegt standardmäßig im synchronisierten SharePoint-Ordner. Auf
+einem PC, auf dem dieser Ordner fehlt, versuchte das Portal ihn anzulegen,
+arbeitete sich bis `C:\\Users` hoch und wurde dort abgewiesen — mit einem
+ungefangenen Fehler, bevor ein Fenster erschien.
+
+Jetzt weicht das Portal auf einen lokalen Ordner unter `%LOCALAPPDATA%` aus und
+**sagt beim Start, dass es das getan hat**. Wichtig dabei: In diesem Zustand
+werden Maschinen und Reservierungen **nicht** mit den anderen Portalen geteilt.
+Den Speicherort im Admin-Bereich korrigieren, sobald der gemeinsame Ordner
+verfügbar ist.
 
 ## Update 0.5.3: 2K und 4K, und ein einheitlicher Strich
 

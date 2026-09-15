@@ -661,7 +661,7 @@ class InstallerWindow:
     def __init__(self, payload: Path) -> None:
         self.payload = payload
         self.root = Tk()
-        self.root.title("Kirschke RDP-Agent installieren")
+        self.root.title(f"Kirschke RDP-Agent {AGENT_VERSION} installieren")
         self.root.geometry("680x635")
         self.root.resizable(False, False)
         # An update must not silently rewrite what the previous run configured.
@@ -709,7 +709,7 @@ class InstallerWindow:
         frame.pack(fill="both", expand=True)
         ttk.Label(
             frame,
-            text="RDP-Agent auf diesem Ziel-PC einrichten",
+            text=f"RDP-Agent {AGENT_VERSION} auf diesem Ziel-PC einrichten",
             font=("Segoe UI", 15, "bold"),
         ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
         introduction = (

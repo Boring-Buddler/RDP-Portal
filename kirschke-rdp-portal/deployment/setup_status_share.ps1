@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ExpectedComputerName = 'Remote-Ettlingen',
     [string]$StatusDirectory = 'C:\RDP-Portal-Daten\agenten-status',
