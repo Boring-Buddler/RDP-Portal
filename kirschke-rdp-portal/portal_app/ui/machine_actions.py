@@ -41,12 +41,11 @@ from shared.enums import AgentStatus, ManualFlagType
 from shared.identity import IdentityMatch
 from shared.session_identity import is_console_session
 
-#: Why the normal logoff is unavailable for a session the agent reports as local.
+#: Why a session the agent reports as local needs a detour before it can be ended.
 CONSOLE_LOGOFF_HINT = (
-    "Lokale Konsolensitzung: Windows kann dem Agenten keinen anfragenden "
-    "RDP-Client bestätigen, deshalb ist hier nur die Abmeldung am Gerät oder die "
-    "administrative Abmeldung möglich. Übernimm die Sitzung per RDP und melde "
-    "dich dort ab."
+    "Das ist eine lokale Konsolensitzung am Gerät selbst. Windows kann dem Agenten "
+    "für sie keinen anfragenden Rechner bestätigen, deshalb lässt er die normale "
+    "Abmeldung nicht zu."
 )
 
 #: Why the ownership label is a hint rather than a statement of fact.
@@ -310,11 +309,18 @@ def describe_actions(
     candidates = logoff_candidates(own)
     console_only = bool(own) and all(is_console_session(item) for item in own)
     logoff_visible = bool(own) and not workstation.reservation_block_reason
-    logoff_enabled = logoff_visible and bool(candidates) and not console_only
+    # A console session stays clickable: the agent still refuses it directly, but
+    # the portal can offer the takeover that removes the obstacle, and the
+    # administrative route. A disabled button could offer neither.
+    logoff_enabled = logoff_visible and bool(candidates)
     if not logoff_visible:
         logoff_tooltip = ""
     elif console_only:
-        logoff_tooltip = CONSOLE_LOGOFF_HINT
+        logoff_tooltip = (
+            CONSOLE_LOGOFF_HINT
+            + " Das Portal bietet dir hier zwei Wege an: die Sitzung kurz per RDP "
+            "übernehmen und dann abmelden, oder administrativ abmelden."
+        )
     elif not candidates:
         logoff_tooltip = (
             "Der Agent hat für diese Sitzung noch keinen Anmeldezeitpunkt gemeldet. "

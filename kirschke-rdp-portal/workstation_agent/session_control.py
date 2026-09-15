@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+import socket
 import threading
 from datetime import UTC, datetime
 from ipaddress import ip_address
 
 from shared.session_identity import ACTIVE_SESSION_STATES
 from workstation_agent.wts.monitor import WTSMonitor, WTSSessionInfo
+
+logger = logging.getLogger(__name__)
 
 #: Kept as a module name for readability; the rule itself lives in shared so the
 #: agent's authorization and the portal's display cannot drift apart.
@@ -21,6 +25,54 @@ def _machine_aliases(value: str | None) -> set[str]:
     except ValueError:
         pass
     return {value, value.split(".", 1)[0]} if value else set()
+
+
+def _resolved_aliases(value: str | None, timeout: float = 2.0) -> set[str]:
+    """Plain aliases of one host identifier, widened by a bounded name lookup.
+
+    The same machine reaches the agent under identifiers that do not look alike:
+    Windows attests the SMB client as an IPv4 address, while WTS reports the RDP
+    client of the very same machine as a computer name plus an IPv6 link-local
+    address -- RDP went over IPv6, SMB over IPv4.  Comparing the strings alone
+    refuses a logoff coming from exactly the right computer.
+
+    The lookup runs on a daemon thread with a hard time limit: this executes
+    inside the status pipe handler, which serves one client at a time, so every
+    second spent here is a second in which no other request is answered.  A slow
+    or absent DNS must cost a refusal, never a stuck agent.
+    """
+    aliases = _machine_aliases(value)
+    if not value or not aliases:
+        return aliases
+    # The worker publishes its result in a single assignment instead of filling a
+    # shared set.  On timeout the thread keeps running, and reading a set that is
+    # still being updated can fail mid-iteration -- exactly in the slow-DNS case
+    # the time limit exists for.
+    result: list[set[str]] = [set()]
+
+    def lookup() -> None:
+        found: set[str] = set()
+        try:
+            ip_address(str(value).strip().split("%", 1)[0])
+        except ValueError:
+            try:
+                for entry in socket.getaddrinfo(value, None):
+                    found.update(_machine_aliases(str(entry[4][0])))
+            except OSError:
+                return
+        else:
+            try:
+                name, extra_names, addresses = socket.gethostbyaddr(str(value).strip())
+            except OSError:
+                return
+            for item in (name, *extra_names, *addresses):
+                found.update(_machine_aliases(item))
+        result[0] = found
+
+    worker = threading.Thread(target=lookup, daemon=True, name="agent-host-lookup")
+    worker.start()
+    worker.join(timeout)
+    return aliases | result[0]
 
 
 def _parse_time(value: object, label: str) -> datetime:
@@ -98,13 +150,39 @@ class AgentSessionController:
                 "anfragenden RDP-Client bestätigen; möglich sind nur die Abmeldung "
                 "am Gerät selbst oder die administrative Abmeldung."
             )
-        reported_client = _machine_aliases(session.client_name) | _machine_aliases(
-            getattr(session, "client_address", None)
+        client_address = getattr(session, "client_address", None)
+        reported_client = _machine_aliases(session.client_name) | _machine_aliases(client_address)
+        requester_aliases = _machine_aliases(client_computer)
+        if reported_client & requester_aliases:
+            return
+        # Same machine, different spellings: resolve names to addresses and back
+        # before refusing. Only on this path, so a plain match stays instant.
+        widened_session = (
+            reported_client
+            | _resolved_aliases(session.client_name)
+            | _resolved_aliases(client_address)
         )
-        if not (reported_client & _machine_aliases(client_computer)):
-            raise PermissionError(
-                "Der anfragende Rechner stimmt nicht mit dem vom Agenten gemeldeten RDP-Client überein."
+        widened_requester = requester_aliases | _resolved_aliases(client_computer)
+        if widened_session & widened_requester:
+            logger.info(
+                "Anfragender Rechner %s und RDP-Client %s der Sitzung wurden über "
+                "Namensauflösung als derselbe Rechner erkannt.",
+                client_computer,
+                session.client_name or client_address,
             )
+            return
+        # Naming both sides is the difference between a rule someone can follow
+        # and a dead end: without them the only way to understand the refusal
+        # was to read this file.
+        raise PermissionError(
+            "Die Abmeldung ist nur von dem Rechner aus möglich, der diese Sitzung "
+            "aufgebaut hat.\n\n"
+            f"Anfrage kam von: {client_computer or 'unbekannt'}\n"
+            f"Sitzung wurde aufgebaut von: {session.client_name or '–'}"
+            f"{' / ' + client_address if client_address else ''}\n\n"
+            "Verwende das Portal auf diesem Rechner, melde dich in der Sitzung "
+            "selbst ab, oder nimm die administrative Abmeldung."
+        )
 
     def handle(self, command: dict, client_computer: str, client_is_admin: bool) -> dict:
         if not isinstance(command, dict) or command.get("protocol") != "LOGOFF/1":

@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QLineEdit
 
 from portal_app.models.user import MockUser
 from portal_app.models.workstation import Workstation
+from portal_app.services import session_control
 from portal_app.services.session_control import logoff_admin_session, logoff_own_session
 from portal_app.ui.widgets.session_logoff_dialog import SessionLogoffDialog
 from portal_app.ui.widgets.workstation_cards import WorkstationCard
@@ -248,6 +249,65 @@ def test_the_reported_sid_wins_over_a_name_that_would_have_matched(native):
     native.agent_logoff.assert_not_called()
 
 
+def test_a_claimed_account_passes_the_portal_check(native):
+    """Eine Person mit zwei Windows-Konten soll ihre eigene Sitzung beenden koennen."""
+    native.session["sid"] = "somebody-else"
+
+    logoff_own_session(
+        "REMOTE", 3, "AzureAD\\tester", "2026-09-10T08:00:00+00:00", "A",
+        claimed_accounts=["AzureAD\\tester"],
+    )
+
+    native.agent_logoff.assert_called_once()
+
+
+def test_a_claim_only_covers_the_accounts_actually_entered(native):
+    native.session["sid"] = "somebody-else"
+
+    with pytest.raises(ValueError, match="Windows-Konto"):
+        logoff_own_session(
+            "REMOTE", 3, "AzureAD\\tester", "2026-09-10T08:00:00+00:00", "A",
+            claimed_accounts=["NB12KI\\Codex"],
+        )
+
+    native.agent_logoff.assert_not_called()
+
+
+def test_without_a_claim_a_foreign_sid_still_stops_the_logoff(native):
+    """Die Lockerung gilt nur, wenn jemand das Konto ausdruecklich eingetragen hat."""
+    native.session["sid"] = "somebody-else"
+
+    with pytest.raises(ValueError, match="Windows-Konto"):
+        call_logoff()
+
+    native.agent_logoff.assert_not_called()
+
+
+def test_a_claim_does_not_reach_a_console_session(native):
+    """Die Konsolenregel steht vor der Besitzpruefung und bleibt unberuehrt."""
+    native.session["sid"] = "somebody-else"
+    native.session["is_console_session"] = True
+
+    with pytest.raises(ValueError, match="Konsolensitzung"):
+        logoff_own_session(
+            "REMOTE", 3, "AzureAD\\tester", "2026-09-10T08:00:00+00:00", "A",
+            claimed_accounts=["AzureAD\\tester"],
+        )
+
+    native.agent_logoff.assert_not_called()
+
+
+def test_a_claim_helps_when_the_agent_reports_no_sid_at_all(native):
+    """Alter Agent plus eingetragenes Konto: die Namensaufloesung entfaellt."""
+    logoff_own_session(
+        "REMOTE", 3, "AzureAD\\tester", "2026-09-10T08:00:00+00:00", "A",
+        claimed_accounts=["AzureAD\\tester"],
+    )
+
+    native.lookup.assert_not_called()
+    native.agent_logoff.assert_called_once()
+
+
 def test_a_console_session_is_refused_with_its_own_reason(native):
     """The agent would refuse too, but blame a mismatched RDP client for it."""
     native.session["is_console_session"] = True
@@ -341,6 +401,46 @@ def test_logoff_is_not_reported_until_agent_confirms_end(native):
         call_logoff()
 
 
+def test_a_missing_agent_answer_is_checked_instead_of_reported_as_failure(native, monkeypatch):
+    """Windows baut die Sitzung ab, bevor der Agent antwortet -- das ist kein Fehler.
+
+    Genau dieser Fall meldete frueher "Fehler TimeoutError", obwohl die Sitzung
+    beendet war.
+    """
+    monkeypatch.setattr("portal_app.services.session_control.time.sleep", lambda _s: None)
+    native.agent_logoff.side_effect = TimeoutError("Keine rechtzeitige Antwort vom Agenten.")
+
+    call_logoff()
+
+    assert native.request.call_count == 3
+
+
+def test_a_missing_answer_on_a_surviving_session_says_it_was_not_confirmed(native, monkeypatch):
+    monkeypatch.setattr("portal_app.services.session_control.time.sleep", lambda _s: None)
+    native.agent_logoff.side_effect = TimeoutError("Keine rechtzeitige Antwort vom Agenten.")
+    native.request.side_effect = [(native.snapshot, 2)] * 12
+
+    with pytest.raises(RuntimeError, match="nicht rechtzeitig beantwortet"):
+        call_logoff()
+
+    assert native.request.call_count == 2 + session_control.UNANSWERED_CONFIRM_ATTEMPTS
+
+
+def test_the_logoff_request_waits_longer_than_a_status_query(monkeypatch):
+    """WTSLogoffSession laeuft mit bWait=TRUE, die Antwort kommt erst danach."""
+    import shared.status_pipe as status_pipe
+
+    exchange = Mock(return_value={"ok": True, "message": "abgemeldet"})
+    monkeypatch.setattr(status_pipe, "_exchange", exchange)
+
+    status_pipe.request_agent_logoff(
+        "REMOTE", 3, "AzureAD\\tester", "2026-09-10T08:00:00+00:00", "AzureAD\\tester", "A"
+    )
+
+    assert exchange.call_args.kwargs["response_timeout_ms"] == status_pipe.LOGOFF_TIMEOUT_MS
+    assert status_pipe.LOGOFF_TIMEOUT_MS > status_pipe.DEFAULT_TIMEOUT_MS
+
+
 def test_isolated_helper_waits_for_logoff_and_closes_handle(monkeypatch):
     import win32ts
 
@@ -426,7 +526,7 @@ def test_agent_logs_off_exact_owner_session_from_reported_rdp_client(agent_contr
 
 def test_agent_rejects_owner_from_another_client_or_with_replayed_request(agent_controller):
     controller, monitor, _ = agent_controller
-    with pytest.raises(PermissionError, match="RDP-Client"):
+    with pytest.raises(PermissionError, match="Anfrage kam von: OTHER-PC"):
         controller.handle(agent_command(), "OTHER-PC", False)
     monitor.logoff_session.assert_not_called()
     with pytest.raises(PermissionError, match="bereits verarbeitet"):

@@ -382,14 +382,20 @@ def test_logoff_is_offered_for_an_own_rdp_session() -> None:
     assert result.logoff_enabled
 
 
-def test_logoff_is_shown_but_refused_for_an_own_console_session() -> None:
-    """Sichtbar, damit der Zustand erklaert wird; deaktiviert, weil der Agent ablehnt."""
+def test_a_console_session_stays_clickable_and_explains_the_detour() -> None:
+    """Der Agent lehnt sie direkt ab, aber das Portal kennt zwei Umwege dorthin.
+
+    Frueher war der Button deaktiviert -- dann liess sich weder die Uebernahme noch
+    die administrative Abmeldung von hier aus anstossen.
+    """
     result = actions(machine(sessions=[session(console=True)]))
 
     assert result.logoff_visible
-    assert not result.logoff_enabled
+    assert result.logoff_enabled
     assert result.owns_console_session
     assert "Konsolensitzung" in result.logoff_tooltip
+    assert "übernehmen" in result.logoff_tooltip
+    assert "administrativ" in result.logoff_tooltip.lower()
 
 
 def test_logoff_is_hidden_for_a_foreign_session() -> None:

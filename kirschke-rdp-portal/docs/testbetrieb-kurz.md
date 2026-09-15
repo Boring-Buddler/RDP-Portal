@@ -13,10 +13,42 @@ Das Testpaket vollständig in einen neuen Ordner entpacken. Das alte Portal schl
 und im neuen Ordner die Datei `Client\Kirschke-RDP-Portal.exe` starten.
 Den gesamten Client-Ordner zusammenlassen. Python ist auf dem Test-PC nicht erforderlich.
 Das vorhandene Inventar bleibt erhalten.
-Im Kopf des geöffneten Portals muss **TEST 0.2.12** stehen. Falls dort eine ältere
+Im Kopf des geöffneten Portals muss **TEST 0.3.10** stehen. Falls dort eine ältere
 Version steht, die Verknüpfung auf die EXE im frisch entpackten Client-Ordner ändern.
 
 Aus dem Quellcode: im Projektordner `python3.13 -m portal_app.app` ausführen.
+
+## Update 0.3.10 / Agent 1.4.3: Konsolensitzung abmelden, eigene Konten, Agent-Version
+
+**Agent mit aktualisieren.** Portal 0.3.10 erwartet Agent 1.4.3. Ältere Agenten
+melden keine Windows-SID und kennzeichnen Konsolensitzungen nicht; das Abmelden
+scheitert dann mit irreführenden Meldungen. Die Detailseite einer Maschine zeigt
+unter **Agent-Version** jetzt an, ob der Agent zu alt ist.
+
+**Konsolensitzung abmelden.** Eine Sitzung direkt am Gerät hat keinen RDP-Client,
+den Windows dem Agenten bezeugen könnte — er lehnt sie deshalb ab. Der
+Abmelden-Knopf ist dafür nicht mehr gesperrt, sondern bietet zwei Wege an:
+*Übernehmen und abmelden* verbindet kurz per RDP (Windows fragt dabei die
+Anmeldung ab) und meldet die Sitzung danach ab, oder die administrative Abmeldung.
+
+**Weitere eigene Windows-Konten.** Wer auf den Zielrechnern unter einem zweiten
+Konto arbeitet — etwa lokal statt über Entra — kann es unter
+*Einstellungen → Weitere eigene Windows-Konten* eintragen. Die Abmeldung
+akzeptiert dieses Konto dann als eigenes. Der Agent prüft unabhängig davon weiter,
+ob die Anfrage vom Rechner der Sitzung kommt.
+
+**Abmeldung dauert jetzt länger, ohne zu scheitern.** Der Agent antwortet erst,
+wenn Windows die Sitzung vollständig abgebaut hat. Das dauert regelmäßig länger als
+fünf Sekunden und wurde bisher als Fehler gemeldet, obwohl die Sitzung weg war.
+Während dieser Zeit wird die Maschine nicht live abgefragt — das ist gewollt und
+keine Störung.
+
+**Zur Sicherheitswarnung beim Verbinden.** Beim Start einer Verbindung zeigt
+Windows „Vorsicht: Unbekannte Remoteverbindung — Der Herausgeber dieser
+Remoteverbindung konnte nicht überprüft werden". Das ist im Testbetrieb **normal
+und kein Fehler**: Die Warnung gilt der vom Portal erzeugten `.rdp`-Datei, die
+noch nicht signiert ist, nicht dem Zielrechner. Hier **Verbinden** wählen. Das
+Signieren ist für nach dem Testbetrieb geplant, siehe `rdp-signatur-plan.md`.
 
 ## Update 0.2.12 / Agent 1.3.0: Abmeldung auf dem Ziel-Agenten
 

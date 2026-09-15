@@ -105,6 +105,10 @@ class MainWindow(QMainWindow):
             directory=self.store.agent_status_directory
         )
         self.live_status_poller = AutomaticLiveStatusPoller(max_parallel=4, parent=self)
+        # Maschinen, gegen die gerade eine Abmeldung laeuft. Siehe
+        # _run_status_update_cycle: waehrend der Abmeldung ist der Agent
+        # nicht abfragbar, und das darf nicht als Ausfall erscheinen.
+        self._logoff_in_progress: set[str] = set()
         self.fallback_scanner = FallbackScanner(parent=self)
         self.fallback_scanner.completed.connect(self._on_fallback_scan_completed)
         self.workstations: list[Workstation] = []
@@ -612,6 +616,18 @@ class MainWindow(QMainWindow):
         """Refresh file fallback, then start bounded direct status requests."""
         self._poll_agent_status(blocking=blocking)
         targets = self.workstations if workstations is None else workstations
+        # Der Agent hat genau eine Pipe-Instanz und bedient sie seriell. Eine
+        # Abmeldung belegt sie, bis Windows die Sitzung abgebaut hat -- dafuer
+        # steht LOGOFF_TIMEOUT_MS. Jede STATUS/1-Abfrage dorthin muss in dieser
+        # Zeit in den Timeout laufen. Sie trotzdem zu stellen haette die Maschine
+        # als "Agent nicht erreichbar" gezeigt, genau waehrend der Benutzer der
+        # Abmeldung zusieht, und danach noch den Backoff der Live-Abfrage geerbt.
+        if self._logoff_in_progress:
+            targets = [
+                item
+                for item in targets
+                if item.workstation_id not in self._logoff_in_progress
+            ]
         started = self.live_status_poller.request_many(
             targets,
             self.store.status_refresh_interval,
@@ -1083,7 +1099,11 @@ class MainWindow(QMainWindow):
                 ws, success, message
             )
         )
-        dialog.exec()
+        self._logoff_in_progress.add(workstation.workstation_id)
+        try:
+            dialog.exec()
+        finally:
+            self._logoff_in_progress.discard(workstation.workstation_id)
         dialog.deleteLater()
 
     def _admin_logoff_finished(
@@ -1092,6 +1112,9 @@ class MainWindow(QMainWindow):
         success: bool,
         message: str,
     ) -> None:
+        # Der Agent antwortet wieder, sobald die Anfrage zurueck ist -- nicht erst,
+        # wenn der Dialog geschlossen wird.
+        self._logoff_in_progress.discard(workstation.workstation_id)
         self._record_event(
             workstation,
             EventType.ADMIN_LOGOFF_COMPLETED if success else EventType.ADMIN_LOGOFF_FAILED,
@@ -1515,6 +1538,58 @@ class MainWindow(QMainWindow):
             return
         self._run_status_update_cycle([current], force=True)
 
+    def _offer_console_logoff_routes(self, workstation: Workstation) -> None:
+        """Offer the two ways a local console session can still be ended.
+
+        The agent cannot authorize this directly -- a console session has no RDP
+        client, so Windows can attest nothing about who is asking.  Taking the
+        session over by RDP removes that obstacle rather than working around it:
+        afterwards the session *is* an RDP session of this machine, and the very
+        same check that refuses now will accept.
+        """
+        from portal_app.ui.machine_actions import CONSOLE_LOGOFF_HINT
+
+        choice = QMessageBox(self)
+        choice.setIcon(QMessageBox.Question)
+        choice.setWindowTitle("Konsolensitzung abmelden")
+        choice.setText(CONSOLE_LOGOFF_HINT)
+        choice.setInformativeText(
+            "„Übernehmen und abmelden“ verbindet dich kurz per RDP — Windows fragt "
+            "dabei die Anmeldung ab — und meldet die Sitzung danach ab, sobald sie "
+            "als Sitzung dieses Rechners gemeldet wird."
+        )
+        takeover = choice.addButton("Übernehmen und abmelden", QMessageBox.AcceptRole)
+        administrative = choice.addButton("Administrativ abmelden", QMessageBox.ActionRole)
+        choice.addButton(QMessageBox.Cancel)
+        choice.setDefaultButton(takeover)
+        choice.exec()
+        clicked = choice.clickedButton()
+        if clicked == takeover:
+            self._takeover_then_logoff(workstation)
+        elif clicked == administrative and (
+            self._admin_unlocked or self._request_admin_access()
+        ):
+            self._admin_logoff_workstation(workstation)
+
+    def _takeover_then_logoff(self, workstation: Workstation) -> None:
+        """Connect by RDP, wait for the session to become ours, then log it off."""
+        from portal_app.rdp import has_active_rdp_session
+        from portal_app.ui.widgets.session_takeover_dialog import SessionTakeoverDialog
+
+        self.on_connect_requested(workstation)
+        if not has_active_rdp_session(workstation.workstation_id):
+            return
+        waiting = SessionTakeoverDialog(
+            workstation,
+            self.current_user.windows_accounts(),
+            self,
+        )
+        taken_over = waiting.exec() == QDialog.Accepted
+        waiting.deleteLater()
+        self._run_status_update_cycle([workstation], force=True)
+        if taken_over:
+            self._logoff_session(workstation)
+
     @Slot(Workstation)
     def _logoff_session(self, workstation: Workstation) -> None:
         from portal_app.ui.widgets.session_logoff_dialog import SessionLogoffDialog
@@ -1526,7 +1601,7 @@ class MainWindow(QMainWindow):
                 "Während einer fremden Reservierung wird keine normale Abmeldung angeboten.",
             )
             return
-        from portal_app.ui.machine_actions import CONSOLE_LOGOFF_HINT, logoff_candidates
+        from portal_app.ui.machine_actions import logoff_candidates
 
         owned = workstation.owned_sessions(self.current_user.windows_accounts())
         sessions = logoff_candidates(owned)
@@ -1535,21 +1610,7 @@ class MainWindow(QMainWindow):
             return
         sessions = [item for item in sessions if not is_console_session(item)]
         if not sessions:
-            # The agent would refuse this, but its reason names a mismatched RDP
-            # client. Saying "console session" here is the honest version, and it
-            # points at the two ways that do work.
-            answer = QMessageBox.question(
-                self,
-                "Konsolensitzung",
-                f"{CONSOLE_LOGOFF_HINT}\n\nMöchtest du stattdessen die administrative "
-                "Abmeldung mit Windows-Administratordaten des Zielrechners öffnen?",
-                QMessageBox.Yes | QMessageBox.Cancel,
-                QMessageBox.Cancel,
-            )
-            if answer == QMessageBox.Yes and (
-                self._admin_unlocked or self._request_admin_access()
-            ):
-                self._admin_logoff_workstation(workstation)
+            self._offer_console_logoff_routes(workstation)
             return
         if len(sessions) > 1:
             labels = [f"Sitzung {item['session_id']} · {item.get('session_state')} · {item['login_time']}" for item in sessions]
@@ -1572,15 +1633,31 @@ class MainWindow(QMainWindow):
             expected_agent_id=workstation.agent_workstation_id or workstation.workstation_id,
             status_target=workstation.get_agent_status_target(),
             hostnames=None if workstation.agent_workstation_id else machine_hostnames(workstation),
+            claimed_accounts=self.current_user.own_accounts,
         )
         dialog.request_finished.connect(
-            lambda success, _message, ws=workstation: (
-                self._run_status_update_cycle([ws], force=True) if success else None
-            )
+            lambda success, _message, ws=workstation: self._own_logoff_finished(ws, success)
         )
-        dialog.exec()
+        self._logoff_in_progress.add(workstation.workstation_id)
+        try:
+            dialog.exec()
+        finally:
+            # Auch bei Abbruch oder Fehler wieder freigeben, sonst bliebe die
+            # Maschine dauerhaft von der Live-Abfrage ausgenommen.
+            self._logoff_in_progress.discard(workstation.workstation_id)
         dialog.deleteLater()
         self._poll_agent_status()
+
+    def _own_logoff_finished(self, workstation: Workstation, success: bool) -> None:
+        """Release the polling pause, then refresh this machine if it worked.
+
+        The pause is lifted here rather than only after the dialog closes: the
+        agent answers again as soon as the request returns, and the refresh below
+        is the one that shows the session is gone.
+        """
+        self._logoff_in_progress.discard(workstation.workstation_id)
+        if success:
+            self._run_status_update_cycle([workstation], force=True)
 
     @Slot(Workstation)
     def _run_rdp_diagnostics(self, workstation: Workstation) -> None:

@@ -8,11 +8,19 @@ from datetime import UTC, datetime
 
 PIPE_NAME = "KirschkeRDPStatus-v1"
 MAX_MESSAGE = 65536
+#: Wie lange auf eine Agent-Antwort gewartet wird.  Fuer STATUS/1 reicht das
+#: reichlich, denn der Agent liest nur WTS aus.
+DEFAULT_TIMEOUT_MS = 5000
+#: LOGOFF/1 antwortet erst, wenn WTSLogoffSession mit bWait=TRUE zurueckkommt --
+#: also nachdem Windows die Sitzung vollstaendig abgebaut hat.  Das dauert
+#: regelmaessig laenger als fuenf Sekunden; mit dem alten Standardwert lief die
+#: erfolgreiche Abmeldung in einen TimeoutError und wurde als Fehler gemeldet.
+LOGOFF_TIMEOUT_MS = 45000
 # Read/write data and attributes, without FILE_CREATE_PIPE_INSTANCE (0x4).
 CLIENT_ACCESS = 0x00120183
 
 
-def io_operation(handle, operation, timeout_ms=5000):
+def io_operation(handle, operation, timeout_ms=DEFAULT_TIMEOUT_MS):
     import pywintypes
     import win32event
     import win32file
@@ -34,9 +42,9 @@ def io_operation(handle, operation, timeout_ms=5000):
         overlap.hEvent.Close()
 
 
-def read_message(handle, size=MAX_MESSAGE):
+def read_message(handle, size=MAX_MESSAGE, timeout_ms=DEFAULT_TIMEOUT_MS):
     import win32file
-    return io_operation(handle, lambda ov: win32file.ReadFile(handle, size, ov)[1])
+    return io_operation(handle, lambda ov: win32file.ReadFile(handle, size, ov)[1], timeout_ms)
 
 
 def write_message(handle, data):
@@ -98,12 +106,13 @@ def _network_credentials(credentials):
         token.Close()
 
 
-def _exchange(target, request, pipe_name=PIPE_NAME, credentials=None):
+def _exchange(target, request, pipe_name=PIPE_NAME, credentials=None,
+              response_timeout_ms=DEFAULT_TIMEOUT_MS):
     with _network_credentials(credentials):
         handle = _open_pipe(target, pipe_name)
         try:
             write_message(handle, request)
-            raw = read_message(handle)
+            raw = read_message(handle, timeout_ms=response_timeout_ms)
             write_message(handle, b"OK")
             return json.loads(raw)
         finally:
@@ -148,6 +157,7 @@ def request_agent_logoff(
         (b"LOGOFF/1 " + json.dumps(request, separators=(",", ":")).encode("utf-8")),
         pipe_name,
         credentials,
+        response_timeout_ms=LOGOFF_TIMEOUT_MS,
     )
     if not data.get("ok"):
         raise PermissionError(data.get("message") or "Der Agent hat die Abmeldung abgelehnt.")

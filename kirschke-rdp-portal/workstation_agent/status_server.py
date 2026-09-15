@@ -102,10 +102,12 @@ class StatusServer(threading.Thread):
         import win32pipe
         handle = None
         try:
-            # One instance, served serially. Requests are a single small message
-            # each and every step is timeout-bounded, so a client cannot hold the
-            # channel; raising maxInstances would need a thread per connection and
-            # a review of WTS access from several threads at once.
+            # One instance, served serially. STATUS/1 is a single small message
+            # and returns at once, but LOGOFF/1 does not: it waits for Windows to
+            # tear the session down, and for that time no other request is served
+            # -- which is why the portal pauses its live polling of this machine
+            # while it asks for a logoff. Raising maxInstances would need a thread
+            # per connection and a review of WTS access from several at once.
             handle = win32pipe.CreateNamedPipe(rf"\\.\pipe\{self.pipe_name}",
                 win32pipe.PIPE_ACCESS_DUPLEX | win32con.FILE_FLAG_OVERLAPPED | 0x00080000,  # FIRST_PIPE_INSTANCE
                 win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,

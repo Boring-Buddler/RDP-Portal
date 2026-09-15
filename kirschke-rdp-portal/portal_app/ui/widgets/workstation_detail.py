@@ -26,6 +26,8 @@ from portal_app.ui.machine_actions import CONSOLE_LOGOFF_HINT, describe_actions
 from portal_app.ui.widgets.flag_dialog import FlagDialog
 from portal_app.ui.widgets.login_account_selector import LoginAccountSelector
 from shared.enums import ManualFlagType
+from shared.session_identity import is_console_session, session_username
+from shared.version import AGENT_VERSION
 
 
 class WorkstationDetailWidget(QWidget):
@@ -181,6 +183,7 @@ class WorkstationDetailWidget(QWidget):
                     ("fallback_path", "Datei-Fallback"),
                     ("agent_diagnostic", "Agent-Prüfung"),
                     ("last_seen", "Zuletzt gesehen"),
+                    ("agent_version", "Agent-Version"),
                     ("session", "Sitzung"),
                     ("session_user", "Angemeldeter Benutzer"),
                     ("all_sessions", "Alle Windows-Sitzungen"),
@@ -357,10 +360,9 @@ class WorkstationDetailWidget(QWidget):
             "session": {"connected": "Verbunden", "disconnected": "Getrennt", "reconnected": "Wiederverbunden",
                         "logon": "Anmeldung", "logged_off": "Abgemeldet", "none": "Keine Sitzung"}.get(ws.current_session_state.value, ws.current_session_state.value),
             "session_user": ws.get_session_user_display(),
+            "agent_version": self._agent_version_text(ws),
             "all_sessions": "\n".join(
-                f"{item.get('domain') or ''}\\{item.get('username') or '–'} · "
-                f"{item.get('session_state', '–')} · Anmeldung: {item.get('login_time') or 'unbekannt'}"
-                for item in ws.agent_sessions
+                self._session_line(item) for item in ws.agent_sessions
             ) or "Keine weiteren Sitzungsdaten",
             "session_history": "\n".join(
                 f"{item.get('observed_at_utc', '–')} · {item.get('domain') or ''}\\{item.get('username') or '–'} · "
@@ -451,6 +453,63 @@ class WorkstationDetailWidget(QWidget):
     def _on_edit(self) -> None:
         if self.workstation:
             self.edit_requested.emit(self.workstation)
+
+    @staticmethod
+    def _session_line(session: dict) -> str:
+        r"""One reported session, including what decides whether it can be ended.
+
+        The kind and the reported RDP client are exactly what the agent's owner
+        check compares against, and they used to be invisible here -- so a refused
+        logoff could only be understood by reading the agent's source.
+        """
+        state = {"connected": "Verbunden", "disconnected": "Getrennt",
+                 "reconnected": "Wiederverbunden", "logon": "Anmeldung",
+                 "logged_off": "Abgemeldet"}.get(
+            str(session.get("session_state") or ""), session.get("session_state") or "–"
+        )
+        if is_console_session(session):
+            kind = "Konsole am Gerät"
+        elif session.get("client_name") or session.get("client_address"):
+            client = " · ".join(
+                str(value) for value in (session.get("client_name"), session.get("client_address")) if value
+            )
+            kind = f"RDP von {client}"
+        elif "is_console_session" in session:
+            kind = "RDP, Client nicht gemeldet"
+        else:
+            kind = "Art unbekannt (Agent meldet sie nicht)"
+        return (
+            f"{session_username(session) or '–'} · {state} · {kind} · "
+            f"Anmeldung: {session.get('login_time') or 'unbekannt'}"
+        )
+
+    @staticmethod
+    def _agent_version_text(ws: Workstation) -> str:
+        """The agent's version, and a warning when it predates this portal's.
+
+        Several checks depend on what the agent reports -- the account SID and
+        whether a session is the local console among them -- so an outdated agent
+        shows up as a confusing refusal rather than as a version problem.
+        """
+        reported = (ws.agent_version or "").strip()
+        if not reported:
+            return "Nicht gemeldet · Agent veraltet oder kein Status"
+
+        def parts(value: str) -> tuple[int, ...]:
+            numbers = []
+            for piece in value.split("."):
+                digits = "".join(character for character in piece if character.isdigit())
+                numbers.append(int(digits) if digits else 0)
+            return tuple(numbers)
+
+        if parts(reported) < parts(AGENT_VERSION):
+            return (
+                f"{reported} · veraltet, dieses Portal erwartet {AGENT_VERSION}. "
+                "Ältere Agenten melden keine Windows-SID und kennzeichnen "
+                "Konsolensitzungen nicht — das Abmelden scheitert dann mit "
+                "irreführenden Meldungen."
+            )
+        return reported
 
     @Slot()
     def _on_connect(self) -> None:

@@ -10,6 +10,19 @@ imports it from here.
 
 from __future__ import annotations
 
+# 0.3.9: an account entered under "Weitere eigene Windows-Konten" now also
+# passes the portal's ownership check for a logoff. The agent still requires
+# the request to come from the machine that opened the session.
+# 0.3.10: a console session can now be ended after a short RDP takeover, and
+# 1.4.3 (agent): the same machine is recognised across IPv4, IPv6 and its name,
+# so a logoff from exactly the right computer is no longer refused.
+# 1.4.2 (agent): a refused logoff now names the requesting machine and the one
+# that built the session, instead of only stating that they differ.
+# 1.4.1 (agent setup): an update pre-fills the machine ID, status folder and
+# interval from the installed agent instead of resetting them to the host name.
+# 0.3.8: the detail page now shows the agent version and, per session, whether
+# it is the console and which RDP client the agent reports -- the two facts a
+# refused logoff turns on, and both were invisible.
 # 0.3.7: violet moved into the middle of the only gap on the colour wheel, and
 # weight now follows what you can act on: full border for usable machines,
 # a quieter one for everything you cannot touch.
@@ -25,9 +38,9 @@ from __future__ import annotations
 # 0.3.1: one machine state decides colour and buttons; orange marks an own session
 # holding a machine with no portal window, violet a foreign reservation.
 # 0.3.0: typed Windows identity, SID-based session ownership, one button matrix.
-PORTAL_VERSION = "0.3.7"
+PORTAL_VERSION = "0.3.10"
 # 1.4.0: every reported session carries its account SID, so the portal no longer
 # has to resolve Entra names against a cache that may not know them.
-AGENT_VERSION = "1.4.0"
+AGENT_VERSION = "1.4.3"
 
 __all__ = ["AGENT_VERSION", "PORTAL_VERSION"]

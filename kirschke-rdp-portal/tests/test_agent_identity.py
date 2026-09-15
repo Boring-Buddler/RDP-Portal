@@ -89,3 +89,150 @@ def test_the_mismatch_message_names_both_sides_and_the_way_out() -> None:
     assert "Agent zuordnen" in text
     # Die Frage, die sonst als Naechstes kommt, direkt beantwortet.
     assert "keine Rechtefrage" in text
+
+
+# --- Wer darf eine fremde Sitzung beenden ------------------------------------
+
+
+def controller_command(**overrides):
+    from datetime import UTC, datetime
+    account = "AzureAD" + chr(92) + "tester"
+    command = {
+        "protocol": "LOGOFF/1",
+        "request_id": "request-1234567890",
+        "requested_at_utc": datetime.now(UTC).isoformat(),
+        "session_id": 3,
+        "username": account,
+        "login_time": "2026-09-10T08:00:00+00:00",
+        "requester_identity": account,
+        "expected_agent_id": "A",
+    }
+    command.update(overrides)
+    return command
+
+
+def test_a_client_mismatch_names_both_sides(monkeypatch):
+    """Ohne beide Namen war die Ablehnung nicht nachvollziehbar."""
+    from datetime import UTC, datetime
+    from unittest.mock import Mock
+
+    from shared.enums import SessionState
+    from workstation_agent import session_control as agent_control
+    from workstation_agent.wts.monitor import WTSSessionInfo
+
+    info = WTSSessionInfo(
+        session_id=3, username="tester", domain="AzureAD", display_name="RDP-Tcp#7",
+        client_name="PC12", client_address="192.168.2.76", protocol_type=2,
+        session_state=SessionState.CONNECTED,
+        login_time=datetime(2026, 9, 10, 8, 0, tzinfo=UTC),
+    )
+    monitor = Mock()
+    monitor.__enter__ = Mock(return_value=monitor)
+    monitor.__exit__ = Mock(return_value=False)
+    monitor.get_user_sessions.return_value = [info]
+    monkeypatch.setattr(agent_control, "WTSMonitor", Mock(return_value=monitor))
+    controller = agent_control.AgentSessionController("A")
+
+    with pytest.raises(PermissionError) as error:
+        controller.handle(controller_command(), "NB05", False)
+
+    message = str(error.value)
+    assert "Anfrage kam von: NB05" in message
+    assert "PC12" in message and "192.168.2.76" in message
+    assert "administrative Abmeldung" in message
+    monitor.logoff_session.assert_not_called()
+
+
+# --- Derselbe Rechner unter verschiedenen Schreibweisen -----------------------
+
+
+def owner_check(session_client_name, session_client_address, requesting_computer, monkeypatch=None):
+    """Fuehrt die Besitzpruefung des Agenten mit einer gebauten Sitzung aus."""
+    from datetime import UTC, datetime
+    from unittest.mock import Mock
+
+    from shared.enums import SessionState
+    from workstation_agent import session_control as agent_control
+    from workstation_agent.wts.monitor import WTSSessionInfo
+
+    info = WTSSessionInfo(
+        session_id=3, username="tester", domain="AzureAD", display_name="RDP-Tcp#7",
+        client_name=session_client_name, client_address=session_client_address,
+        protocol_type=2, session_state=SessionState.CONNECTED,
+        login_time=datetime(2026, 9, 10, 8, 0, tzinfo=UTC),
+    )
+    monitor = Mock()
+    monitor.__enter__ = Mock(return_value=monitor)
+    monitor.__exit__ = Mock(return_value=False)
+    monitor.get_user_sessions.return_value = [info]
+    if monkeypatch is not None:
+        monkeypatch.setattr(agent_control, "WTSMonitor", Mock(return_value=monitor))
+    controller = agent_control.AgentSessionController("A")
+    controller.handle(controller_command(), requesting_computer, False)
+    return monitor
+
+
+def test_the_same_machine_over_ipv4_and_ipv6_is_recognised(monkeypatch):
+    """Der Live-Fall: RDP kam ueber IPv6, die Agent-Anfrage ueber IPv4.
+
+    Die Sitzung meldet Namen plus IPv6-Link-Local, Windows bezeugt fuer die
+    SMB-Verbindung nur die IPv4-Adresse. Ohne Aufloesung wurde eine Abmeldung vom
+    genau richtigen Rechner abgelehnt.
+    """
+    from workstation_agent import session_control as agent_control
+
+    monkeypatch.setattr(
+        agent_control, "_resolved_aliases",
+        lambda value, timeout=2.0: agent_control._machine_aliases(value)
+        | ({"192.168.2.76"} if str(value).lower().startswith("pc12") else set())
+        | ({"pc12"} if str(value).startswith("192.168.2.76") else set()),
+    )
+    monitor = owner_check("PC12", "fe80::d379:46e6:ce9f:1b74", "192.168.2.76", monkeypatch)
+
+    monitor.logoff_session.assert_called_once()
+
+
+def test_a_plain_name_match_needs_no_resolution(monkeypatch):
+    """Der Normalfall darf keine Namensaufloesung kosten."""
+    from workstation_agent import session_control as agent_control
+
+    def must_not_run(value, timeout=2.0):
+        raise AssertionError("Auf dem schnellen Weg darf nicht aufgeloest werden")
+
+    monkeypatch.setattr(agent_control, "_resolved_aliases", must_not_run)
+    monitor = owner_check("PC12", "192.168.2.76", "PC12", monkeypatch)
+
+    monitor.logoff_session.assert_called_once()
+
+
+def test_a_genuinely_different_machine_is_still_refused(monkeypatch):
+    from workstation_agent import session_control as agent_control
+
+    monkeypatch.setattr(
+        agent_control, "_resolved_aliases",
+        lambda value, timeout=2.0: agent_control._machine_aliases(value),
+    )
+
+    with pytest.raises(PermissionError, match="Anfrage kam von: FREMD-PC"):
+        owner_check("PC12", "192.168.2.76", "FREMD-PC", monkeypatch)
+
+
+def test_a_failing_lookup_degrades_to_a_refusal_not_a_hang():
+    """Ohne DNS muss die Pruefung zuegig ablehnen, nicht haengen bleiben."""
+    import time
+
+    from workstation_agent.session_control import _resolved_aliases
+
+    started = time.monotonic()
+    aliases = _resolved_aliases("host.invalid.example", timeout=0.2)
+
+    assert time.monotonic() - started < 3
+    assert "host.invalid.example" in aliases
+
+
+def test_resolution_keeps_the_plain_aliases():
+    from workstation_agent.session_control import _machine_aliases, _resolved_aliases
+
+    assert _machine_aliases("PC12") <= _resolved_aliases("PC12", timeout=0.2)
+    assert _resolved_aliases(None, timeout=0.2) == set()
+    assert _resolved_aliases("", timeout=0.2) == set()

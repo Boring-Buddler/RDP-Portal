@@ -664,15 +664,45 @@ class InstallerWindow:
         self.root.title("Kirschke RDP-Agent installieren")
         self.root.geometry("680x635")
         self.root.resizable(False, False)
-        self.workstation_id = StringVar(value=os.environ.get("COMPUTERNAME", ""))
-        self.status_directory = StringVar(value=r"C:\RDP-Portal-Daten\agenten-status")
-        self.interval = StringVar(value="30 Sekunden (empfohlen)")
+        # An update must not silently rewrite what the previous run configured.
+        # Defaulting the machine ID to COMPUTERNAME cost an afternoon once: a
+        # machine registered as WS-005 in the portal had its agent reset to the
+        # host name by a later click-through, and every logoff was refused because
+        # the two no longer matched.
+        existing = self._existing_configuration()
+        self.workstation_id = StringVar(
+            value=existing.get("workstation_id") or os.environ.get("COMPUTERNAME", "")
+        )
+        self.status_directory = StringVar(
+            value=existing.get("status_directory") or r"C:\RDP-Portal-Daten\agenten-status"
+        )
+        self.interval = StringVar(value=self._interval_label(existing.get("poll_interval")))
+        self.is_update = bool(existing)
         self.configure_share = BooleanVar(value=True)
         self.reader_password = StringVar(value="")
         self.reader_password_confirmation = StringVar(value="")
         self.message = StringVar(value="")
         self.results: queue.Queue[tuple[bool, str, str]] = queue.Queue()
         self._build()
+
+    @staticmethod
+    def _existing_configuration() -> dict:
+        """Read the settings of an agent already installed here, or ``{}``.
+
+        Best effort on purpose: a missing, unreadable or damaged file must leave
+        the installer fully usable, it just falls back to the fresh defaults.
+        """
+        try:
+            data = json.loads(setup_paths().config.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _interval_label(seconds: object) -> str:
+        """The dropdown entry for a stored interval, or the recommended default."""
+        labels = {30: "30 Sekunden (empfohlen)", 60: "60 Sekunden", 15: "15 Sekunden"}
+        return labels.get(seconds if type(seconds) is int else 0, labels[30])
 
     def _build(self) -> None:
         frame = ttk.Frame(self.root, padding=24)
@@ -682,14 +712,19 @@ class InstallerWindow:
             text="RDP-Agent auf diesem Ziel-PC einrichten",
             font=("Segoe UI", 15, "bold"),
         ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-        ttk.Label(
-            frame,
-            text=(
-                "Rechnerweiter Start beim Hochfahren als SYSTEM, auch ohne Benutzeranmeldung. "
-                "Administratorrechte erforderlich. Die Windows-Ausführungsrichtlinie wird nicht verändert."
-            ),
-            wraplength=620,
-        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 22))
+        introduction = (
+            "Rechnerweiter Start beim Hochfahren als SYSTEM, auch ohne Benutzeranmeldung. "
+            "Administratorrechte erforderlich. Die Windows-Ausführungsrichtlinie wird nicht verändert."
+        )
+        if self.is_update:
+            introduction += (
+                "\n\nEs ist bereits ein Agent eingerichtet. Die Felder sind mit dessen "
+                "aktuellen Einstellungen vorbelegt — unverändert lassen heißt: Update "
+                "ohne Änderung der Zuordnung."
+            )
+        ttk.Label(frame, text=introduction, wraplength=620).grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(0, 22)
+        )
         ttk.Label(frame, text="Maschinen-ID im Portal").grid(
             row=2, column=0, columnspan=3, sticky="w"
         )

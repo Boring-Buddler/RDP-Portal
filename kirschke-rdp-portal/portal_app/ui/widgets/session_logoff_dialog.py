@@ -14,12 +14,13 @@ class LogoffWorker(QThread):
     result = Signal(bool, str)
 
     def __init__(self, arguments, administrative=False, credentials=None, parent=None,
-                 hostnames=None):
+                 hostnames=None, claimed_accounts=()):
         super().__init__(parent)
         self.arguments = arguments
         self.administrative = administrative
         self.credentials = credentials
         self.hostnames = hostnames
+        self.claimed_accounts = claimed_accounts
 
     def run(self):
         try:
@@ -28,7 +29,8 @@ class LogoffWorker(QThread):
                 operation(*self.arguments, admin_credentials=self.credentials,
                           hostnames=self.hostnames)
             else:
-                operation(*self.arguments, hostnames=self.hostnames)
+                operation(*self.arguments, hostnames=self.hostnames,
+                          claimed_accounts=self.claimed_accounts)
             self.result.emit(True, "Windows hat die Sitzung abgemeldet. Der Agent hat das Sitzungsende "
                              "frisch bestätigt; die Anzeige wird aktualisiert.")
         except (ValueError, RuntimeError, PermissionError) as exc:
@@ -74,6 +76,7 @@ class SessionLogoffDialog(QDialog):
         expected_agent_id=None,
         status_target=None,
         hostnames=None,
+        claimed_accounts=(),
     ):
         super().__init__(parent)
         self.worker = None
@@ -92,6 +95,10 @@ class SessionLogoffDialog(QDialog):
         # Zusaetzliche Hinweise darauf, dass der antwortende Agent zu dieser
         # Maschine gehoert -- None heisst: die Zuordnung wurde von Hand gesetzt.
         self.hostnames = hostnames
+        # Konten, die dieser Portal-Benutzer als eigene eingetragen hat. Sie lassen
+        # die portalseitige Besitzpruefung passieren; der Agent prueft unabhaengig
+        # weiter, ob die Anfrage vom Rechner der Sitzung kommt.
+        self.claimed_accounts = tuple(claimed_accounts or ())
         layout = QVBoxLayout(self)
         security_note = (
             "Windows prüft die unten eingegebenen administrativen Zugangsdaten direkt am Zielrechner. "
@@ -149,7 +156,8 @@ class SessionLogoffDialog(QDialog):
         self.cancel.setEnabled(False)
         self.status.setText("Windows prüft die Sitzung und fordert die Abmeldung an …")
         self.worker = LogoffWorker(self.arguments, self.administrative, credentials, self,
-                                   hostnames=self.hostnames)
+                                   hostnames=self.hostnames,
+                                   claimed_accounts=self.claimed_accounts)
         self.worker.result.connect(self._finished_request)
         self.worker.finished.connect(lambda: self.cancel.setEnabled(True))
         self.worker.start()

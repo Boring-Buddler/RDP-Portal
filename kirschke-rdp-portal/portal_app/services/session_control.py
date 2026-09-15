@@ -1,15 +1,23 @@
 """Native Windows signout, authorized by Windows rather than shared JSON files."""
+import logging
+import time
 from datetime import datetime
 
 from portal_app.services.agent_identity import match_agent, mismatch_message
+from shared.identity import WindowsIdentity
 from shared.session_identity import is_active_session, is_console_session, session_username
 from shared.status_pipe import request_agent_logoff, request_snapshot
 
-#: Shown whenever this portal process is not the account that owns the session.
+logger = logging.getLogger(__name__)
+
+#: Shown whenever this portal process is not the account that owns the session and
+#: the session's account was not claimed as one's own either.
 NOT_YOUR_SESSION = (
     "Die Sitzung gehört nicht deinem aktuellen Windows-Konto. "
-    "Verbinde dich mit dem Sitzungskonto erneut und melde dich dort "
-    "über Start → Benutzer → Abmelden ab."
+    "Gehört dir das Konto der Sitzung trotzdem selbst, trage es unter "
+    "Einstellungen → Weitere eigene Windows-Konten ein. Sonst: verbinde dich mit "
+    "dem Sitzungskonto erneut und melde dich dort über Start → Benutzer → "
+    "Abmelden ab, oder verwende die administrative Abmeldung."
 )
 
 #: A local console session has no RDP client, so nothing about the requester can
@@ -42,22 +50,54 @@ def _process_sid() -> str:
         token.Close()
 
 
-def _require_own_account(session: dict, username: str) -> None:
-    """Refuse unless this portal process runs as the account owning the session.
+def _claims_the_session(session: dict, claimed_accounts) -> bool:
+    """Whether the person running the portal declared this session's account theirs.
 
-    The SID the agent read from the session's own token decides.  It is the form
-    Windows authorizes against, and unlike a name it does not depend on this PC
-    having the account cached -- the lookup that fails for Entra accounts whose
+    A claim, not proof -- see :meth:`portal_app.models.user.User.windows_accounts`.
+    It is accepted here because it is not the only gate: the agent independently
+    requires the request to arrive from the very machine that opened the session,
+    and that part Windows attests.  One person legitimately holding two accounts
+    (an Entra one and a local one on a lab machine) is the case this serves.
+    """
+    identity = WindowsIdentity.from_session(session)
+    return any(
+        WindowsIdentity.from_names(down_level=account).matches(identity)
+        for account in claimed_accounts or ()
+    )
+
+
+def _require_own_account(session: dict, username: str, claimed_accounts=()) -> None:
+    """Refuse unless the session belongs to the person running the portal.
+
+    The SID the agent read from the session's own token decides first.  It is the
+    form Windows authorizes against, and unlike a name it does not depend on this
+    PC having the account cached -- the lookup that fails for Entra accounts whose
     profile lives only on the target.  Resolving the name locally stays as a
     fallback for agents too old to report a SID.
+
+    A session whose account the user claimed as their own passes too.  That trades
+    the portal's own proof for the agent's: the agent still refuses unless the
+    request comes from the machine that built this RDP session, and it refuses
+    console sessions outright, so the claim cannot reach a session the caller has
+    no connection to.
     """
     import win32security
 
     caller = _process_sid()
     reported = str(session.get("sid") or "").strip()
     if reported:
-        if reported.casefold() != caller.casefold():
-            raise ValueError(NOT_YOUR_SESSION)
+        if reported.casefold() == caller.casefold():
+            return
+        if _claims_the_session(session, claimed_accounts):
+            logger.info(
+                "Abmeldung über ein eingetragenes eigenes Konto (%s) statt über die "
+                "Prozess-SID; der Agent prüft den anfragenden Rechner weiterhin.",
+                session_username(session),
+            )
+            return
+        raise ValueError(NOT_YOUR_SESSION)
+    if _claims_the_session(session, claimed_accounts):
+        # No SID from the agent, but the account was claimed -- same trade as above.
         return
     try:
         session_sid = win32security.ConvertSidToStringSid(
@@ -68,7 +108,8 @@ def _require_own_account(session: dict, username: str) -> None:
             "Der Agent hat für diese Sitzung keine Windows-SID gemeldet, und der "
             "Kontoname lässt sich auf diesem Portal-PC nicht auflösen. Das ist bei "
             "Entra-Konten normal, deren Profil nur auf dem Zielrechner existiert. "
-            "Agent aktualisieren oder am Zielrechner abmelden."
+            "Agent aktualisieren, das Konto unter Einstellungen → Weitere eigene "
+            "Windows-Konten eintragen, oder am Zielrechner abmelden."
         ) from exc
     if session_sid.casefold() != caller.casefold():
         raise ValueError(NOT_YOUR_SESSION)
@@ -153,24 +194,41 @@ def _verified_status_session(
     return session, snapshot
 
 
-def _confirm_session_ended(
+#: Wie oft nach einer ausgebliebenen Agent-Antwort nachgesehen wird, ob die
+#: Sitzung trotzdem beendet ist. Solange Windows die Sitzung abbaut, antwortet
+#: der Agent auf gar nichts -- sein Statuskanal bedient immer nur einen Client.
+UNANSWERED_CONFIRM_ATTEMPTS = 8
+UNANSWERED_CONFIRM_DELAY = 2.0
+
+#: Einleitung der Meldung, wenn die Abmeldung ohne Agent-Antwort geblieben ist.
+UNANSWERED_LEAD = (
+    "Die Abmeldung wurde angefordert, aber nicht rechtzeitig beantwortet, und"
+)
+
+
+class SessionEndUnconfirmedError(RuntimeError):
+    """Das Sitzungsende ist (noch) nicht belegt -- ein erneuter Blick kann helfen."""
+
+
+def _check_session_ended(
     target: str,
     expected_agent_id: str | None,
     session_id: int,
     username: str,
     expected_time: datetime,
-    hostnames: set[str] | None = None,
+    hostnames: set[str] | None,
+    lead: str,
 ) -> None:
-    """Accept success only after STATUS/1 no longer reports the exact old session."""
+    """One STATUS/1 look: raise unless the exact old session is gone."""
     try:
         snapshot, _elapsed = request_snapshot(target)
     except Exception as exc:
         code = getattr(exc, "winerror", None)
         if code is None and exc.args and isinstance(exc.args[0], int):
             code = exc.args[0]
-        raise RuntimeError(
-            "Windows hat den Abmeldeaufruf beendet, aber der Agent konnte das "
-            f"Sitzungsende nicht bestätigen (Fehler {code or type(exc).__name__})."
+        raise SessionEndUnconfirmedError(
+            f"{lead} der Agent konnte das Sitzungsende nicht "
+            f"bestätigen (Fehler {code or type(exc).__name__})."
         ) from exc
     try:
         _require_matching_agent(snapshot, expected_agent_id, hostnames)
@@ -190,10 +248,41 @@ def _confirm_session_ended(
             and session_username(session).casefold() == username.casefold()
             and observed_time == expected_time
         ):
-            raise RuntimeError(
-                "Windows hat den Abmeldeaufruf beendet, aber der Agent meldet "
-                "dieselbe Sitzung weiterhin als aktiv. Sie wurde nicht als abgemeldet bestätigt."
+            raise SessionEndUnconfirmedError(
+                f"{lead} der Agent meldet dieselbe Sitzung weiterhin als aktiv. "
+                "Sie wurde nicht als abgemeldet bestätigt."
             )
+
+
+def _confirm_session_ended(
+    target: str,
+    expected_agent_id: str | None,
+    session_id: int,
+    username: str,
+    expected_time: datetime,
+    hostnames: set[str] | None = None,
+    *,
+    attempts: int = 1,
+    delay: float = 0.0,
+    lead: str = "Windows hat den Abmeldeaufruf beendet, aber",
+) -> None:
+    """Accept success only after STATUS/1 no longer reports the exact old session.
+
+    More than one attempt is for the case where the agent never answered: the
+    logoff may well have run, and while Windows tears the session down the
+    agent's single-instance pipe answers nothing at all. Only that uncertainty is
+    retried; a foreign agent is a stable answer and fails immediately.
+    """
+    for attempt in range(attempts):
+        try:
+            _check_session_ended(
+                target, expected_agent_id, session_id, username, expected_time, hostnames, lead
+            )
+            return
+        except SessionEndUnconfirmedError:
+            if attempt + 1 >= attempts:
+                raise
+            time.sleep(delay)
 
 
 def _logoff_session(
@@ -207,6 +296,7 @@ def _logoff_session(
     require_owner: bool,
     admin_credentials: tuple[str, str] | None = None,
     hostnames: set[str] | None = None,
+    claimed_accounts=(),
 ) -> None:
     """Reject stale/reused IDs and let Windows authorize the final WTS request."""
     if not target or type(session_id) is not int or session_id <= 0 or not username or not login_time:
@@ -235,7 +325,7 @@ def _logoff_session(
             # Refuse here rather than letting the agent do it, so the reason
             # names the console session instead of a mismatched RDP client.
             raise ValueError(CONSOLE_SESSION_NOT_OWN)
-        _require_own_account(verified, username)
+        _require_own_account(verified, username, claimed_accounts)
     # Check the read-only live status again immediately before asking Windows.
     _verified_status_session(
         verified_target,
@@ -248,16 +338,42 @@ def _logoff_session(
     # The local SYSTEM agent performs the final WTS call. For an own session it
     # independently checks user and RDP client computer; an administrative
     # request must authenticate as an administrator of the target computer.
-    request_agent_logoff(
-        verified_target,
-        session_id,
-        username,
-        login_time,
-        username,
-        agent_id,
-        administrative=not require_owner,
-        credentials=admin_credentials,
-    )
+    try:
+        request_agent_logoff(
+            verified_target,
+            session_id,
+            username,
+            login_time,
+            username,
+            agent_id,
+            administrative=not require_owner,
+            credentials=admin_credentials,
+        )
+    except TimeoutError:
+        # Der Agent antwortet erst, wenn Windows die Sitzung vollstaendig abgebaut
+        # hat. Dauert das laenger als die Antwortfrist, ist die Abmeldung deshalb
+        # nicht gescheitert -- sie war nur nicht quittiert, und genau das wurde
+        # frueher als Fehler gemeldet, obwohl die Sitzung weg war. Der Statuskanal
+        # entscheidet; solange Windows abbaut, antwortet der Agent auf gar nichts,
+        # also wird mehrfach nachgesehen.
+        logger.info(
+            "Keine rechtzeitige Agent-Antwort auf die Abmeldung von Sitzung %s auf %s; "
+            "das Ergebnis wird ueber den Statuskanal geprueft.",
+            session_id,
+            verified_target,
+        )
+        _confirm_session_ended(
+            verified_target,
+            expected_agent_id,
+            session_id,
+            username,
+            expected_time,
+            hostnames,
+            attempts=UNANSWERED_CONFIRM_ATTEMPTS,
+            delay=UNANSWERED_CONFIRM_DELAY,
+            lead=UNANSWERED_LEAD,
+        )
+        return
     _confirm_session_ended(
         verified_target,
         expected_agent_id,
@@ -276,8 +392,9 @@ def logoff_own_session(
     expected_agent_id: str | None = None,
     status_target: str | None = None,
     hostnames: set[str] | None = None,
+    claimed_accounts=(),
 ) -> None:
-    """Sign out only a session whose Windows SID matches the portal process token."""
+    """Sign out a session this portal user owns, by SID or by their own claim."""
     _logoff_session(
         target,
         session_id,
@@ -287,6 +404,7 @@ def logoff_own_session(
         status_target,
         require_owner=True,
         hostnames=hostnames,
+        claimed_accounts=claimed_accounts,
     )
 
 
