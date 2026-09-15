@@ -34,6 +34,7 @@ from shared.enums import (
     SessionState,
 )
 from shared.version import AGENT_VERSION
+from workstation_agent.reservation_store import ReservationStore
 
 logger = logging.getLogger(__name__)
 
@@ -416,6 +417,10 @@ class WorkstationAgent:
         self._session_history = None
         self._status_server = None
         self._session_controller = None
+        # Die Reservierungen dieser Maschine. Sie gehoeren dem Agenten und
+        # nicht dem Statuskanal, weil sie auch in den Datei-Fallback muessen
+        # und einen Neustart ueberleben sollen.
+        self._reservation_store = ReservationStore()
 
         # Service control
         self._running = False
@@ -551,6 +556,7 @@ class WorkstationAgent:
                 self._live_snapshot,
                 self.config.live_status_reader,
                 logoff_handler=self._session_controller.handle,
+                reservation_handler=self._reservation_store.handle,
             )
             self._status_server.start()
 
@@ -634,7 +640,8 @@ class WorkstationAgent:
             current_session_state=primary.session_state if primary else SessionState.NONE,
             current_session_user=primary.full_username if primary else None,
             current_windows_session_id=primary.session_id if primary else None,
-            rdp_sessions=[item.to_dict() for item in sessions])
+            rdp_sessions=[item.to_dict() for item in sessions],
+            reservations=self._reservation_store.current())
 
     def _after_agent_logoff(self) -> None:
         """Publish the confirmed post-logoff state without waiting for the poll interval."""
@@ -696,6 +703,9 @@ class WorkstationAgent:
                 current_windows_session_id=self.state.current_windows_session_id,
                 rdp_sessions=[session.to_dict() for session in self._last_rdp_sessions],
                 session_history=self._session_history.events if self._session_history else [],
+                # Auch im Datei-Fallback, damit ein Portal ohne Pipe-Zugang
+                # dieselben Reservierungen sieht wie eines mit.
+                reservations=self._reservation_store.current(),
             )
             directory = Path(self.config.status_directory).expanduser() if self.config.status_directory else None
             write_agent_snapshot(snapshot, directory)

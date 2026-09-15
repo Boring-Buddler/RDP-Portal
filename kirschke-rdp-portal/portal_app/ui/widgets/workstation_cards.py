@@ -5,9 +5,10 @@ from __future__ import annotations
 import locale
 import re
 
-from PySide6.QtCore import QProcess, Qt, Signal
+from PySide6.QtCore import QProcess, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -30,12 +31,91 @@ from portal_app.ui.machine_actions import (
     machine_state,
     state_border_width,
     state_color,
+    state_is_dashed,
+    state_secondary_color,
 )
 from portal_app.ui.widgets.login_account_selector import LoginAccountSelector
 from portal_app.ui.widgets.ping_tool import PingToolWidget
 from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 from portal_app.ui.widgets.status_legend import StatusLegend
 from shared.enums import AgentStatus, SessionState
+
+#: Die Schnellauswahl auf der Karte. "Vollbild" ist der Standard und traegt
+#: bewusst keine Aufloesung: mstsc nimmt dann den ganzen Bildschirm, egal wie
+#: gross er ist. Die uebrigen Werte decken die Bildschirme ab, die hier
+#: vorkommen; alles Weitere steht weiterhin in den Maschinendetails.
+CARD_RESOLUTIONS = (
+    ("Vollbild", None),
+    ("3840 x 2160 (4K)", "3840x2160"),
+    ("2560 x 1440 (2K)", "2560x1440"),
+    ("1920 x 1080 (Full HD)", "1920x1080"),
+    ("1600 x 900", "1600x900"),
+    ("1366 x 768", "1366x768"),
+    ("1280 x 720", "1280x720"),
+)
+
+
+def native_screen_size() -> tuple[int, int] | None:
+    """The primary screen in real pixels, or ``None`` when it cannot be read.
+
+    ``QScreen.size()`` counts logical pixels, so on a display running at 150 %
+    it reports 1280x720 for a Full HD panel. The device pixel ratio converts
+    that back to what the panel can actually show, which is the number an RDP
+    session has to fit into.
+    """
+    from PySide6.QtGui import QGuiApplication
+
+    screen = QGuiApplication.primaryScreen()
+    if screen is None:
+        return None
+    size = screen.size()
+    ratio = screen.devicePixelRatio() or 1.0
+    width, height = round(size.width() * ratio), round(size.height() * ratio)
+    return (width, height) if width > 0 and height > 0 else None
+
+
+def offered_resolutions(
+    native: tuple[int, int] | None = None,
+) -> tuple[tuple[str, str | None], ...]:
+    """The quick-select entries that this screen can actually display.
+
+    Offering 4K on a Full HD laptop would hand out a session larger than the
+    window it has to live in -- the remote desktop is then only reachable by
+    scrolling. So anything above the panel drops out, and the panel's own size
+    joins the list when it is not one of the standard steps, which is what makes
+    "as large as this screen allows" selectable at all.
+
+    Without a readable screen the full list is offered rather than none.
+    """
+    native = native if native is not None else native_screen_size()
+    if native is None:
+        return CARD_RESOLUTIONS
+    limit_width, limit_height = native
+
+    def fits(value: str | None) -> bool:
+        if value is None:
+            return True
+        width, _, height = value.partition("x")
+        return int(width) <= limit_width and int(height) <= limit_height
+
+    entries = [entry for entry in CARD_RESOLUTIONS if fits(entry[1])]
+    exact = f"{limit_width}x{limit_height}"
+    if not any(value == exact for _, value in entries):
+        # Direkt hinter "Vollbild": es ist die groesste waehlbare Groesse.
+        entries.insert(1, (f"{limit_width} x {limit_height} (Bildschirm)", exact))
+    return tuple(entries)
+
+#: Seitenverhaeltnis der Karte. Ohne Obergrenze zieht eine einzelne Maschine
+#: die Kachel ueber die ganze Fensterbreite, was neben einem Raster aus
+#: mehreren Karten wie ein Fehler aussieht.
+CARD_ASPECT = 4 / 3
+
+#: Hoehe der Karte. Zusammen mit CARD_ASPECT ergibt sie die Breite.
+CARD_HEIGHT = 384
+CARD_WIDTH = round(CARD_HEIGHT * CARD_ASPECT)
+
+#: Abstand zwischen zwei Karten, hier und im Raster derselbe Wert.
+CARD_GAP = 18
 
 
 class WorkstationGlyph(QWidget):
@@ -70,6 +150,8 @@ class WorkstationCard(QFrame):
     selected = Signal(Workstation)
     ping_completed = Signal(str)
     connect_requested = Signal(Workstation)
+    #: (Maschine, Aufloesung oder None fuer Vollbild, alle Monitore)
+    display_settings_changed = Signal(Workstation, object, bool)
     logoff_requested = Signal(Workstation)
     account_selected = Signal(Workstation, str)
     account_add_requested = Signal(Workstation)
@@ -87,8 +169,11 @@ class WorkstationCard(QFrame):
         self.setObjectName("workstationCard")
         self._apply_card_accent()
         self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumSize(250, 372)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # Festes 4:3. Vorher war die Karte horizontal dehnbar: bei wenigen
+        # Maschinen zog sich eine einzelne Kachel ueber das ganze Fenster und
+        # sah neben einem Raster aus mehreren wie ein Fehler aus.
+        self.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self._create_ui()
 
     def _create_ui(self) -> None:
@@ -107,26 +192,19 @@ class WorkstationCard(QFrame):
         self.name_label.setObjectName("cardTitle")
         self.name_label.setFont(Typography.heading_3())
         title_box.addWidget(self.name_label)
-        self.hostname_label = QLabel(
-            self.workstation.hostname
-            or self.workstation.fqdn
-            or self.workstation.ip_address
-            or "Kein Verbindungsziel"
-        )
-        self.hostname_label.setObjectName("cardMeta")
-        title_box.addWidget(self.hostname_label)
+        # Der Standort, nicht die Verbindungsadresse: die ist bei fast jeder
+        # Maschine mit dem Anzeigenamen identisch, sodass hier zweimal dasselbe
+        # stand. Wo die Maschine steht, beantwortet die Karte sonst nirgends
+        # auf den ersten Blick.
+        self.site_label = QLabel(self._site_text(self.workstation))
+        self.site_label.setObjectName("cardMeta")
+        title_box.addWidget(self.site_label)
         heading.addLayout(title_box, 1)
-        self.ping_result = QLabel("")
-        self.ping_result.setObjectName("cardMeta")
-        self.ping_result.setToolTip("Letztes ICMP-Ping-Ergebnis; unabhängig vom Agentstatus")
-        heading.addWidget(self.ping_result, 0, Qt.AlignTop | Qt.AlignRight)
+        heading.addLayout(self._build_quick_settings(), 0)
         layout.addLayout(heading)
 
         layout.addSpacing(20)
-        self.location_label = QLabel(
-            f"{self.workstation.site or 'Ohne Standort'}  ·  "
-            f"{self.workstation.description or 'Workstation'}"
-        )
+        self.location_label = QLabel(self._description_text(self.workstation))
         self.location_label.setObjectName("cardMeta")
         self.location_label.setWordWrap(True)
         layout.addWidget(self.location_label)
@@ -197,12 +275,9 @@ class WorkstationCard(QFrame):
         self.workstation = workstation
         self.user = user
         self.name_label.setText(workstation.display_name)
-        self.hostname_label.setText(
-            workstation.hostname or workstation.fqdn or workstation.ip_address or "Kein Verbindungsziel"
-        )
-        self.location_label.setText(
-            f"{workstation.site or 'Ohne Standort'}  ·  {workstation.description or 'Workstation'}"
-        )
+        self.site_label.setText(self._site_text(workstation))
+        self.location_label.setText(self._description_text(workstation))
+        self._load_quick_settings(workstation)
         self.account_selector.set_workstation(workstation, user)
         self.refresh_status()
 
@@ -306,12 +381,59 @@ class WorkstationCard(QFrame):
         """The accent for border, glyph and status dot, emphasis included."""
         return state_color(self._state())
 
+    #: Laenge eines Strichs im gestrichelten Rand, in Vielfachen der Randbreite.
+    DASH_LENGTH = 3.0
+
+    #: Eckenradius des Kartenrahmens, gleich dem Wert im Stylesheet.
+    CORNER_RADIUS = 11
+
     def _apply_card_accent(self) -> None:
         state = self._state()
         accent, width = state_color(state), state_border_width(state)
-        self.setStyleSheet(
-            f"QFrame#workstationCard {{ border: {width}px solid {css_color(accent)}; }}"
-        )
+        if state_is_dashed(state):
+            # Zwei Farben in einem Rand kann ein Stylesheet nicht. Der Rahmen
+            # wird deshalb transparent gehalten -- gleiche Breite, damit sich am
+            # Inhalt nichts verschiebt -- und in paintEvent selbst gezeichnet.
+            self.setStyleSheet(
+                f"QFrame#workstationCard {{ border: {width}px solid transparent; }}"
+            )
+        else:
+            self.setStyleSheet(
+                f"QFrame#workstationCard {{ border: {width}px solid {css_color(accent)}; }}"
+            )
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        """Draw the two-colour dashed border for a foreign, disconnected session.
+
+        Two passes over the same rounded rectangle: the first lays down the
+        violet dashes, the second the orange ones, offset by one dash so they
+        interleave instead of overprinting.
+        """
+        super().paintEvent(event)
+        state = self._state()
+        if not state_is_dashed(state):
+            return
+        width = state_border_width(state)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        # Auf die Mitte der Randbreite einruecken, sonst liegt die halbe Linie
+        # ausserhalb der Karte und wird abgeschnitten.
+        inset = width / 2
+        # QRectF, weil die Einrueckung eine halbe Randbreite ist und QRect
+        # nur ganze Pixel kennt.
+        rect = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
+        dash = self.DASH_LENGTH
+        for color, offset in (
+            (state_color(state), 0.0),
+            (state_secondary_color(state), dash),
+        ):
+            pen = QPen(color, width)
+            pen.setDashPattern([dash, dash])
+            pen.setDashOffset(offset)
+            pen.setCapStyle(Qt.FlatCap)
+            painter.setPen(pen)
+            painter.drawRoundedRect(rect, self.CORNER_RADIUS, self.CORNER_RADIUS)
+        painter.end()
 
     def _status_text(self) -> str:
         state = self.workstation.get_status_display()
@@ -329,42 +451,84 @@ class WorkstationCard(QFrame):
             return "Agentstatus fehlt · Ping = Netzwerk"
         return "Keine Windows-Sitzung" if self.workstation.reservation_message else "Frei und verfügbar"
 
+    def _build_quick_settings(self) -> QVBoxLayout:
+        """Resolution and multi-monitor choice, right beside name and site.
+
+        Both settings also live in the machine details, but they are the two a
+        person changes right before connecting -- and a full round trip through
+        the edit dialog for a screen size is out of proportion to the change.
+        """
+        box = QVBoxLayout()
+        box.setSpacing(4)
+        self.ping_result = QLabel("")
+        self.ping_result.setObjectName("cardMeta")
+        self.ping_result.setAlignment(Qt.AlignRight)
+        self.ping_result.setToolTip("Letztes ICMP-Ping-Ergebnis; unabhängig vom Agentstatus")
+        box.addWidget(self.ping_result)
+        self.resolution = QComboBox()
+        self.resolution.setObjectName("cardQuickSelect")
+        self.resolution.setToolTip("Auflösung der RDP-Sitzung für diese Maschine")
+        for label, value in offered_resolutions():
+            self.resolution.addItem(label, value)
+        box.addWidget(self.resolution)
+        self.all_monitors = QCheckBox("Alle Monitore")
+        self.all_monitors.setObjectName("cardQuickCheck")
+        self.all_monitors.setToolTip(
+            "Die Sitzung über alle Bildschirme dieses PCs öffnen"
+        )
+        box.addWidget(self.all_monitors, 0, Qt.AlignRight)
+        self._load_quick_settings(self.workstation)
+        self.resolution.currentIndexChanged.connect(self._emit_display_settings)
+        self.all_monitors.toggled.connect(self._emit_display_settings)
+        return box
+
+    def _load_quick_settings(self, workstation: Workstation) -> None:
+        """Show the machine's stored choice without emitting a change."""
+        for widget in (self.resolution, self.all_monitors):
+            widget.blockSignals(True)
+        try:
+            stored = (workstation.resolution or "").replace(" ", "")
+            windowed = (workstation.screen_mode or "").casefold() == "windowed"
+            index = self.resolution.findData(stored) if (stored and windowed) else 0
+            if index < 0:
+                # Eine in den Details eingetragene Sondergroesse geht nicht
+                # verloren, nur weil sie nicht in der kurzen Liste steht.
+                self.resolution.addItem(stored, stored)
+                index = self.resolution.count() - 1
+            self.resolution.setCurrentIndex(index)
+            self.all_monitors.setChecked(bool(workstation.use_all_monitors))
+        finally:
+            for widget in (self.resolution, self.all_monitors):
+                widget.blockSignals(False)
+
+    def _emit_display_settings(self) -> None:
+        if self.workstation is None:
+            return
+        self.display_settings_changed.emit(
+            self.workstation,
+            self.resolution.currentData(),
+            self.all_monitors.isChecked(),
+        )
+
+    @staticmethod
+    def _site_text(workstation: Workstation) -> str:
+        """Where the machine stands, shown directly under its name."""
+        return workstation.site.strip() if (workstation.site or "").strip() else "Ohne Standort"
+
+    @staticmethod
+    def _description_text(workstation: Workstation) -> str:
+        """Purpose and connection target -- the target moved here out of the title."""
+        target = (
+            workstation.hostname
+            or workstation.fqdn
+            or workstation.ip_address
+            or "Kein Verbindungsziel"
+        )
+        return f"{workstation.description or 'Workstation'}  ·  {target}"
+
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton:
             self.selected.emit(self.workstation)
-        super().mousePressEvent(event)
-
-
-class AddWorkstationCard(QFrame):
-    """Dashed tile mirroring the add affordance in the paper sketch."""
-
-    clicked = Signal()
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("addWorkstationCard")
-        self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumSize(250, 306)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignCenter)
-        layout.setSpacing(10)
-        plus = QLabel("+")
-        plus.setObjectName("addCardPlus")
-        plus.setAlignment(Qt.AlignCenter)
-        layout.addWidget(plus)
-        title = QLabel("Maschine hinzufügen")
-        title.setObjectName("addCardTitle")
-        title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
-        subtitle = QLabel("Neue RDP-Verbindung anlegen")
-        subtitle.setObjectName("cardMeta")
-        subtitle.setAlignment(Qt.AlignCenter)
-        layout.addWidget(subtitle)
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit()
         super().mousePressEvent(event)
 
 
@@ -376,7 +540,7 @@ class WorkstationCardsWidget(QWidget):
     logoff_requested = Signal(Workstation)
     account_selected = Signal(Workstation, str)
     account_add_requested = Signal(Workstation)
-    add_requested = Signal()
+    display_settings_changed = Signal(Workstation, object, bool)
     refresh_requested = Signal()
     agent_diagnostics_requested = Signal()
 
@@ -566,20 +730,25 @@ class WorkstationCardsWidget(QWidget):
             card.logoff_requested.connect(self.logoff_requested)
             card.account_selected.connect(self.account_selected)
             card.account_add_requested.connect(self.account_add_requested)
+            card.display_settings_changed.connect(self.display_settings_changed)
             items.append(card)
-        add_card = AddWorkstationCard()
-        add_card.clicked.connect(self.add_requested)
-        items.append(add_card)
         for index, card in enumerate(items):
             row, column = divmod(index, columns)
             self.grid.addWidget(card, row, column)
-            self.grid.setColumnStretch(column, 1)
             self._cards.append(card)
+        # Die Karten haben eine feste Breite, also darf keine Spalte dehnen --
+        # sonst reisst das Raster sie auseinander. Eine Reststrecke rechts
+        # nimmt den uebrigen Platz auf, damit die Karten links stehen bleiben.
+        for column in range(self.grid.columnCount()):
+            self.grid.setColumnStretch(column, 0)
+        self.grid.setColumnStretch(max(columns, self.grid.columnCount()), 1)
         self.scroll.verticalScrollBar().setValue(scroll_position)
 
     def _column_count(self) -> int:
         width = max(self.scroll.viewport().width(), self.width())
-        return max(1, min(4, width // 285))
+        # An der tatsaechlichen Kartenbreite ausgerichtet, sonst bleibt in
+        # jeder Reihe eine Karte Platz ungenutzt oder eine zu viel gedraengt.
+        return max(1, min(4, (width + CARD_GAP) // (CARD_WIDTH + CARD_GAP)))
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -614,4 +783,4 @@ class WorkstationCardsWidget(QWidget):
         self._rebuild_grid()
 
 
-__all__ = ["WorkstationCardsWidget", "WorkstationCard", "AddWorkstationCard"]
+__all__ = ["WorkstationCardsWidget", "WorkstationCard"]

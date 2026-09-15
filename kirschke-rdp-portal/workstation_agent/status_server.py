@@ -80,12 +80,14 @@ class StatusServer(threading.Thread):
         reader="PortalLeser",
         pipe_name=PIPE_NAME,
         logoff_handler=None,
+        reservation_handler=None,
     ):
         super().__init__(name="agent-live-status", daemon=True)
         self.snapshot_factory = snapshot_factory
         self.reader = reader
         self.pipe_name = pipe_name
         self.logoff_handler = logoff_handler
+        self.reservation_handler = reservation_handler
         self.stopping = threading.Event()
         self.ready = threading.Event()
         self.error = None
@@ -143,6 +145,19 @@ class StatusServer(threading.Thread):
                             )
                         except Exception as exc:
                             logger.warning("Agent-Abmeldung abgelehnt: %s", exc)
+                            data = {"ok": False, "message": str(exc)}
+                    elif request.startswith(b"RESERVE/1 ") and self.reservation_handler is not None:
+                        # Reservierungen sind Hinweise unter Kollegen, keine
+                        # Rechtevergabe -- deshalb genuegt hier, dass der
+                        # Aufrufer die Pipe erreicht. Wer das kann, sieht
+                        # ohnehin bereits jede Sitzung dieser Maschine.
+                        try:
+                            command = json.loads(request[len(b"RESERVE/1 "):])
+                            data = self.reservation_handler(
+                                command, client_computer_name(handle)
+                            )
+                        except Exception as exc:
+                            logger.warning("Reservierungen abgelehnt: %s", exc)
                             data = {"ok": False, "message": str(exc)}
                     else:
                         data = {"ok": False, "message": "Unbekannte oder nicht freigegebene Agent-Anfrage."}

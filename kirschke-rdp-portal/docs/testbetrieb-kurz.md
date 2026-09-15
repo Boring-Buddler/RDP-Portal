@@ -13,10 +13,166 @@ Das Testpaket vollständig in einen neuen Ordner entpacken. Das alte Portal schl
 und im neuen Ordner die Datei `Client\Kirschke-RDP-Portal.exe` starten.
 Den gesamten Client-Ordner zusammenlassen. Python ist auf dem Test-PC nicht erforderlich.
 Das vorhandene Inventar bleibt erhalten.
-Im Kopf des geöffneten Portals muss **TEST 0.3.10** stehen. Falls dort eine ältere
+Im Kopf des geöffneten Portals muss **TEST 0.5.3** stehen. Falls dort eine ältere
 Version steht, die Verknüpfung auf die EXE im frisch entpackten Client-Ordner ändern.
 
 Aus dem Quellcode: im Projektordner `python3.13 -m portal_app.app` ausführen.
+
+## Update 0.5.3: 2K und 4K, und ein einheitlicher Strich
+
+Der Agent bleibt bei 1.5.0.
+**Die Farben sind jetzt durchgängig.** Deine eigene Sitzung ohne offenes
+Fenster war bisher einfarbig orange. Sie ist jetzt **blau/orange gestrichelt**
+— passend zur fremden Sitzung ohne Fenster, die violett/orange gestrichelt ist.
+Damit bedeutet der orange Strich überall dasselbe: *belegt, aber niemand ist
+verbunden*. Die Grundfarbe sagt weiterhin, wer — blau du selbst, violett jemand
+anderes.
+
+Die Randstärke folgt unverändert dem, was du tun kannst: vier Pixel für deine
+eigene Maschine, zwei für eine, die jemand anderes hält.
+
+
+Die Auflösungsliste auf der Maschinenkarte reicht jetzt bis **2560 x 1440 (2K)**
+und **3840 x 2160 (4K)** — angeboten wird aber nur, was der Bildschirm vor dir
+auch darstellen kann. Eine Sitzung, die größer ist als das Panel, wäre nur
+durch Scrollen erreichbar.
+
+Hat dein Bildschirm eine Größe, die nicht zu den Standardstufen gehört —
+etwa 2256 x 1504 —, steht sie als eigener Eintrag **(Bildschirm)** ganz oben.
+Damit lässt sich „so groß wie dieser Bildschirm hergibt“ überhaupt auswählen.
+
+Skalierte Anzeigen sind berücksichtigt: Bei 150 % meldet Windows 1280 x 720
+für ein Full-HD-Panel; gerechnet wird mit den echten Bildpunkten.
+
+Eine Maschine, die anderswo auf 4K eingestellt wurde, behält diese Einstellung
+auch auf einem kleineren Bildschirm — sie wird angezeigt, nur nicht neu
+angeboten.
+
+## Update 0.5.2: gleicher Name, zwei Schreibweisen
+
+Der Agent bleibt bei 1.5.0.
+
+**Der eigentliche Grund, warum die eigene Maschine violett blieb.** Windows
+liefert einen Namen wie `HendrikSchälikeAdmin` in zwei Unicode-Formen: einmal
+mit fertigem `ä`, einmal als `a` mit nachgestelltem Trema. Beide sehen gleich
+aus und sind es für den Rechner nicht. Je nachdem, woher die Zeichenkette kam,
+kam mal die eine, mal die andere an — das Konto war korrekt eingetragen und
+wurde trotzdem nicht wiedererkannt. Alle Kontonamen werden jetzt vor dem
+Vergleich auf eine Form gebracht. Bestehende Einträge müssen nicht neu
+angelegt werden.
+
+Die Prüfung über die Windows-SID ist davon unberührt — normalisiert werden
+nur Namen, nie die Form, gegen die Windows tatsächlich autorisiert.
+
+**Anmelden als bleibt stehen.** Ein gewähltes Konto stand nur so lange in der
+Auswahlliste, wie gerade eine Sitzung darunter gemeldet wurde. Verschwand es,
+sprang die Auswahl beim Aktualisieren stillschweigend auf *Standard* zurück.
+Jetzt bleibt die gespeicherte Wahl erhalten und wird als **Gewählt · …**
+angezeigt, auch wenn sie sonst nirgends vorkommt.
+
+**Das bin ich** liegt jetzt auf der **Detailseite** statt auf der Karte, mit
+einer Zeile daneben, die das gemeldete Konto benennt.
+
+## Update 0.5.1: eigenes Entra-Konto wird von selbst erkannt
+
+Der Agent bleibt bei 1.5.0.
+
+**Das Problem:** Beim Verbinden merkte sich das Portal das Konto, mit dem es
+verbindet — bei Entra also die UPN (`schaelike-adm@...`). Der Agent meldet
+dieselbe Sitzung aber unter dem Profilnamen (`AzureAD\HendrikSchälikeAdmin`).
+Die beiden Formen haben nichts gemeinsam und lassen sich nicht auseinander
+herleiten. Die eigene Maschine blieb deshalb violett, auch wenn die UPN unter
+*Weitere eigene Windows-Konten* stand.
+
+**Jetzt** übernimmt das Portal zusätzlich die Schreibweise, die der Agent
+für die Sitzung meldet — aber nur für eine Sitzung, die **diesen Rechner**
+als ihren RDP-Client nennt und für die dieses Portal noch ein Fenster offen
+hat. Beides bezeugt Windows; geraten wird nichts.
+
+Nach dem Update genügt also ein Verbinden, damit die Maschine künftig als
+eigene erkannt wird. Für eine bereits laufende Sitzung geht es sofort über
+die Schaltfläche **Das bin ich** auf der Karte.
+
+## Update 0.5.0: Ziel automatisch prüfen, fremde Ruhesitzung, „Das bin ich"
+
+Der Agent bleibt bei 1.5.0; ein Agent-Update ist für diese Version nicht nötig.
+
+**Die automatische Zielwahl prüft jetzt, ob ein Name überhaupt auflösbar ist.**
+Über zwei Standorte hinweg funktioniert ein kurzer Windows-Name nicht: NetBIOS
+und LLMNR sind link-lokal, ein Router leitet sie nicht weiter. Bisher nahm das
+Portal den Namen trotzdem und Windows meldete „Remotedesktop kann den Computer
+… nicht finden", obwohl die hinterlegte IP funktioniert hätte. Bei
+*Verbindungsziel: Automatisch* wird die Reihenfolge FQDN → Hostname → IP jetzt
+durchgegangen, bis ein Bezeichner tatsächlich auflösbar ist.
+
+Ein **ausdrücklich gewähltes** Ziel bleibt unangetastet — wer *Hostname* einstellt,
+bekommt den Hostnamen, auch wenn er nicht auflösbar ist. Löst sich gar nichts auf,
+bleibt es beim bisherigen Verhalten.
+
+**Dieselbe Prüfung gilt für den Agentkanal.** Dessen Servername stammt aus dem
+UNC-Pfad des Datei-Fallbacks. Steht dort `\\PC07\RDP-Status`, während RDP längst
+über die IP läuft, war der Livestatus verloren — jetzt fällt der Kanal auf das
+geprüfte RDP-Ziel zurück.
+
+**Neue Farbe: violett/orange gestrichelt.** Eine Maschine, die jemand anderes
+hält, dessen RDP-Fenster aber geschlossen ist. Das Gegenstück zum orangenen
+Zustand bei der eigenen Sitzung — und die Karte, bei der sich Nachfragen lohnt.
+Gelesen wird das aus dem, was der Agent ohnehin meldet (`disconnected`); es
+funktioniert deshalb auch bei Kollegen, die ohne Portal verbinden.
+
+**„Das bin ich".** Bei Entra-Konten meldet der Agent den *Profilnamen*
+(`AzureAD\HendrikSchälikeAdmin`), während im Portal die UPN steht
+(`schaelike-adm@…`). Die beiden lassen sich nicht auseinander herleiten, deshalb
+galt die eigene Sitzung als fremd und die Karte war violett. Auf einer als fremd
+belegt angezeigten Karte trägt die Schaltfläche **Das bin ich** das gemeldete
+Konto mit einem Klick als eigenes ein. Rechte vergibt das nicht — Windows fragt
+weiterhin nach dem Kennwort, und der Agent prüft die Abmeldung eigenständig.
+
+## Update 0.4.1: Kachelformat und Schnellauswahl auf der Maschinenkarte
+
+Der Agent bleibt bei 1.5.0, ein Update des Agenten ist für diese Version nicht
+nötig.
+
+**Die Maschinenkachel hat jetzt ein festes 4:3-Format.** Vorher zog sich eine
+einzelne Maschine über die ganze Fensterbreite.
+
+**Rechts neben Name und Standort steht eine Schnellauswahl:** die Auflösung der
+RDP-Sitzung und darunter **Alle Monitore**. Beides gilt je Maschine, wird sofort
+gespeichert und steht weiterhin auch in den Maschinendetails. *Vollbild* trägt
+bewusst keine Auflösung — Windows nimmt dann den ganzen Bildschirm, statt die
+Sitzung auf die Größe des heutigen Monitors festzunageln.
+
+## Update 0.4.0 / Agent 1.5.0: Reservierungen zwischen Portalen, Symbol, Kalender
+
+**Agent unbedingt mit aktualisieren.** Der Agent führt ab 1.5.0 die
+Reservierungen seiner eigenen Maschine. Ein älterer Agent meldet keine — das
+Portal unterscheidet das von „keine gebucht" und löscht deshalb nichts, die
+Buchungen bleiben dann aber wie bisher auf dem Portal, das sie angelegt hat.
+
+**Reservierungen erreichen jetzt alle Portale.** Wer eine Maschine reserviert,
+schickt die Buchung an den Agenten dieser Maschine. Jedes andere Portal sieht
+sie beim nächsten Statusabruf — auch ohne gemeinsame Ablage. Ist die Maschine
+beim Reservieren nicht erreichbar, meldet das Portal das: die Buchung ist lokal
+gespeichert, die anderen sehen sie erst später.
+
+Eine Reservierung ist weiterhin **eine Absprache, kein Recht**. Sie vergibt
+keine Windows-Berechtigungen und beendet keine fremde Sitzung. Da der Agent über
+das gemeinsame Konto `PortalLeser` erreicht wird, kann er nicht prüfen, welche
+Person eine Buchung schickt. Bearbeiten zwei Portale dieselbe Maschine im selben
+Moment, gewinnt die zuletzt gesendete Liste.
+
+**Im Kalender steht jetzt, wer reserviert hat** — direkt in der Kachel statt nur
+im Tooltip. Der laufende Tag ist deutlich blau hinterlegt, und die Fläche unter
+den Maschinennamen folgt dem gewählten Thema statt hell bzw. dunkel
+herauszustechen.
+
+**Eigenes Programmsymbol.** Portal und Agent tragen das Kirschke-Signet — in der
+Taskleiste, im Explorer und auf der Verknüpfung im Startmenü.
+
+**Maschinenseite aufgeräumt.** Unter dem Maschinennamen steht der Standort statt
+noch einmal des Namens; Zweck und Verbindungsziel stehen eine Zeile tiefer. Die
+Kachel **Maschine hinzufügen** ist aus der Übersicht verschwunden — Maschinen
+werden im Admin-Bereich angelegt.
 
 ## Update 0.3.10 / Agent 1.4.3: Konsolensitzung abmelden, eigene Konten, Agent-Version
 

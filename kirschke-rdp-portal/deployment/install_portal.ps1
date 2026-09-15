@@ -4,6 +4,10 @@ $ErrorActionPreference = 'Stop'
 $installDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\KirschkeRDPPortal'
 $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\KirschkeRDPPortal'
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Kirschke RDP Portal.lnk'
+# Wird vom Build aus shared/version.py ersetzt. Vorher stand hier eine feste
+# Nummer, die drei Versionen lang nicht mitgezogen wurde und in der
+# Windows-Programmliste eine falsche Version auswies.
+$portalVersion = '0.0.0-dev'
 
 function Remove-Portal {
     $executable = Join-Path $installDirectory 'Kirschke-RDP-Portal.exe'
@@ -34,10 +38,13 @@ function Install-Portal {
     $link = $shell.CreateShortcut($shortcut)
     $link.TargetPath = Join-Path $installDirectory 'Kirschke-RDP-Portal.exe'
     $link.WorkingDirectory = $installDirectory
+    # Explizit gesetzt, damit die Verknuepfung das Symbol auch dann zeigt,
+    # wenn Windows seinen Symbol-Cache nicht neu aufbaut.
+    $link.IconLocation = "$(Join-Path $installDirectory 'Kirschke-RDP-Portal.exe'),0"
     $link.Save()
     New-Item -Path $registry -Force | Out-Null
     New-ItemProperty -Path $registry -Name DisplayName -Value 'Kirschke RDP Portal' -Force | Out-Null
-    New-ItemProperty -Path $registry -Name DisplayVersion -Value '0.2.12' -Force | Out-Null
+    New-ItemProperty -Path $registry -Name DisplayVersion -Value $portalVersion -Force | Out-Null
     $command = "powershell.exe -NoProfile -File `"$(Join-Path $installDirectory 'Install-Portal.ps1')`" -Uninstall"
     New-ItemProperty -Path $registry -Name UninstallString -Value $command -Force | Out-Null
 }

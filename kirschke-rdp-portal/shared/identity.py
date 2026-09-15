@@ -25,6 +25,7 @@ substitute for Windows authenticating the caller.
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -60,8 +61,22 @@ class IdentityMatch(Enum):
 
 
 def _clean(value: Any) -> str | None:
+    """Trim a name and bring it into one Unicode spelling.
+
+    The same profile name reaches the portal in two forms that look identical and
+    are not equal: ``HendrikSchälikeAdmin`` with a precomposed ``ä`` (U+00E4), and
+    the same name with a plain ``a`` followed by a combining diaeresis (U+0308).
+    Windows produces both, depending on where the string came from -- what WTS
+    reports for a session, and what somebody typed or pasted into the settings.
+
+    Comparing them without normalising means a person can enter their own account
+    exactly as it is displayed, see it accepted, and still have their own machine
+    show up as occupied by a stranger. Everything that becomes a name form here
+    goes through one composition, so that comparison stops depending on which
+    layer produced the string.
+    """
     text = str(value).strip() if value is not None else ""
-    return text or None
+    return unicodedata.normalize("NFC", text) if text else None
 
 
 @dataclass(frozen=True)

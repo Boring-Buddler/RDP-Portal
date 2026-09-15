@@ -90,8 +90,13 @@ EXPECTED_COLORS = {
     # Belegt und reserviert teilen sich Violett: die Frage "kann ich sie benutzen"
     # wird in beiden Faellen gleich beantwortet.
     MachineState.OCCUPIED_OTHER: Colors.taken,
+    # Getrennte fremde Sitzung: Violett bleibt die Grundfarbe, unterschieden wird
+    # ueber den gestrichelten Rand mit Orange als zweiter Strichfarbe.
+    MachineState.OCCUPIED_OTHER_IDLE: Colors.taken,
     MachineState.RESERVED: Colors.taken,
-    MachineState.OWN_IDLE: Colors.attention,
+    # Deine Sitzung ist blau, mit oder ohne Fenster. Orange ist keine
+    # Grundfarbe mehr, sondern die zweite Strichfarbe fuer "Fenster zu".
+    MachineState.OWN_IDLE: Colors.info,
 }
 
 

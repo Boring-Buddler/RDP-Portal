@@ -28,6 +28,27 @@ from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
 from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 
+#: Farben, die der Kalender selbst in die Zellen schreibt -- ein Stylesheet
+#: erreicht einzelne QTableWidgetItems nicht, deshalb stehen sie hier.
+#: "today" war vorher ein einziger, fast weisser Wert fuer beide Themen: im
+#: hellen Thema kaum vom Rest zu unterscheiden, im dunklen ein hell leuchtender
+#: Streifen. "grid" war fest weiss und zog im dunklen Thema ein weisses Netz
+#: ueber die ganze Tabelle.
+CALENDAR_COLORS = {
+    "light": {
+        "today": "#cfe0f0",
+        "empty": "#ffffff",
+        "grid": "#dde5ea",
+        "header": "#e8eff3",
+    },
+    "dark": {
+        "today": "#2f5a78",
+        "empty": "#1a2a35",
+        "grid": "#3c5a6b",
+        "header": "#263b48",
+    },
+}
+
 RESERVATION_COLORS = (
     ("Blau", "#5d86a4"),
     ("Grün", "#5f8b70"),
@@ -35,6 +56,24 @@ RESERVATION_COLORS = (
     ("Violett", "#7a6b9d"),
     ("Rot", "#a85f62"),
 )
+
+
+def short_account(value: str) -> str:
+    r"""The readable part of an account name, for the narrow calendar tile.
+
+    A reservation stores the UPN (``becker@prof-kirschke.de``) or a down-level
+    name (``DOMAIN\becker``). Neither fits a day tile, and the domain part is
+    the same for everyone here, so it carries no information. The full value
+    stays in the tooltip.
+    """
+    value = (value or "").strip()
+    if not value:
+        return "unbekannt"
+    if "@" in value:
+        return value.split("@", 1)[0]
+    if "\\" in value:
+        return value.rsplit("\\", 1)[1]
+    return value
 
 
 class ReservationDialog(QDialog):
@@ -167,8 +206,20 @@ class ReservationCalendarWidget(QWidget):
         self.user = user
         self.start_day = date.today()
         self.days = 14
+        self.dark_mode = False
         self._create_ui()
         self.refresh()
+
+    def set_dark_mode(self, dark_mode: bool) -> None:
+        """Follow the application theme; the cell colours are set in code."""
+        if dark_mode == self.dark_mode:
+            return
+        self.dark_mode = dark_mode
+        self.refresh()
+
+    @property
+    def colors(self) -> dict[str, str]:
+        return CALENDAR_COLORS["dark" if self.dark_mode else "light"]
 
     def _create_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -217,24 +268,52 @@ class ReservationCalendarWidget(QWidget):
         self.table.setRowCount(len(self.workstations))
         self.table.setHorizontalHeaderLabels([f"{day.strftime('%a')}\n{day.strftime('%d.%m.')}" for day in dates])
         self.table.setVerticalHeaderLabels([ws.display_name for ws in self.workstations])
+        colors = self.colors
+        # Gitter- und Kopffarbe werden hier gesetzt, weil die Tabelle in beiden
+        # Themen dieselbe Objektkennung traegt und das Stylesheet sie nicht
+        # trennt. Der Kopfbereich braucht die Farbe zusaetzlich am Widget und
+        # nicht nur an ::section: unterhalb der letzten Maschine liegt Flaeche
+        # ohne Abschnitt, und die blieb sonst im Systemgrau stehen -- ein
+        # dunkler Block im hellen Thema und ein heller im dunklen.
+        self.table.setStyleSheet(
+            "QTableWidget#calendarTable {"
+            f"  gridline-color: {colors['grid']};"
+            "}"
+            "QTableWidget#calendarTable QHeaderView,"
+            "QTableWidget#calendarTable QHeaderView::section {"
+            f"  background: {colors['header']};"
+            "}"
+            "QTableWidget#calendarTable QTableCornerButton::section {"
+            f"  background: {colors['header']};"
+            "}"
+        )
+        today = date.today()
         for row, workstation in enumerate(self.workstations):
             for column, day in enumerate(dates):
                 item = QTableWidgetItem("")
                 item.setTextAlignment(Qt.AlignCenter)
-                if day == date.today():
-                    item.setBackground(QColor("#eef4f8"))
+                # Jede Zelle bekommt ausdruecklich eine Farbe. Ohne das blieben
+                # freie Zellen im dunklen Thema auf hellem Grund stehen.
+                item.setBackground(
+                    QColor(colors["today"] if day == today else colors["empty"])
+                )
                 matches = self._reservations_for(workstation.workstation_id, day)
                 if matches:
                     reservation = matches[0]
                     item.setBackground(QColor(reservation.color))
                     item.setForeground(QColor("#ffffff"))
                     if reservation.start.date() == day or column == 0:
-                        item.setText(reservation.title)
+                        # Wer reserviert hat, steht jetzt in der Kachel und nicht
+                        # nur im Tooltip: im Kalender ist genau das die Frage,
+                        # die man ohne Mauszeiger beantwortet haben will.
+                        item.setText(
+                            f"{reservation.title}\n{short_account(reservation.reserved_by)}"
+                        )
                     item.setToolTip(
                         f"{reservation.title}\n"
                         f"{reservation.start.strftime('%d.%m.%Y %H:%M')} – "
                         f"{reservation.end.strftime('%d.%m.%Y %H:%M')}\n"
-                        f"Reserviert von {reservation.reserved_by}"
+                        f"Reserviert von {reservation.reserved_by or 'unbekannt'}"
                     )
                     item.setData(Qt.UserRole, reservation.reservation_id)
                 self.table.setItem(row, column, item)
@@ -354,4 +433,9 @@ class ReservationCalendarWidget(QWidget):
         )
 
 
-__all__ = ["ReservationCalendarWidget", "ReservationDialog"]
+__all__ = [
+    "CALENDAR_COLORS",
+    "ReservationCalendarWidget",
+    "ReservationDialog",
+    "short_account",
+]

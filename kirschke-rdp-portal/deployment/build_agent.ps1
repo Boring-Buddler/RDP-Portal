@@ -12,12 +12,21 @@ if (-not (Test-Path -LiteralPath $entryPoint)) {
     throw "Einstiegspunkt nicht gefunden: $entryPoint"
 }
 
+# Agent und Portal tragen dasselbe Symbol: auf dem Zielrechner taucht der
+# Agent im Explorer und in der Dienstliste auf, und ein Standardsymbol dort
+# sieht aus wie ein fremdes Programm.
+$icon = Join-Path $projectRoot "portal_app\ui\assets\kirschke.ico"
+if (-not (Test-Path -LiteralPath $icon)) {
+    throw "Anwendungssymbol fehlt: $icon (python deployment/build_app_icon.py)"
+}
+
 $arguments = @(
     "-m", "PyInstaller",
     "--noconfirm",
     "--clean",
     "--windowed",
     "--name", "Kirschke-RDP-Agent",
+    "--icon", $icon,
     "--paths", $projectRoot,
     "--distpath", $outputRoot,
     "--workpath", $workRoot,
@@ -45,6 +54,7 @@ Write-Host "Installer: $(Join-Path $installerDirectory 'Install-Agent.cmd')"
 $setupArguments = @(
     "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
     "--name", "Kirschke-RDP-Agent-Setup", "--uac-admin",
+    "--icon", $icon,
     "--distpath", $outputRoot,
     "--workpath", (Join-Path $workRoot "setup"),
     "--specpath", $specRoot,

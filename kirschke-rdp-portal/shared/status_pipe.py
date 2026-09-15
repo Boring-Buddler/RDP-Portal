@@ -128,6 +128,35 @@ def request_snapshot(target, pipe_name=PIPE_NAME):
     return AgentSnapshot.from_dict(data), round((time.monotonic() - started) * 1000)
 
 
+def push_agent_reservations(target, reservations, pipe_name=PIPE_NAME, credentials=None):
+    """Hand one machine's agent the current reservation list for that machine.
+
+    The agent keeps the list and returns it with every status snapshot, so a
+    portal on another PC sees the booking without a shared state file.
+
+    This is not an authorization step -- see
+    :mod:`workstation_agent.reservation_store` for why a reservation is a note
+    among colleagues rather than a right.
+    """
+    request = {
+        "protocol": "RESERVE/1",
+        "request_id": str(uuid.uuid4()),
+        "requested_at_utc": datetime.now(UTC).isoformat(),
+        "reservations": list(reservations),
+    }
+    data = _exchange(
+        target,
+        (b"RESERVE/1 " + json.dumps(request, separators=(",", ":")).encode("utf-8")),
+        pipe_name,
+        credentials,
+    )
+    if not data.get("ok"):
+        raise PermissionError(
+            data.get("message") or "Der Agent hat die Reservierungen abgelehnt."
+        )
+    return int(data.get("count", 0))
+
+
 def request_agent_logoff(
     target,
     session_id,

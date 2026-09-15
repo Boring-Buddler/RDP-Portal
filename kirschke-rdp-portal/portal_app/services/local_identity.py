@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 
@@ -24,6 +25,29 @@ def _whoami(*arguments: str) -> str:
     if result.returncode != 0 or not result.stdout.strip():
         return ""
     return result.stdout.strip().splitlines()[0].strip()
+
+
+def local_machine_names() -> set[str]:
+    """The names and addresses under which this PC reaches another machine.
+
+    An agent reports the RDP client of a session as a computer name or as an
+    address, depending on how the connection was made. Comparing against all of
+    them is what lets the portal recognise "this session was opened from here".
+    """
+    import socket
+
+    names: set[str] = set()
+    for value in (os.environ.get("COMPUTERNAME"), socket.gethostname()):
+        name = (value or "").strip()
+        if name:
+            names.add(name.casefold())
+            names.add(name.split(".", 1)[0].casefold())
+    try:
+        for entry in socket.getaddrinfo(socket.gethostname(), None):
+            names.add(str(entry[4][0]).split("%", 1)[0].casefold())
+    except OSError:
+        pass
+    return {name for name in names if name}
 
 
 def _detect_identity() -> tuple[str, str | None]:

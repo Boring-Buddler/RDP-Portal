@@ -92,6 +92,11 @@ class Workstation:
     # Agent Status
     agent_workstation_id: str | None = None
     agent_sessions: list[dict] = field(default_factory=list)  # transient snapshot data
+    # Reservierungen, die der Agent dieser Maschine gemeldet hat. Ebenfalls
+    # fluechtig: die eigene Wahrheit des Portals steht in LocalStore.
+    # None heisst "nicht gemeldet" (Agent aelter als 1.5.0 oder nicht
+    # erreichbar) und ist etwas anderes als eine leere Liste.
+    agent_reservations: list[dict] | None = None
     agent_session_history: list[dict] = field(default_factory=list)
     agent_status: AgentStatus = AgentStatus.OFFLINE
     agent_last_seen_utc: datetime | None = None
@@ -251,8 +256,16 @@ class Workstation:
         )
 
     def get_connection_target(self) -> tuple[str, ConnectionTargetMode]:
-        """Return the concrete target and the address source used by RDP."""
-        return self.get_rdp_profile().resolve_connection_target()
+        """Return the concrete target and the address source used by RDP.
+
+        This is the portal-side entry point, so it asks whether an identifier
+        can actually be resolved instead of only preferring one. The answers
+        are cached, and a machine with a single identifier is decided without
+        any lookup at all.
+        """
+        from shared.name_resolution import resolvable
+
+        return self.get_rdp_profile().resolve_connection_target(resolvable)
 
     def get_agent_status_target(self) -> str:
         """Return the SMB server identity authenticated for this agent channel.
@@ -262,10 +275,17 @@ class Workstation:
         authenticated under that hostname.  Reusing its UNC server keeps the
         read-only named pipe in the same Windows SMB logon session.
         """
+        from shared.name_resolution import resolvable
+
         configured = (self.agent_fallback_directory or "").strip()
         if self.agent_fallback_is_explicit:
             match = re.match(r"^\\\\([^\\]+)\\", configured)
-            if match:
+            # The share is often written with the Windows name while RDP has
+            # already had to move to the IP address. That name then does not
+            # resolve either, and insisting on it costs the live status of a
+            # perfectly reachable machine -- so fall through to the RDP target,
+            # which has just been checked the same way.
+            if match and resolvable(match.group(1)):
                 return match.group(1)
         target, _ = self.get_connection_target()
         return target
@@ -355,6 +375,36 @@ class Workstation:
                          "full_username": self.current_session_user,
                          "session_state": self.current_session_state.value}]
         return sessions
+
+    def foreign_sessions(self, identity: OwnAccounts) -> list[dict]:
+        """Active sessions that do not belong to the portal user."""
+        own = {id(item) for item in self.owned_sessions(identity)}
+        return [
+            item
+            for item in self.reported_sessions()
+            if is_active_session(item) and id(item) not in own
+        ]
+
+    def foreign_session_is_idle(self, identity: OwnAccounts) -> bool:
+        """Whether somebody else holds this machine without being connected to it.
+
+        Closing an RDP window does not end the Windows session, it disconnects
+        it -- the account keeps the machine while nobody is looking at it. That
+        is the same situation ``OWN_IDLE`` marks for your own account, and it is
+        worth showing for a colleague too: it is the machine where asking is
+        likely to free something up.
+
+        Read from what the agent reports rather than from a portal telling other
+        portals about its windows. The agent sees the fact itself, which also
+        covers a colleague who connected with plain ``mstsc``, and there is no
+        flag left standing when somebody's portal simply disappears.
+        """
+        sessions = self.foreign_sessions(identity)
+        return bool(sessions) and all(
+            str(item.get("session_state") or "").casefold()
+            == SessionState.DISCONNECTED.value
+            for item in sessions
+        )
 
     def sessions_for_account(self, account: str | None) -> list[dict]:
         """Return active sessions whose reported Windows name matches one account."""

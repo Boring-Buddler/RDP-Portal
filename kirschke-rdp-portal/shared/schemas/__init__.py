@@ -5,6 +5,7 @@ the portal application, workstation agent, and SharePoint lists.
 """
 
 import ipaddress
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -187,8 +188,29 @@ class RDPProfileSchema(BaseSchema):
         description="List of allowed Entra group IDs"
     )
 
-    def resolve_connection_target(self) -> tuple[str, ConnectionTargetMode]:
-        """Resolve the configured address source to one concrete RDP target."""
+    def resolve_connection_target(
+        self,
+        resolver: "Callable[[str], bool] | None" = None,
+    ) -> tuple[str, ConnectionTargetMode]:
+        """Resolve the configured address source to one concrete RDP target.
+
+        An explicitly chosen source is used as chosen, even when it cannot be
+        resolved -- the person said which one, and quietly connecting somewhere
+        else would be worse than a clear error.
+
+        ``AUTO`` means "the portal decides", so it walks the whole preference
+        order and takes the first identifier that is actually usable. Preferring
+        the name is deliberate, because that is what Kerberos and single sign-on
+        need. But a short Windows name does not survive a site boundary, and the
+        choice used to fall on it regardless -- RDP then failed with "cannot find
+        the computer" while the IP address sitting right next to it worked.
+
+        Without a ``resolver`` the order-only behaviour applies, which keeps this
+        usable for validation and in tests where no lookup may happen. If nothing
+        resolves, the first configured identifier is returned as before: never
+        worse than it was, and the error then comes from Windows in its own
+        words.
+        """
         candidates = {
             ConnectionTargetMode.IP_ADDRESS: self.ip_address,
             ConnectionTargetMode.HOSTNAME: self.hostname,
@@ -202,14 +224,22 @@ class RDPProfileSchema(BaseSchema):
                 )
             return target, self.connection_target_mode
 
-        for mode in (
+        order = (
             ConnectionTargetMode.FQDN,
             ConnectionTargetMode.HOSTNAME,
             ConnectionTargetMode.IP_ADDRESS,
-        ):
-            if candidates[mode]:
-                return candidates[mode] or "", mode
-        raise ValueError("Für diese Maschine ist kein Verbindungsziel hinterlegt.")
+        )
+        configured = [(mode, candidates[mode]) for mode in order if candidates[mode]]
+        if not configured:
+            raise ValueError("Für diese Maschine ist kein Verbindungsziel hinterlegt.")
+        # A single candidate cannot be improved on, and asking would cost a lookup
+        # on every card refresh without ever changing the answer.
+        if resolver is not None and len(configured) > 1:
+            for mode, target in configured:
+                if resolver(target or ""):
+                    return target or "", mode
+        mode, target = configured[0]
+        return target or "", mode
 
     def uses_ip_target(self) -> bool:
         target, mode = self.resolve_connection_target()

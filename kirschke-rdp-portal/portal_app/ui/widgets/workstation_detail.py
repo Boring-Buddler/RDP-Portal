@@ -43,6 +43,8 @@ class WorkstationDetailWidget(QWidget):
     agent_assignment_requested = Signal(Workstation)
     fallback_setup_requested = Signal(Workstation)
     edit_requested = Signal(Workstation)
+    #: (Maschine, gemeldeter Kontoname) -- der Benutzer erklaert ihn zu seinem.
+    account_claim_requested = Signal(Workstation, str)
     back_requested = Signal()
 
     def __init__(self, user: User, parent: QWidget | None = None) -> None:
@@ -100,6 +102,24 @@ class WorkstationDetailWidget(QWidget):
         self.reservation_label.setObjectName("cardStatus")
         self.reservation_label.setWordWrap(True)
         root.addWidget(self.reservation_label)
+        # Sichtbar, solange die Maschine als fremd belegt gilt. Bei einem
+        # Entra-Konto ist der gemeldete Name der Profilname, die Portaleinstellung
+        # aber die UPN -- die beiden lassen sich nicht auseinander herleiten, und
+        # das Konto abzutippen ist genau die Stelle, an der es schiefgeht.
+        self.claim_row = QHBoxLayout()
+        self.claim_label = QLabel()
+        self.claim_label.setObjectName("cardMeta")
+        self.claim_label.setWordWrap(True)
+        self.claim_row.addWidget(self.claim_label, 1)
+        self.claim_btn = QPushButton("Das bin ich")
+        self.claim_btn.setObjectName("toolbarButton")
+        self.claim_btn.setToolTip(
+            "Das gemeldete Windows-Konto als eigenes eintragen. Die Maschine gilt "
+            "danach als von dir belegt. Rechte vergibt das nicht."
+        )
+        self.claim_btn.clicked.connect(self._on_claim)
+        self.claim_row.addWidget(self.claim_btn)
+        root.addLayout(self.claim_row)
         self.account_selector = LoginAccountSelector(None, self.user, self)
         self.account_selector.account_selected.connect(self.account_selected)
         self.account_selector.add_requested.connect(self.account_add_requested)
@@ -329,6 +349,7 @@ class WorkstationDetailWidget(QWidget):
             return
         ws = self.workstation
         self.account_selector.set_workstation(ws, self.user)
+        self._refresh_claim_row()
         profile = ws.get_rdp_profile(self.user.get_rdp_username())
         if ws.entra_sso_enabled and not profile.effective_entra_sso_enabled():
             sso_status = "Webkonto deaktiviert (IP-Ziel)"
@@ -510,6 +531,46 @@ class WorkstationDetailWidget(QWidget):
                 "irreführenden Meldungen."
             )
         return reported
+
+    def _claimable_account(self) -> str:
+        """The reported account of a foreign session, if there is exactly one.
+
+        Only while the machine actually reads as occupied by somebody else, and
+        only for a single account: with two foreign sessions it is not clear
+        which one is meant, and a wrong claim mislabels a colleague's session.
+        """
+        from portal_app.ui.machine_actions import MachineState, machine_state
+        from shared.session_identity import session_username
+
+        if self.workstation is None:
+            return ""
+        if machine_state(self.workstation, self.user) not in (
+            MachineState.OCCUPIED_OTHER,
+            MachineState.OCCUPIED_OTHER_IDLE,
+        ):
+            return ""
+        names = {
+            session_username(item)
+            for item in self.workstation.foreign_sessions(self.user.windows_accounts())
+            if session_username(item)
+        }
+        return next(iter(names)) if len(names) == 1 else ""
+
+    def _refresh_claim_row(self) -> None:
+        account = self._claimable_account()
+        self.claim_btn.setVisible(bool(account))
+        self.claim_label.setVisible(bool(account))
+        if account:
+            self.claim_label.setText(
+                f"Diese Maschine gilt als belegt von {account}. "
+                "Gehört dir das Konto selbst?"
+            )
+
+    @Slot()
+    def _on_claim(self) -> None:
+        account = self._claimable_account()
+        if self.workstation is not None and account:
+            self.account_claim_requested.emit(self.workstation, account)
 
     @Slot()
     def _on_connect(self) -> None:

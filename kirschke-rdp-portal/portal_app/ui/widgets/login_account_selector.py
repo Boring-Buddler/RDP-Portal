@@ -62,9 +62,18 @@ class LoginAccountSelector(QWidget):
             for account in workstation.session_accounts():
                 if self.combo.findData(account) < 0:
                     self.combo.addItem(f"Angemeldet · {account}", account)
+            chosen = workstation.selected_login_account or ""
+            # Die gespeicherte Wahl steht nicht zwangslaeufig in der Liste: sie
+            # kommt dort nur vor, solange sie unter login_accounts gefuehrt wird
+            # oder gerade als Sitzung gemeldet ist. Meldet der Agent dieselbe
+            # Person unter einer anderen Schreibweise -- bei Entra der Profilname
+            # statt der UPN -- verschwand der Eintrag, findData lieferte -1 und
+            # die Auswahl sprang stillschweigend auf "Standard" zurueck.
+            if chosen and self.combo.findData(chosen) < 0:
+                self.combo.addItem(f"Gewählt · {chosen}", chosen)
             self.combo.insertSeparator(self.combo.count())
             self.combo.addItem("+ Benutzer hinzufügen …", self.ADD_VALUE)
-            self.combo.setCurrentIndex(max(0, self.combo.findData(workstation.selected_login_account or "")))
+            self.combo.setCurrentIndex(max(0, self.combo.findData(chosen)))
         self.combo.setEnabled(workstation is not None)
         self.combo.blockSignals(False)
 

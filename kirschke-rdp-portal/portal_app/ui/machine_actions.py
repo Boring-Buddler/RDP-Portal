@@ -19,9 +19,13 @@ Zustand                 Farbe       Bedeutung
 DISABLED                grau        im Portal deaktiviert
 BLOCKED                 rot         Wartung oder gesperrt
 UNKNOWN                 grau        Agent meldet keinen aktuellen Status
-OWN_IDLE                orange      deine Sitzung laeuft ohne offenes Fenster
+OWN_IDLE                bl./orange  deine Sitzung, Fenster zu
 OCCUPIED_SELF           blau        deine Sitzung, Fenster offen
 OCCUPIED_OTHER          violett     jemand anderes ist angemeldet
+OCCUPIED_OTHER_IDLE     vi./orange  fremde Sitzung, Fenster zu
+
+Der orange Strich bedeutet ueberall dasselbe: belegt, aber niemand verbunden.
+Die Grundfarbe sagt, wer -- blau du selbst, violett jemand anderes.
 RESERVED                violett     fremde Reservierung, niemand angemeldet
 AVAILABLE               gruen       frei -- auch bei eigener Reservierung
 ======================  ==========  ======================================
@@ -65,6 +69,9 @@ class MachineState(Enum):
     OWN_IDLE = "own_idle"
     OCCUPIED_SELF = "occupied_self"
     OCCUPIED_OTHER = "occupied_other"
+    #: Belegt von jemand anderem, dessen Sitzung aber getrennt ist -- das
+    #: Gegenstueck zu OWN_IDLE, nur fuer eine fremde Person.
+    OCCUPIED_OTHER_IDLE = "occupied_other_idle"
     RESERVED = "reserved"
     AVAILABLE = "available"
 
@@ -73,9 +80,12 @@ STATE_COLORS: dict[MachineState, QColor] = {
     MachineState.DISABLED: Colors.text_muted,
     MachineState.BLOCKED: Colors.error,
     MachineState.UNKNOWN: Colors.text_muted,
-    MachineState.OWN_IDLE: Colors.attention,
+    # Deine Sitzung ist blau, ob mit oder ohne Fenster. Ob ein Fenster offen
+    # ist, sagt der gestrichelte Rand -- siehe IDLE_DASH_COLOR.
+    MachineState.OWN_IDLE: Colors.info,
     MachineState.OCCUPIED_SELF: Colors.info,
     MachineState.OCCUPIED_OTHER: Colors.taken,
+    MachineState.OCCUPIED_OTHER_IDLE: Colors.taken,
     MachineState.RESERVED: Colors.taken,
     MachineState.AVAILABLE: Colors.success,
 }
@@ -89,6 +99,7 @@ STATE_BUTTONS: dict[MachineState, str | None] = {
     MachineState.OWN_IDLE: "Sitzung öffnen",
     MachineState.OCCUPIED_SELF: "Sitzung öffnen …",
     MachineState.OCCUPIED_OTHER: "Maschine besetzt",
+    MachineState.OCCUPIED_OTHER_IDLE: "Maschine besetzt",
     MachineState.RESERVED: "Maschine besetzt",
     MachineState.AVAILABLE: "Verbinden",
 }
@@ -128,6 +139,10 @@ STATE_EMPHASIS: dict[MachineState, Emphasis] = {
     MachineState.OWN_IDLE: Emphasis(4),
     MachineState.OCCUPIED_SELF: Emphasis(4),
     MachineState.OCCUPIED_OTHER: Emphasis(2, 0.70),
+    # Dieselbe zurueckhaltende Breite wie jeder Zustand, an dem man nichts tun
+    # kann -- die Unterscheidung traegt der gestrichelte, zweifarbige Rand,
+    # nicht eine dritte Randstaerke.
+    MachineState.OCCUPIED_OTHER_IDLE: Emphasis(2, 0.85),
     MachineState.RESERVED: Emphasis(2, 0.70),
     MachineState.BLOCKED: Emphasis(2, 0.70),
     MachineState.UNKNOWN: Emphasis(2, 0.70),
@@ -141,7 +156,8 @@ STATE_TOOLTIPS: dict[MachineState, str] = {
     ),
     MachineState.OWN_IDLE: (
         "Deine Sitzung läuft auf dieser Maschine, ohne dass ein Portal-Fenster "
-        "offen ist — du belegst sie also möglicherweise unbemerkt."
+        "offen ist — du belegst sie also möglicherweise unbemerkt. Der orange "
+        "Strich bedeutet überall dasselbe: belegt, niemand verbunden."
     ),
     MachineState.OCCUPIED_SELF: (
         "Deine Sitzung läuft und ein vom Portal gestartetes RDP-Fenster ist offen."
@@ -151,6 +167,11 @@ STATE_TOOLTIPS: dict[MachineState, str] = {
         "gemeldete Konto selbst, trage es unter Einstellungen → Weitere eigene "
         "Windows-Konten ein; die Sitzung gilt dann als deine."
     ),
+    MachineState.OCCUPIED_OTHER_IDLE: (
+        "Eine andere Person hält diese Maschine, ist aber nicht verbunden — das "
+        "RDP-Fenster ist geschlossen, die Windows-Sitzung läuft weiter. "
+        "Nachfragen lohnt sich hier eher als bei einer aktiven Sitzung."
+    ),
 }
 
 #: The colour key shown under the machine grid.  Derived from the state table, so
@@ -159,12 +180,43 @@ STATE_TOOLTIPS: dict[MachineState, str] = {
 #: and "booked by somebody else" alike, and grey covers unknown and disabled.
 LEGEND: tuple[tuple[MachineState, str], ...] = (
     (MachineState.AVAILABLE, "Frei"),
-    (MachineState.OCCUPIED_SELF, "Von dir belegt"),
-    (MachineState.OWN_IDLE, "Deine Sitzung ohne offenes Fenster"),
-    (MachineState.OCCUPIED_OTHER, "Von jemand anderem belegt oder reserviert"),
+    (
+        MachineState.OCCUPIED_SELF,
+        "Von dir belegt · gestrichelt: Fenster zu",
+    ),
+    (
+        MachineState.OCCUPIED_OTHER,
+        "Von jemand anderem belegt oder reserviert · gestrichelt: Fenster zu",
+    ),
     (MachineState.BLOCKED, "Wartung oder gesperrt"),
     (MachineState.UNKNOWN, "Keine Verbindung"),
 )
+
+
+#: Die zweite Strichfarbe. Sie bedeutet an jeder Karte dasselbe: jemand haelt
+#: die Maschine, ohne verbunden zu sein. Die Grundfarbe sagt weiterhin, wer --
+#: blau du selbst, violett jemand anderes.
+IDLE_DASH_COLOR = Colors.attention
+
+#: Zustaende mit zweifarbig gestricheltem Rand: belegt, aber Fenster zu.
+DASHED_STATES = frozenset({MachineState.OWN_IDLE, MachineState.OCCUPIED_OTHER_IDLE})
+
+
+def state_is_dashed(state: MachineState) -> bool:
+    """Whether the card border is drawn as a two-colour dashed line.
+
+    The second colour is the one ``OWN_IDLE`` uses, so "holds the machine
+    without being connected" reads the same whether it is your account or
+    somebody else's.
+    """
+    return state in DASHED_STATES
+
+
+def state_secondary_color(state: MachineState) -> QColor:
+    """The colour of the second dash, carrying the state's emphasis as alpha."""
+    color = QColor(IDLE_DASH_COLOR)
+    color.setAlphaF(STATE_EMPHASIS[state].alpha)
+    return color
 
 
 def legend_entries() -> list[tuple[QColor, str]]:
@@ -183,6 +235,7 @@ SORT_ORDER: dict[MachineState, int] = {
     MachineState.OWN_IDLE: 1,
     MachineState.OCCUPIED_SELF: 2,
     MachineState.OCCUPIED_OTHER: 3,
+    MachineState.OCCUPIED_OTHER_IDLE: 3,
     MachineState.RESERVED: 4,
     MachineState.BLOCKED: 5,
     MachineState.UNKNOWN: 6,
@@ -237,6 +290,10 @@ def machine_state(
             return MachineState.OWN_IDLE
         return MachineState.OCCUPIED_SELF
     if workstation.has_active_session():
+        # Getrennt heisst: das Konto haelt die Maschine, aber niemand ist
+        # verbunden -- dasselbe wie OWN_IDLE, nur fuer eine fremde Person.
+        if workstation.foreign_session_is_idle(user.windows_accounts()):
+            return MachineState.OCCUPIED_OTHER_IDLE
         return MachineState.OCCUPIED_OTHER
     if workstation.reservation_block_reason:
         # Own reservations deliberately do not colour the card: they are a note,

@@ -270,6 +270,9 @@ class MainWindow(QMainWindow):
         self.calendar_view = ReservationCalendarWidget(
             self.workstations, list(self.reservations), self.current_user, self
         )
+        # _apply_theme lief schon, bevor es diesen Kalender gab -- ohne diese
+        # Zeile startet er im dunklen Thema mit hellen Zellen.
+        self.calendar_view.set_dark_mode(self.dark_mode)
         self.stack.addWidget(self.calendar_view)
         self.session_log_view = SessionLogWidget([], self.current_user, self)
         self.session_log_view.set_events(self.session_events)
@@ -298,7 +301,7 @@ class MainWindow(QMainWindow):
         self.overview_view.logoff_requested.connect(self._logoff_session)
         self.overview_view.account_selected.connect(self._select_login_account)
         self.overview_view.account_add_requested.connect(self._add_login_account)
-        self.overview_view.add_requested.connect(self._add_workstation)
+        self.overview_view.display_settings_changed.connect(self._set_display_settings)
         self.overview_view.refresh_requested.connect(self.on_refresh)
         self.overview_view.agent_diagnostics_requested.connect(self._show_agent_diagnostics)
         self.admin_view.add_requested.connect(self._add_workstation)
@@ -327,6 +330,7 @@ class MainWindow(QMainWindow):
         self.detail_view.live_status_requested.connect(self._query_live_status)
         self.detail_view.account_selected.connect(self._select_login_account)
         self.detail_view.account_add_requested.connect(self._add_login_account)
+        self.detail_view.account_claim_requested.connect(self._claim_reported_account)
         self.detail_view.diagnostics_requested.connect(self._run_rdp_diagnostics)
         self.detail_view.agent_assignment_requested.connect(self._assign_agent)
         self.detail_view.fallback_setup_requested.connect(self._setup_workstation_fallback)
@@ -334,6 +338,67 @@ class MainWindow(QMainWindow):
         self.workstation_selected.connect(self.detail_view.set_workstation)
         self.live_status_poller.succeeded.connect(self._on_live_status_succeeded)
         self.live_status_poller.failed.connect(self._on_live_status_failed)
+
+    @Slot(Workstation, str)
+    def _claim_reported_account(self, workstation: Workstation, account: str) -> None:
+        r"""Record the account a foreign session runs under as the user's own.
+
+        For an Entra account the agent reports the profile name
+        ("AzureAD\HendrikSchaelikeAdmin") while the portal knows the UPN
+        ("schaelike-adm@..."). Neither can be derived from the other, so the
+        portal has to be told once -- and the only party who knows is the
+        person looking at the card.
+
+        This grants nothing: Windows still asks for that account's password,
+        and the agent authorizes a logoff on its own.
+        """
+        if not account.strip():
+            return
+        answer = QMessageBox.question(
+            self,
+            "Konto als eigenes eintragen",
+            f"Gehört dir das Windows-Konto „{account}“ selbst?\n\n"
+            "Es wird unter Einstellungen → Weitere eigene Windows-Konten "
+            "gespeichert. Sitzungen dieses Kontos gelten danach als deine. "
+            "Berechtigungen vergibt das nicht — Windows fragt weiterhin nach "
+            "dem Kennwort.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        if not self.current_user.claim_account(account):
+            QMessageBox.information(
+                self,
+                "Bereits eingetragen",
+                f"„{account}“ ist bereits als eigenes Konto hinterlegt.",
+            )
+            return
+        self._saved_user = deepcopy(self.current_user)
+        if not self._persist():
+            return
+        self._refresh_workstation_views()
+        self._run_status_update_cycle([workstation], force=True)
+
+    @Slot(Workstation, object, bool)
+    def _set_display_settings(
+        self,
+        workstation: Workstation,
+        resolution: object,
+        use_all_monitors: bool,
+    ) -> None:
+        """Store the quick choice from a machine card.
+
+        "Vollbild" is the absence of a resolution rather than a size of its
+        own: mstsc then uses whatever the screen is. Writing one anyway would
+        pin the session to today's monitor.
+        """
+        value = str(resolution).strip() if resolution else None
+        workstation.screen_mode = "windowed" if value else "fullscreen"
+        workstation.resolution = value
+        workstation.use_all_monitors = bool(use_all_monitors)
+        self._commit_workstation(workstation)
+        self._persist()
 
     @Slot(Workstation, str)
     def _select_login_account(self, workstation: Workstation, account: str) -> None:
@@ -497,6 +562,42 @@ class MainWindow(QMainWindow):
             logger.info("%s verwaiste RDP-Datei(en) aus dem Temp-Ordner entfernt", removed)
 
     @Slot()
+    def _learn_reported_account(self, workstation: Workstation) -> bool:
+        r"""Adopt the account name the agent reports for a session opened from here.
+
+        The portal knows which account it connected *with*; the agent reports
+        which account the session actually runs under. For an Entra account those
+        are two unrelated spellings -- ``schaelike-adm@firma.de`` against
+        ``AzureAD\HendrikSchaelikeAdmin`` -- so remembering only the first left
+        a person's own machine showing up as occupied by a stranger.
+
+        The link between the two is attested rather than guessed: the session
+        names this computer as its RDP client, which Windows reports and which
+        the agent uses for its own authorization. Only sessions for which this
+        portal still tracks an open window are considered, so a session somebody
+        else once opened from this PC is not adopted.
+        """
+        from portal_app.rdp import has_active_rdp_session
+        from portal_app.services.local_identity import local_machine_names
+        from shared.session_identity import is_active_session, session_username
+
+        if not has_active_rdp_session(workstation.workstation_id):
+            return False
+        here = local_machine_names()
+        claimed = False
+        for item in workstation.agent_sessions:
+            if not is_active_session(item):
+                continue
+            reported = {
+                str(item.get(key) or "").strip().casefold()
+                for key in ("client_name", "client_address")
+            }
+            if not (reported & here):
+                continue
+            if self.current_user.claim_account(session_username(item)):
+                claimed = True
+        return claimed
+
     def _poll_rdp_sessions(self) -> None:
         """Record closed RDP clients without adding a persistent visual notice."""
         from portal_app.rdp import consume_finished_rdp_sessions
@@ -587,6 +688,10 @@ class MainWindow(QMainWindow):
             f"Automatisch alle {self.store.status_refresh_interval} s · Prüfung {checked}: {result}"
         )
         self.overview_view.agent_channel_status.setToolTip(service.directory_summary)
+        reservation_changed = self._adopt_reported_reservations() or reservation_changed
+        if any(self._learn_reported_account(ws) for ws in self.workstations):
+            self._saved_user = deepcopy(self.current_user)
+            reservation_changed = True
         if not changed and not reservation_changed:
             return
         # Heartbeats are transient. They must not save unsaved form changes or
@@ -1306,6 +1411,10 @@ class MainWindow(QMainWindow):
     def _apply_theme(self) -> None:
         self.setStyleSheet(self._application_style(self.dark_mode))
         self._update_logo()
+        # Der Kalender faerbt seine Zellen selbst; ein Stylesheet erreicht
+        # einzelne Tabellenfelder nicht.
+        if hasattr(self, "calendar_view"):
+            self.calendar_view.set_dark_mode(self.dark_mode)
 
     def _update_logo(self) -> None:
         if not hasattr(self, "logo_label"):
@@ -1331,8 +1440,54 @@ class MainWindow(QMainWindow):
         self.reservations = list(reservations)
         if not self._persist():
             self.reservations = previous
+            return
         self.calendar_view.reservations = list(self.reservations)
+        self._push_reservations_to_agents(previous, self.reservations)
         self._refresh_workstation_views()
+
+    def _push_reservations_to_agents(
+        self,
+        previous: list[Reservation],
+        current: list[Reservation],
+    ) -> None:
+        """Hand the changed machines' bookings to their own agents.
+
+        This is what lets a portal on another PC see the booking at all. A
+        machine that cannot be reached is reported once and not retried: the
+        reservation is saved here either way, and the next portal that edits
+        this machine pushes the full list again.
+        """
+        from portal_app.services.reservation_sync import affected_machines, push_for_machine
+
+        changed = affected_machines(previous, current)
+        if not changed:
+            return
+        problems = [
+            message
+            for ws in self.workstations
+            if ws.workstation_id in changed
+            and (message := push_for_machine(ws, current))
+        ]
+        if problems:
+            QMessageBox.information(
+                self,
+                "Reservierung nur lokal gespeichert",
+                "Die Reservierung ist gespeichert, konnte aber nicht an alle Agenten "
+                "übergeben werden. Andere Portale sehen sie erst, wenn die Maschine "
+                "wieder erreichbar ist.\n\n" + "\n".join(problems),
+            )
+
+    def _adopt_reported_reservations(self) -> bool:
+        """Take over what the agents reported and tell the caller whether it changed."""
+        from portal_app.services.reservation_sync import merge_reported
+
+        merged, changed = merge_reported(self.reservations, self.workstations)
+        if not changed:
+            return False
+        self.reservations = merged
+        self.calendar_view.reservations = list(self.reservations)
+        self.calendar_view.refresh()
+        return True
 
     def _check_reservation_access(self, workstation: Workstation) -> bool:
         try:
@@ -1510,6 +1665,12 @@ class MainWindow(QMainWindow):
                 # Remember which Windows account this person connects as, so the
                 # resulting session is recognised as theirs next time instead of
                 # showing up as somebody else's and locking them out.
+                #
+                # This records the spelling the portal connects *with*. For an
+                # Entra account that is the UPN, while the agent reports the
+                # session under the profile name -- two forms that cannot be
+                # derived from one another. _learn_reported_account closes that
+                # gap once the session actually shows up.
                 if self.current_user.claim_account(profile.username_hint):
                     self._saved_user = deepcopy(self.current_user)
                     self._persist()
@@ -1909,10 +2070,6 @@ class MainWindow(QMainWindow):
             QLabel#cardMeta { color: #526572; font-size: 8pt; }
             QPushButton#cardSecondaryButton { background: #ffffff; color: #526673; border: 1px solid #d3dbe1; border-radius: 7px; padding: 8px 12px; }
             QPushButton#cardSecondaryButton:hover { background: #f1f5f7; }
-            QFrame#addWorkstationCard { background: #f8fafb; border: 2px dashed #b8c6cf; border-radius: 11px; }
-            QFrame#addWorkstationCard:hover { background: #f0f5f8; border-color: #6f91a9; }
-            QLabel#addCardPlus { color: #557d99; font-size: 42px; font-weight: 300; }
-            QLabel#addCardTitle { color: #334d60; font-size: 10pt; font-weight: 600; }
             QFrame#detailCard { background: #ffffff; border: 1px solid #d8e0e5; border-radius: 10px; }
             QPlainTextEdit#networkOutput { background: #18232c; color: #dce7ee; border: 1px solid #31434f; border-radius: 7px; padding: 10px; font-family: "Cascadia Mono", "Consolas", monospace; font-size: 8pt; selection-background-color: #4f7897; }
             QLabel#detailCardTitle { color: #263844; font-size: 11pt; font-weight: 700; }
@@ -1931,11 +2088,14 @@ class MainWindow(QMainWindow):
             QLabel#adminAccessStatus[unlocked="true"] { background: #e4f0e7; color: #39704a; }
             QLabel#logTitle { color: #20323f; font-size: 13pt; font-weight: 700; }
             QFrame#filterBar { background: #eef3f6; border: 1px solid #cad6de; border-radius: 8px; }
-            QTableWidget#calendarTable { gridline-color: #ffffff; }
             QTableWidget#calendarTable::item { padding: 6px; }
             QTableView, QTableWidget { background: #ffffff; color: #17212b; alternate-background-color: #f8fafb; border: 1px solid #d6dfe5; border-radius: 8px; gridline-color: #e6ebee; selection-background-color: #dceaf3; selection-color: #1e3545; }
             QTableCornerButton::section { background: #e8eff3; border: 1px solid #cbd7df; }
             QHeaderView::section { background: #e8eff3; color: #365466; border: none; border-bottom: 1px solid #cbd7df; padding: 9px 10px; font-weight: 600; }
+            QCheckBox { color: #263844; }
+            QCheckBox::indicator { width: 15px; height: 15px; border: 1px solid #9db4c2; background: #ffffff; border-radius: 3px; }
+            QCheckBox::indicator:checked { background: #4a7f9f; border-color: #35607a; }
+            QCheckBox::indicator:disabled { background: #eef2f5; border-color: #cbd7df; }
             QDialog { background: #f7f9fa; }
             QDialog QLabel, QDialog QCheckBox, QDialog QRadioButton, QDialog QGroupBox {
                 color: #263844;
@@ -2026,9 +2186,6 @@ class MainWindow(QMainWindow):
             QPushButton#cardPrimaryButton:hover { background: #5c91b1; border-color: #5c91b1; }
             QPushButton#dangerButton { background: #482a30; color: #ffd7d9; border-color: #9d6268; }
             QPushButton#dangerButton:hover { background: #60343b; border-color: #d1878c; }
-            QFrame#addWorkstationCard { background: #1a2a35; border-color: #5b788a; }
-            QFrame#addWorkstationCard:hover { background: #213743; border-color: #8eb8cf; }
-            QLabel#addCardPlus, QLabel#addCardTitle { color: #d9ebf5; }
             QTableView, QTableWidget { background: #1a2a35; color: #f0f5f8; alternate-background-color: #203440; border-color: #456172; gridline-color: #35505f; selection-background-color: #3a6884; selection-color: #ffffff; }
             QTableCornerButton::section { background: #263b48; border: 1px solid #456172; }
             QDialog QListWidget { background: #1a2a35; color: #f0f5f8; border: 1px solid #456172; border-radius: 7px; selection-background-color: #3a6884; selection-color: #ffffff; }
@@ -2080,6 +2237,7 @@ class MainWindow(QMainWindow):
             QCheckBox { color: #e7f0f5; }
             QCheckBox::indicator { width: 15px; height: 15px; border: 1px solid #789bae; background: #1a2a35; border-radius: 3px; }
             QCheckBox::indicator:checked { background: #5f96b8; border-color: #8fc1dd; }
+            QCheckBox::indicator:disabled { background: #22343f; border-color: #3d5868; }
             QToolTip { background: #101820; color: #f3f7fa; border: 1px solid #5b788a; }
         """
 

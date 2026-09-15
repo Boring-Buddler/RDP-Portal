@@ -1,12 +1,17 @@
 """Names of existing Windows accounts; never passwords or AD access grants."""
 
+import unicodedata
+
 
 def validate_login_account(value: str) -> str:
     if not isinstance(value, str):
         raise ValueError("Bitte einen Kontonamen eingeben.")
     if any(ord(char) < 32 or char in "\x7f\x85\u2028\u2029" for char in value):
         raise ValueError("Der Kontoname darf keine Steuerzeichen enthalten.")
-    value = value.strip()
+    # One Unicode spelling, so a name typed here and the same name reported by
+    # an agent compare equal. See shared.identity._clean for what goes wrong
+    # otherwise.
+    value = unicodedata.normalize("NFC", value.strip())
     if not value or len(value) > 256:
         raise ValueError("Der Kontoname muss 1 bis 256 Zeichen enthalten.")
     if any(char in value for char in '/"[]:;|=,*?<>'):

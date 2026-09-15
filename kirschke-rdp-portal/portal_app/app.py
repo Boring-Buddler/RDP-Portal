@@ -19,7 +19,7 @@ from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from portal_app.ui.design import Colors, Typography
-from portal_app.ui.icons import kirschke_window_icon
+from portal_app.ui.icons import kirschke_window_icon, set_windows_app_id
 from portal_app.ui.main_window import MainWindow
 from portal_app.version import PORTAL_VERSION
 
@@ -50,6 +50,9 @@ class RDPPortalApp(QApplication):
         self.setApplicationVersion(PORTAL_VERSION)
         self.setOrganizationName("Prof. Kirschke")
         self.setOrganizationDomain("prof-kirschke.de")
+        # Muss vor dem ersten Fenster stehen: Windows liest die ID, wenn ein
+        # Fenster zum ersten Mal in der Taskleiste auftaucht.
+        set_windows_app_id()
         self.portal_icon = kirschke_window_icon()
         self.setWindowIcon(self.portal_icon)
         self.installEventFilter(self)

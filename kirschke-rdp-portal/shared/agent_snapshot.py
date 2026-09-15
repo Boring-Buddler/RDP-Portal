@@ -25,6 +25,20 @@ MAX_SNAPSHOT_FILES = 500
 MAX_IDENTIFIER_LENGTH = 256
 MAX_SESSIONS = 64
 MAX_HISTORY = 200
+#: Reservierungen, die eine Maschine mitfuehren darf. Sie reisen im selben
+#: Snapshot wie die Sitzungen und teilen sich dessen Groessengrenze.
+MAX_RESERVATIONS = 64
+#: Felder einer Reservierung, wie sie portal_app.models.reservation schreibt.
+#: Der Snapshot transportiert sie nur; die Bedeutung kennt allein das Portal.
+RESERVATION_TEXT_FIELDS = (
+    "reservation_id",
+    "workstation_id",
+    "title",
+    "start",
+    "end",
+    "reserved_by",
+    "color",
+)
 
 
 def get_agent_snapshot_directory() -> Path:
@@ -46,6 +60,15 @@ class AgentSnapshot:
     current_windows_session_id: int | None = None
     rdp_sessions: list[dict[str, Any]] = field(default_factory=list)
     session_history: list[dict[str, Any]] = field(default_factory=list)
+    #: Reservierungen fuer genau diese Maschine, vom Agenten verwahrt, damit
+    #: auch Portale ohne gemeinsame Ablage sie sehen. Siehe
+    #: workstation_agent.reservation_store.
+    #:
+    #: ``None`` heisst "dieser Agent kennt keine Reservierungen" (eine Version
+    #: vor 1.5.0) und ist etwas anderes als eine leere Liste, die "dieser Agent
+    #: fuehrt keine Buchung mehr" bedeutet. Das Portal darf nur im zweiten Fall
+    #: eigene Eintraege verwerfen -- sonst loescht ein alter Agent jede Buchung.
+    reservations: list[dict[str, Any]] | None = None
     version: int = SNAPSHOT_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -61,6 +84,7 @@ class AgentSnapshot:
             "current_windows_session_id": self.current_windows_session_id,
             "rdp_sessions": self.rdp_sessions,
             "session_history": self.session_history,
+            **({} if self.reservations is None else {"reservations": self.reservations}),
         }
 
     @classmethod
@@ -119,11 +143,49 @@ class AgentSnapshot:
             current_windows_session_id=data.get("current_windows_session_id"),
             rdp_sessions=list(sessions),
             session_history=history[-MAX_HISTORY:],
+            reservations=(
+                None
+                if data.get("reservations") is None
+                else validate_reservations(data["reservations"])
+            ),
         )
 
     def age_seconds(self, now: datetime | None = None) -> float:
         current = now or datetime.now(UTC)
         return max(0.0, (current - self.observed_at_utc.astimezone(UTC)).total_seconds())
+
+
+def validate_reservations(raw: Any) -> list[dict[str, Any]]:
+    """Check reservation records arriving from a file share or a named pipe.
+
+    Both sources are untrusted: the SMB folder is writable by whoever the
+    share allows, and the pipe is reached through the shared ``PortalLeser``
+    account, which identifies the portal but not the person. The records are
+    therefore checked for shape and size here, exactly like the session list,
+    before anything renders them.
+
+    An empty list is valid and meaningful; a missing one is handled by the
+    caller, because "not reported" and "none booked" must stay distinguishable.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
+        raise ValueError("Invalid reservation list")
+    if len(raw) > MAX_RESERVATIONS:
+        raise ValueError("Too many reservations in snapshot")
+    checked: list[dict[str, Any]] = []
+    for item in raw:
+        for key in RESERVATION_TEXT_FIELDS:
+            value = item.get(key)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"Invalid reservation field: {key}")
+            if isinstance(value, str) and len(value) > MAX_IDENTIFIER_LENGTH:
+                raise ValueError(f"Reservation field too long: {key}")
+        for key in ("reservation_id", "workstation_id", "start", "end"):
+            if not str(item.get(key) or "").strip():
+                raise ValueError(f"Missing reservation field: {key}")
+        checked.append({key: item.get(key) for key in RESERVATION_TEXT_FIELDS})
+    return checked
 
 
 def _safe_snapshot_name(workstation_id: str) -> str:
