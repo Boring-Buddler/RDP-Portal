@@ -16,7 +16,7 @@ from shared.enums import AgentStatus, SessionState
 def test_the_default_status_folder_is_local(monkeypatch, tmp_path):
     """Frueher zeigte er in einen SharePoint-Ordner, der nur auf einem PC existierte."""
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lokal"))
-    expected = tmp_path / "lokal" / "KirschkeRDPPortal" / "daten" / "agenten-status"
+    expected = tmp_path / "portal" / "state" / "agenten-status"
 
     assert default_agent_directory() == expected
 
@@ -53,7 +53,7 @@ def test_explicit_agent_folder_survives_restart_and_storage_save(tmp_path, monke
     store.set_agent_status_directory(target)
     store._save_directory_config(tmp_path / "inventory")
     restored = LocalStore()
-    assert restored.directory == tmp_path / "inventory"
+    assert restored.directory == tmp_path / "portal" / "state"
     assert restored.agent_status_directory == target
 
 

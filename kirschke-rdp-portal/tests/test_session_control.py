@@ -318,6 +318,19 @@ def test_a_console_session_is_refused_with_its_own_reason(native):
     native.agent_logoff.assert_not_called()
 
 
+def test_rdp_protocol_overrides_a_conflicting_console_flag(native):
+    native.session.update(protocol_type=2, is_console_session=True)
+    call_logoff()
+    native.agent_logoff.assert_called_once()
+
+
+def test_console_protocol_is_refused_even_without_the_flag(native):
+    native.session.update(protocol_type=0, is_console_session=False)
+    with pytest.raises(ValueError, match="Konsolensitzung"):
+        call_logoff()
+    native.agent_logoff.assert_not_called()
+
+
 def test_an_admin_logoff_still_handles_a_console_session(native):
     """Windows admin rights on the target are proof; the console rule is not theirs."""
     native.session["is_console_session"] = True
@@ -401,18 +414,20 @@ def test_logoff_is_not_reported_until_agent_confirms_end(native):
         call_logoff()
 
 
-def test_a_missing_agent_answer_is_checked_instead_of_reported_as_failure(native, monkeypatch):
+@pytest.mark.parametrize("failure", [TimeoutError("late"), session_control.AgentResponseLostError("pipe closed")])
+def test_a_missing_agent_answer_is_checked_instead_of_reported_as_failure(native, monkeypatch, failure):
     """Windows baut die Sitzung ab, bevor der Agent antwortet -- das ist kein Fehler.
 
     Genau dieser Fall meldete frueher "Fehler TimeoutError", obwohl die Sitzung
     beendet war.
     """
     monkeypatch.setattr("portal_app.services.session_control.time.sleep", lambda _s: None)
-    native.agent_logoff.side_effect = TimeoutError("Keine rechtzeitige Antwort vom Agenten.")
+    native.agent_logoff.side_effect = failure
 
     call_logoff()
 
     assert native.request.call_count == 3
+    native.agent_logoff.assert_called_once()
 
 
 def test_a_missing_answer_on_a_surviving_session_says_it_was_not_confirmed(native, monkeypatch):

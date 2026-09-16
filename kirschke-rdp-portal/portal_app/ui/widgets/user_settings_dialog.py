@@ -73,7 +73,7 @@ class UserSettingsDialog(QDialog):
         own_row = QHBoxLayout()
         own_row.setSpacing(8)
         self.new_account = QLineEdit()
-        self.new_account.setPlaceholderText("z. B. NB12KI\\Codex oder becker@prof-kirschke.de")
+        self.new_account.setPlaceholderText("z. B. RECHNER\\benutzer oder mustermann@example.com")
         self.new_account.returnPressed.connect(self._add_account)
         own_row.addWidget(self.new_account, 1)
         add_account = QPushButton("Hinzufügen")

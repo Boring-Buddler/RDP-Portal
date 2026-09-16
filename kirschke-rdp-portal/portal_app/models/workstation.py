@@ -332,17 +332,15 @@ class Workstation:
     def reports_entra_sessions(self) -> bool:
         """Whether the agent's own reports show this machine using Entra accounts."""
         return any(
-            WindowsIdentity.from_session(item).is_entra for item in self.reported_sessions()
+            WindowsIdentity.from_session(item).is_entra
+            for item in self.reported_sessions() + self.agent_session_history
         )
 
     def entra_spelling_warning(self, default_username: str | None = None) -> str | None:
-        r"""Explain a chosen account that this target cannot authenticate, or ``None``.
+        """Offer explicit Entra authentication for a target with Entra evidence.
 
-        The agent reports ``AzureAD\...`` sessions exactly when the machine signs
-        people in with Entra accounts.  If the machine is not marked as an Entra
-        target, the .rdp file carries a bare UPN and no web sign-in, so Windows
-        authenticates something else -- and the target refuses the remote logon
-        with "not authorized", even when the account is in the group.
+        A bare UPN can also work without web authentication. Session history
+        establishes account usage, not the selected account's effective rights.
         """
         if self.entra_sso_enabled or not self.reports_entra_sessions():
             return None
@@ -351,11 +349,13 @@ class Workstation:
         if not identity.upn or identity.down_level:
             return None
         return (
-            f"{self.display_name} meldet Windows-Sitzungen mit Entra-Konten, ist im Portal "
-            "aber nicht als Entra-Ziel eingestellt. Deshalb wird "
-            f"„{identity.upn}“ ohne Entra-Anmeldung übergeben, und der Zielrechner lehnt die "
-            "Remoteanmeldung als nicht autorisiert ab, obwohl das Konto freigeschaltet ist.\n\n"
-            f"Richtig wäre die Entra-Anmeldung oder der Kontoname "
+            f"{self.display_name} hat Windows-Sitzungen mit Entra-Konten gemeldet, ist im Portal "
+            "aber nicht als Entra-Ziel eingestellt. Der Kontoname "
+            f"„{identity.upn}“ wird ohne Entra-Webanmeldung übergeben. Auch diese Schreibweise "
+            "kann funktionieren. Die Meldung ‚nicht autorisiert‘ allein belegt weder ein "
+            "falsches Namensformat noch die Berechtigung des ausgewählten Kontos.\n\n"
+            f"Für ein Entra-Konto kannst du die Entra-Webanmeldung aktivieren oder explizit "
+            f"diesen Kontonamen verwenden: "
             f"„{ENTRA_DOMAIN}\\{identity.upn}“."
         )
 

@@ -21,7 +21,13 @@ function Remove-Portal {
         if (@($items | Where-Object { $_.Attributes -band [System.IO.FileAttributes]::ReparsePoint }).Count) {
             throw 'Verknüpfung im Installationsordner; keine automatische Löschung.'
         }
-        Remove-Item -LiteralPath $resolved -Recurse -Force
+        # Portable inventory belongs to the user and survives updates/uninstall.
+        Get-ChildItem -LiteralPath $resolved -Force | Where-Object { $_.Name -ne 'state' } | ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $resolved 'state'))) {
+            Remove-Item -LiteralPath $resolved -Force
+        }
     }
     if (Test-Path -LiteralPath $shortcut) { Remove-Item -LiteralPath $shortcut -Force }
     if (Test-Path -LiteralPath $registry) { Remove-Item -LiteralPath $registry -Force }
@@ -33,7 +39,9 @@ function Install-Portal {
     if ($source.TrimEnd('\') -eq $installDirectory.TrimEnd('\')) { throw 'Setup aus dem separaten Installationspaket starten.' }
     Remove-Portal
     New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
-    Copy-Item -Path (Join-Path $source '*') -Destination $installDirectory -Recurse -Force
+    Get-ChildItem -LiteralPath $source -Force | Where-Object { $_.Name -ne 'state' } | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $installDirectory -Recurse -Force
+    }
     $shell = New-Object -ComObject WScript.Shell
     $link = $shell.CreateShortcut($shortcut)
     $link.TargetPath = Join-Path $installDirectory 'Kirschke-RDP-Portal.exe'

@@ -263,8 +263,9 @@ class RDPProfileSchema(BaseSchema):
         play.  With it, Windows wants the plain UPN.  Without it -- most often
         because the target is an IP address, where Windows does not offer the web
         sign-in at all -- the account has to be named ``AzureAD\user@domain.tld``,
-        or Windows authenticates something else and the target answers "not
-        authorized for remote login" even though the account is in the group.
+        to explicitly select the Entra account. A plain UPN is also supported
+        for classic authentication; its spelling alone cannot establish why
+        a remote logon was refused.
         """
         from shared.identity import entra_rdp_username
 

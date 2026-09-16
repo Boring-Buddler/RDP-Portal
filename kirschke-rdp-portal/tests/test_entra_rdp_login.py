@@ -1,11 +1,6 @@
-"""The Entra spelling that decides whether a remote logon is authorized at all.
+"""Explicit Entra account spelling and evidence-based authentication hints.
 
-An Entra-joined target authorizes the SID that arrives at logon.  Which SID that
-is depends on how the .rdp file names the account: with the Entra web sign-in
-Windows wants the plain UPN, without it the account has to be named through the
-``AzureAD\\`` pseudo-domain.  Get it wrong and the target answers "the user
-account is not authorized for remote login" even though the account is a member
-of Remotedesktopbenutzer -- because a different identity was presented.
+These tests check generated settings, not effective Windows logon rights.
 """
 
 import tempfile
@@ -15,11 +10,11 @@ from portal_app.rdp.generator import RDPFileGenerator
 from shared.enums import ConnectionTargetMode
 
 BACKSLASH = chr(92)
-UPN = "becker@prof-kirschke.de"
+UPN = "mustermann@example.com"
 QUALIFIED = "AzureAD" + BACKSLASH + UPN
 ENTRA_SESSION = {
     "session_id": 2,
-    "full_username": "AzureAD" + BACKSLASH + "ChristianBecker",
+    "full_username": "AzureAD" + BACKSLASH + "ErikaMustermann",
     "session_state": "connected",
     "login_time": "2026-09-14T06:00:00+00:00",
     "sid": "S-1-12-1-1-2-3-4",
@@ -88,10 +83,10 @@ def test_a_domain_account_is_never_rewritten():
         "NB05",
         "nb05",
         entra_sso_enabled=True,
-        username_hint="KIRSCHKE" + BACKSLASH + "becker",
+        username_hint="KIRSCHKE" + BACKSLASH + "mustermann",
     )
 
-    assert rdp_lines(workstation)["username"] == "KIRSCHKE" + BACKSLASH + "becker"
+    assert rdp_lines(workstation)["username"] == "KIRSCHKE" + BACKSLASH + "mustermann"
 
 
 def test_a_non_entra_machine_keeps_the_account_exactly_as_configured():
@@ -127,9 +122,15 @@ def test_no_warning_once_the_machine_is_marked_as_an_entra_target():
     assert workstation.entra_spelling_warning() is None
 
 
+def test_an_idle_entra_machine_is_recognised_from_agent_history():
+    workstation = Workstation("W1", "NB05", "nb05", username_hint=UPN)
+    workstation.agent_session_history = [dict(ENTRA_SESSION, event="Nicht mehr gemeldet")]
+    assert workstation.entra_spelling_warning() is not None
+
+
 def test_no_warning_for_an_account_that_already_names_its_domain():
     workstation = Workstation(
-        "W1", "NB05", "nb05", username_hint="KIRSCHKE" + BACKSLASH + "becker"
+        "W1", "NB05", "nb05", username_hint="KIRSCHKE" + BACKSLASH + "mustermann"
     )
     workstation.agent_sessions = [ENTRA_SESSION]
 

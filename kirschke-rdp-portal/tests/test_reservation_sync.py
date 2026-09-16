@@ -24,7 +24,7 @@ from workstation_agent.reservation_store import ReservationStore
 START = datetime(2026, 9, 20, 9, 0)
 
 
-def booking(workstation_id="WS-1", identifier="r1", who="becker@prof-kirschke.de", hours=8):
+def booking(workstation_id="WS-1", identifier="r1", who="mustermann@example.com", hours=8):
     return Reservation(
         workstation_id=workstation_id,
         title="Statikberechnung",

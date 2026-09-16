@@ -8,7 +8,6 @@ import sys
 from PySide6.QtCore import QProcess, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
-    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -35,9 +34,8 @@ class AdministrationWidget(QWidget):
     delete_requested = Signal(Workstation)
     rdp_access_requested = Signal(Workstation)
     lock_requested = Signal()
-    storage_directory_requested = Signal(str)
+    save_requested = Signal()
     active_directory_status_requested = Signal()
-    admin_password_change_requested = Signal()
 
     def __init__(self, workstations: list[Workstation], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -91,15 +89,17 @@ class AdministrationWidget(QWidget):
         root.addLayout(actions)
         storage_card = QFrame()
         storage_card.setObjectName("detailCard")
-        storage_layout = QHBoxLayout(storage_card)
+        storage_layout = QVBoxLayout(storage_card)
         storage_layout.setContentsMargins(16, 12, 16, 12)
         storage_layout.setSpacing(10)
         storage_copy = QVBoxLayout()
-        storage_title = QLabel("SharePoint-Speicherort")
+        storage_title = QLabel("Speicherort für gemeinsame Maschineneinstellungen")
         storage_title.setObjectName("detailCardTitle")
         storage_copy.addWidget(storage_title)
         storage_note = QLabel(
-            "Statusdatei und Ereignislog werden hier gespeichert. Beim Anwenden werden vorhandene Dateien verschoben."
+            "Die Maschineneinstellungen liegen im Ordner state neben der Portal-EXE. "
+            "Alle Portale aus demselben SharePoint-Programmordner verwenden diesen Stand. "
+            "Änderungen erscheinen auf anderen PCs nach der SharePoint-Synchronisierung."
         )
         storage_note.setObjectName("detailMuted")
         storage_note.setWordWrap(True)
@@ -110,17 +110,8 @@ class AdministrationWidget(QWidget):
         storage_copy.addWidget(self.storage_status)
         storage_layout.addLayout(storage_copy)
         self.storage_directory = QLineEdit()
-        self.storage_directory.setMinimumWidth(420)
-        self.storage_directory.setPlaceholderText("Lokaler OneDrive-/SharePoint-Ordner")
-        storage_layout.addWidget(self.storage_directory, 1)
-        browse = QPushButton("Auswählen")
-        browse.setObjectName("toolbarButton")
-        browse.clicked.connect(self._choose_storage_directory)
-        storage_layout.addWidget(browse)
-        apply_storage = QPushButton("Dateien verschieben")
-        apply_storage.setObjectName("toolbarButton")
-        apply_storage.clicked.connect(self._apply_storage_directory)
-        storage_layout.addWidget(apply_storage)
+        self.storage_directory.setReadOnly(True)
+        storage_layout.addWidget(self.storage_directory)
         root.addWidget(storage_card)
         self.directory_card = QFrame()
         self.directory_card.setObjectName("detailCard")
@@ -140,11 +131,6 @@ class AdministrationWidget(QWidget):
         self.refresh_directory_status.setObjectName("toolbarButton")
         self.refresh_directory_status.clicked.connect(self.active_directory_status_requested)
         directory_layout.addWidget(self.refresh_directory_status)
-        self.change_admin_password = QPushButton("Admin-Passwort ändern")
-        self.change_admin_password.setObjectName("toolbarButton")
-        self.change_admin_password.setVisible(False)
-        self.change_admin_password.clicked.connect(self.admin_password_change_requested)
-        directory_layout.addWidget(self.change_admin_password)
         root.addWidget(self.directory_card)
         self.table = QTableWidget()
         self.table.setColumnCount(7)
@@ -159,9 +145,24 @@ class AdministrationWidget(QWidget):
         self.table.itemSelectionChanged.connect(self._update_action_state)
         self.table.horizontalHeader().setStretchLastSection(True)
         root.addWidget(self.table, 1)
+        save_row = QHBoxLayout()
+        save_note = QLabel(
+            "Speichern übernimmt alle angezeigten Maschineneinstellungen in state. "
+            "Synchronisierte Änderungen werden automatisch geladen."
+        )
+        save_note.setObjectName("detailMuted")
+        save_note.setWordWrap(True)
+        save_row.addWidget(save_note, 1)
+        self.save_button = QPushButton("Speichern")
+        self.save_button.setObjectName("cardPrimaryButton")
+        self.save_button.setEnabled(False)
+        self.save_button.clicked.connect(self.save_requested)
+        save_row.addWidget(self.save_button)
+        root.addLayout(save_row)
         self.refresh()
 
     def set_access_status(self, unlocked: bool, detail: str | None = None) -> None:
+        self.save_button.setEnabled(unlocked)
         self.access_status.setText(detail or ("Admin-Sitzung freigeschaltet" if unlocked else "Admin-Sitzung gesperrt"))
         self.access_status.setProperty("unlocked", unlocked)
         self.access_status.style().unpolish(self.access_status)
@@ -186,26 +187,14 @@ class AdministrationWidget(QWidget):
         self.rdp_access.setVisible(active_directory)
         self.directory_title.setText("Active Directory" if active_directory else "Lokale RDP-Berechtigungen")
         self.refresh_directory_status.setVisible(active_directory)
-        self.change_admin_password.setVisible(not active_directory)
         if not active_directory:
             self.active_directory_status.setText(
                 "No-AD-Modus: RDP-Konten werden direkt auf dem Ziel-PC in der lokalen Gruppe "
                 "mit der SID S-1-5-32-555 verwaltet — je nach Systemsprache "
                 "‚Remotedesktopbenutzer‘ oder ‚Remote Desktop Users‘. "
-                "Das Portal speichert keine Windows-Berechtigungen."
+                "Das Portal speichert keine Windows-Berechtigungen. "
+                "Der Portal-Adminzugang verwendet auf allen PCs dasselbe globale Passwort."
             )
-
-    def _choose_storage_directory(self) -> None:
-        directory = QFileDialog.getExistingDirectory(
-            self, "SharePoint-Speicherordner auswählen", self.storage_directory.text().strip()
-        )
-        if directory:
-            self.storage_directory.setText(directory)
-
-    def _apply_storage_directory(self) -> None:
-        directory = self.storage_directory.text().strip()
-        if directory:
-            self.storage_directory_requested.emit(directory)
 
     def refresh(self) -> None:
         active = sum(ws.enabled for ws in self.workstations)

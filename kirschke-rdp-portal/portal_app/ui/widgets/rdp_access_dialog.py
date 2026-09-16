@@ -73,7 +73,7 @@ class RDPAccessDialog(QDialog):
         chooser_layout.addWidget(self.directory_status)
         self.search = QLineEdit()
         self.search.setObjectName("rdpAccessSearch")
-        self.search.setPlaceholderText("Benutzer suchen, z. B. becker oder KIRSCHKE\\becker")
+        self.search.setPlaceholderText("Benutzer suchen, z. B. mustermann oder KIRSCHKE\\mustermann")
         self.search.textChanged.connect(self._refresh_directory)
         chooser_layout.addWidget(self.search)
         self.directory_list = QListWidget()
@@ -88,7 +88,7 @@ class RDPAccessDialog(QDialog):
 
         manual = QHBoxLayout()
         self.manual_account = QLineEdit()
-        self.manual_account.setPlaceholderText("Manuell: KIRSCHKE\\becker oder becker@firma.de")
+        self.manual_account.setPlaceholderText("Manuell: KIRSCHKE\\mustermann oder mustermann@firma.de")
         self.manual_account.returnPressed.connect(self._add_manual)
         manual.addWidget(self.manual_account, 1)
         add_manual = QPushButton("Manuell hinzufügen")

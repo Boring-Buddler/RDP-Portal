@@ -3,6 +3,7 @@
 import logging
 import os
 import subprocess
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,9 @@ class TrackedRDPSession:
     rdp_file: str
     process: subprocess.Popen = field(repr=False)
     return_code: int | None = None
+    last_window_at: float = field(default_factory=time.monotonic)
+    window_seen: bool = False
+    window_missing_reported: bool = False
 
 
 class RDPSessionLauncher:
@@ -131,14 +135,36 @@ class RDPSessionLauncher:
 
     def get_active_sessions(self) -> list[TrackedRDPSession]:
         """Return processes that still have a running local RDP window."""
+        from portal_app.rdp.window_focus import windows_of_processes
+
+        active = []
         for pid, session in list(self._active_sessions.items()):
             return_code = session.process.poll()
             if return_code is None:
+                try:
+                    visible = bool(windows_of_processes([pid]))
+                except OSError:
+                    # Failed enumeration is not evidence that a window closed.
+                    active.append(session)
+                    continue
+                if visible:
+                    session.last_window_at = time.monotonic()
+                    session.window_seen = True
+                    session.window_missing_reported = False
+                grace = 3.0 if session.window_seen else 30.0
+                if visible or time.monotonic() - session.last_window_at < grace:
+                    active.append(session)
+                elif not session.window_missing_reported:
+                    session.window_missing_reported = True
+                    self._finished_sessions.append(session)
+                # Keep the process handle: if a delayed dialog appears later,
+                # recognise it again; never terminate it merely for being hidden.
                 continue
             session.return_code = return_code
-            self._finished_sessions.append(session)
+            if not session.window_missing_reported:
+                self._finished_sessions.append(session)
             del self._active_sessions[pid]
-        return list(self._active_sessions.values())
+        return active
 
     def has_active_session(self, workstation_id: str) -> bool:
         return any(

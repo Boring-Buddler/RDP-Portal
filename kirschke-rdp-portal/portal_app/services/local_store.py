@@ -17,7 +17,9 @@ from shared.agent_paths import (
     expand_directory,
     legacy_portal_directory,
     local_app_directory,
+    portable_directory,
     resolve_agent_directory,
+    resolve_portal_storage,
 )
 from shared.file_io import file_lock, write_json_atomic
 from shared.schemas import SessionEventSchema, WorkstationSchema
@@ -104,11 +106,16 @@ class LocalStore:
         return Path(local_data) / "KirschkeRDPPortal" / "storage-config.json"
 
     def _configured_directory(self) -> Path:
+        # Every portable client uses the state beside its executable. Old local
+        # settings may seed an empty inventory, but never redirect this location.
+        return self.default_directory()
+
+    def _legacy_configured_directory(self) -> Path:
         try:
             config = json.loads(self.config_path.read_text(encoding="utf-8"))
             location = config.get("storage_directory")
             if location:
-                return expand_directory(location)
+                return resolve_portal_storage(location)
         except (OSError, ValueError, TypeError, AttributeError):
             pass
         # If the local configuration was removed, a redirect marker in the
@@ -118,7 +125,7 @@ class LocalStore:
         try:
             location = json.loads(marker.read_text(encoding="utf-8")).get("storage_directory")
             if location:
-                return expand_directory(location)
+                return resolve_portal_storage(location)
         except (OSError, ValueError, TypeError, AttributeError):
             pass
         # Eine Installation, die ihren Stand bereits im frueheren Standardordner
@@ -130,7 +137,7 @@ class LocalStore:
                 return legacy
         except OSError:
             pass
-        return self.default_directory()
+        return local_app_directory() / "daten"
 
     @property
     def directory(self) -> Path:
@@ -189,7 +196,7 @@ class LocalStore:
         config = self._read_directory_config()
         configured = config.get("workstation_agent_status_directories", {})
         configured = dict(configured) if isinstance(configured, dict) else {}
-        configured[key] = str(target)
+        configured[key] = portable_directory(target)
         config["workstation_agent_status_directories"] = configured
         config["version"] = 2
         write_json_atomic(self.agent_config_path, config)
@@ -200,7 +207,7 @@ class LocalStore:
         if not target.is_absolute() or re.search(r"%[^%]+%", str(target)):
             raise ValueError("Bitte einen vollständigen lokalen oder Netzwerkpfad angeben.")
         config = self._read_directory_config()
-        config["agent_status_directory"] = str(target)
+        config["agent_status_directory"] = portable_directory(target)
         config["version"] = 1
         write_json_atomic(self.agent_config_path, config)
         return target
@@ -449,7 +456,7 @@ class LocalStore:
         if not self._uses_default_location:
             return
         config = self._read_directory_config()
-        config.update(storage_directory=str(directory or self.directory), version=1)
+        config.update(storage_directory=portable_directory(directory or self.directory), version=1)
         write_json_atomic(self.config_path, config)
 
     @staticmethod
@@ -460,7 +467,7 @@ class LocalStore:
         temporary.write_text(
             json.dumps(
                 {
-                    "storage_directory": str(new_directory),
+                    "storage_directory": portable_directory(new_directory),
                     "message": "RDP-Portal-Dateien wurden in diesen Ordner verschoben.",
                 },
                 ensure_ascii=False,
@@ -477,14 +484,27 @@ class LocalStore:
         *,
         migrate: bool = True,
     ) -> tuple[list[Workstation], MockUser, list[Reservation]]:
-        if not self.path.exists():
+        source = self.path
+        if (not source.exists() and self._uses_default_location
+                and self._state_signature is None and not self._baseline_workstations
+                and not self._baseline_reservations):
+            for directory in (
+                self._legacy_configured_directory(),
+                local_app_directory() / "daten",
+                self.local_directory(),
+            ):
+                legacy = directory / "portal-state.json"
+                if legacy != source and legacy.is_file():
+                    source = legacy
+                    break
+        if not source.exists():
             if self._state_signature is not None or self._baseline_workstations or self._baseline_reservations:
                 raise StoreReadError("Die bisherige Speicherdatei fehlt; bitte Verbindung und Speicherort prüfen.")
             user = self._load_preferences(fallback_user)
             self._remember_signatures()
             return fallback_workstations, user, []
         try:
-            data = self._read_state(self.path)
+            data = self._read_state(source)
             user = self._load_preferences(fallback_user, data)
             workstations = [
                 Workstation.from_schema(WorkstationSchema.model_validate(item))
@@ -505,7 +525,7 @@ class LocalStore:
             reservations = [Reservation.from_dict(item) for item in data.get("reservations", [])]
             self._set_baseline(data)
             self._remember_signatures()
-            if removed_legacy_placeholders and migrate:
+            if removed_legacy_placeholders and migrate and source == self.path:
                 self.save(workstations, user, reservations, theme_mode=self.theme_mode)
             else:
                 self._set_baseline(data)

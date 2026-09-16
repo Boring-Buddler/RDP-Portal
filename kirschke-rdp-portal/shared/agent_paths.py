@@ -1,11 +1,43 @@
 """Shared defaults and path handling for the local agent status channel."""
 
 import os
+import sys
 from pathlib import Path
 
 
 def expand_directory(value: str | Path) -> Path:
     return Path(os.path.expandvars(str(value).strip())).expanduser()
+
+
+def portable_directory(value: str | Path) -> str:
+    """Persist paths in this user's profile without embedding their account name."""
+    directory = expand_directory(value)
+    profile = Path(os.environ.get("USERPROFILE") or Path.home())
+    if directory.is_absolute() and directory.is_relative_to(profile):
+        return str(Path("%USERPROFILE%") / directory.relative_to(profile))
+    return str(directory)
+
+
+def resolve_portal_storage(value: str | Path) -> Path:
+    """Recover a copied profile path only when this profile has actual portal data.
+
+    Never create a guessed mirror of a shared library. Explicit reachable paths
+    stay intact; a missing path can only migrate to an existing inventory.
+    """
+    directory = expand_directory(value)
+    profile = Path(os.environ.get("USERPROFILE") or Path.home())
+    try:
+        if directory.exists() or not directory.is_relative_to(profile.parent):
+            return directory
+        relative = directory.relative_to(profile.parent)
+        if len(relative.parts) < 2 or relative.parts[0].casefold() == profile.name.casefold():
+            return directory
+        candidate = profile.joinpath(*relative.parts[1:])
+        if (candidate / "portal-state.json").is_file():
+            return candidate
+    except OSError:
+        pass
+    return directory
 
 
 def local_app_directory() -> Path:
@@ -35,13 +67,16 @@ def legacy_portal_directory() -> Path:
             / "Testprogramme" / "RDP-Portal")
 
 
-def default_portal_directory() -> Path:
-    """Where the portal stores its state unless something else is configured.
+def portal_program_directory() -> Path:
+    """Use the EXE's location, never the working directory or PyInstaller temp."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
 
-    Local by default. A folder shared between portals is a deliberate setting in
-    the admin area, not a guess about how somebody's OneDrive is laid out.
-    """
-    return local_app_directory() / "daten"
+
+def default_portal_directory() -> Path:
+    """Portable shared inventory in state beside the portal executable."""
+    return portal_program_directory() / "state"
 
 
 def default_agent_directory() -> Path:

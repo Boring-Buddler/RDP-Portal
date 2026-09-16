@@ -40,16 +40,16 @@ kann keine eingehenden RDP-Sitzungen bereitstellen.
 ## 2. Portal einrichten
 
 1. Portable App starten.
-2. Beim ersten Öffnen von **Admin** ein eigenes lokales Admin-Passwort mit
-   mindestens zehn Zeichen setzen. Es wird nur gehasht im lokalen
-   Windows-Profil gespeichert, nicht im SharePoint-Ordner.
-   Es kann später im lokalen Berechtigungsbereich über **Admin-Passwort ändern**
-   ersetzt werden.
+2. **Admin** mit dem gemeinsamen, für den Rollout festgelegten Portal-Passwort
+   öffnen. Ab Version 0.6.3 gilt es auf allen PCs, auch nach einem Update mit
+   bisherigem lokalem Admin-Passwort. Eine lokale Ersteinrichtung entfällt.
+   Änderungen dieses Passworts werden über ein neues Portalpaket verteilt.
 3. Über **+ Maschine** die Testmaschine registrieren und IP/Hostname prüfen.
 4. In **Einstellungen** den RDP-Benutzernamen des Testkontos eintragen.
-5. Gemeinsamen Speicherordner im Admin-Reiter kontrollieren, damit
-   Maschinen, Reservierungen und Logs zwischen Portalinstallationen
-   gemeinsam vorliegen.
+5. Im Admin-Fenster **Speichern** drücken. Die Maschineneinstellungen liegen in
+   `state/portal-state.json` neben der EXE. Alle Benutzer starten das Portal aus
+   demselben SharePoint-Programmordner. Nach der Synchronisierung laden die anderen
+   Portale den gemeinsamen Stand automatisch.
 
 ## 3. Funktionstest
 

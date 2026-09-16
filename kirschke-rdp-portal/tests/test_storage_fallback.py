@@ -9,6 +9,7 @@ Ausweichen auf einen lokalen Ordner hält das Portal benutzbar. Es hört damit
 aber auf, seinen Stand zu teilen, und genau das muss gesagt werden.
 """
 
+import json
 from unittest.mock import Mock
 
 import pytest
@@ -16,6 +17,59 @@ import pytest
 from portal_app.models.user import MockUser
 from portal_app.services.local_store import LocalStore
 from shared import agent_paths
+
+
+def test_redirect_uses_each_readers_profile(tmp_path, monkeypatch):
+    author = tmp_path / "profiles" / "author"
+    reader = tmp_path / "profiles" / "reader"
+    previous = tmp_path / "previous"
+    previous.mkdir()
+    monkeypatch.setenv("USERPROFILE", str(author))
+    LocalStore._write_redirect_marker(previous, author / "library" / "remote")
+    marker = json.loads((previous / "storage-location.json").read_text(encoding="utf-8"))
+    assert "author" not in marker["storage_directory"]
+    monkeypatch.setenv("USERPROFILE", str(reader))
+    assert agent_paths.expand_directory(marker["storage_directory"]) == reader / "library" / "remote"
+
+
+@pytest.mark.parametrize("source", ["config", "redirect"])
+def test_old_foreign_profile_path_recovers_existing_inventory(tmp_path, monkeypatch, source):
+    profile = tmp_path / "profiles" / "reader"
+    monkeypatch.setenv("USERPROFILE", str(profile))
+    monkeypatch.setenv("LOCALAPPDATA", str(profile / "AppData" / "Local"))
+    target = profile / "library" / "remote"
+    target.mkdir(parents=True)
+    (target / "portal-state.json").write_text("{}", encoding="utf-8")
+    path = (LocalStore._config_path() if source == "config" else
+            agent_paths.legacy_portal_directory() / "storage-location.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"storage_directory": str(
+        profile.parent / "author" / "library" / "remote"
+    )}), encoding="utf-8")
+    store = LocalStore()
+    assert store.directory == tmp_path / "portal" / "state"
+    assert store._legacy_configured_directory() == target
+
+
+def test_missing_foreign_profile_path_does_not_create_a_fake_shared_folder(tmp_path, monkeypatch):
+    profile = tmp_path / "profiles" / "reader"
+    monkeypatch.setenv("USERPROFILE", str(profile))
+    foreign = profile.parent / "author" / "library"
+    assert agent_paths.resolve_portal_storage(foreign) == foreign
+    assert not profile.exists()
+
+
+def test_reachable_explicit_foreign_path_is_preserved(tmp_path, monkeypatch):
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "reader"))
+    foreign = tmp_path / "author" / "library"
+    foreign.mkdir(parents=True)
+    assert agent_paths.resolve_portal_storage(foreign) == foreign
+
+
+def test_unc_path_is_saved_without_profile_substitution(monkeypatch):
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\example")
+    path = r"\\server\portal\remote"
+    assert agent_paths.portable_directory(path) == path
 
 
 @pytest.fixture
@@ -130,15 +184,15 @@ def test_the_notice_is_shown_only_once(window, monkeypatch):
 
 # --- Welcher Ordner überhaupt gewählt wird -------------------------------------
 
-def test_the_default_is_local(tmp_path, monkeypatch):
+def test_the_default_is_relative_to_the_program(tmp_path, monkeypatch):
     """Kein Raten mehr, wie jemandes OneDrive aufgebaut ist."""
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "profil"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lokal"))
 
-    assert LocalStore().directory.is_relative_to(tmp_path / "lokal")
+    assert LocalStore().directory == tmp_path / "portal" / "state"
 
 
-def test_an_existing_installation_keeps_its_old_folder(tmp_path, monkeypatch):
+def test_an_existing_installation_remembers_its_old_folder_for_import(tmp_path, monkeypatch):
     """Wer seinen Stand dort schon fuehrt, muss ihn dort weiter finden."""
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "profil"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lokal"))
@@ -146,7 +200,9 @@ def test_an_existing_installation_keeps_its_old_folder(tmp_path, monkeypatch):
     legacy.mkdir(parents=True)
     (legacy / "portal-state.json").write_text("{}", encoding="utf-8")
 
-    assert LocalStore().directory == legacy
+    store = LocalStore()
+    assert store.directory == tmp_path / "portal" / "state"
+    assert store._legacy_configured_directory() == legacy
 
 
 def test_an_empty_old_folder_proves_nothing(tmp_path, monkeypatch):
@@ -154,7 +210,7 @@ def test_an_empty_old_folder_proves_nothing(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lokal"))
     agent_paths.legacy_portal_directory().mkdir(parents=True)
 
-    assert LocalStore().directory.is_relative_to(tmp_path / "lokal")
+    assert LocalStore().directory == tmp_path / "portal" / "state"
 
 
 def test_the_old_folder_is_never_created(tmp_path, monkeypatch):

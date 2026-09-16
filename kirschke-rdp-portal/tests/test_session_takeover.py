@@ -17,7 +17,7 @@ from portal_app.ui.widgets.session_takeover_dialog import SessionTakeoverDialog
 from shared.identity import WindowsIdentity
 
 BACKSLASH = chr(92)
-ME = "AzureAD" + BACKSLASH + "ChristianBecker"
+ME = "AzureAD" + BACKSLASH + "ErikaMustermann"
 MY_SID = "S-1-12-1-1-2-3-4"
 
 

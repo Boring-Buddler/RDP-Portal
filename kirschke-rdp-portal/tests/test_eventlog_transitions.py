@@ -35,7 +35,7 @@ def detector(tmp_path):
 def _session(state, session_id: int = 2) -> WTSSessionInfo:
     return WTSSessionInfo(
         session_id=session_id,
-        username="becker",
+        username="mustermann",
         domain="KIRSCHKE",
         display_name="RDP-Tcp#3",
         client_name="NB12KI",

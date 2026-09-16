@@ -37,6 +37,64 @@ def test_an_empty_process_list_enumerates_nothing():
     assert windows_of_processes([]) == []
 
 
+def test_windowless_process_stops_blocking_but_late_window_is_recognised(monkeypatch):
+    launcher = RDPSessionLauncher()
+    session = tracked(11, "A")
+    session.last_window_at = 0
+    launcher._active_sessions[11] = session
+    monkeypatch.setattr("portal_app.rdp.launcher.time.monotonic", lambda: 31)
+    windows = Mock(return_value=[])
+    monkeypatch.setattr("portal_app.rdp.window_focus.windows_of_processes", windows)
+    assert not launcher.has_active_session("A")
+    assert launcher.consume_finished_sessions() == [session]
+    assert launcher.consume_finished_sessions() == []
+    session.process.terminate.assert_not_called()
+    windows.return_value = [123]
+    assert launcher.has_active_session("A")
+
+
+def test_startup_grace_and_window_enumeration_failure_prevent_duplicate_launch(monkeypatch):
+    launcher = RDPSessionLauncher()
+    session = tracked(11, "A")
+    session.last_window_at = 0
+    launcher._active_sessions[11] = session
+    monkeypatch.setattr("portal_app.rdp.launcher.time.monotonic", lambda: 10)
+    windows = Mock(return_value=[])
+    monkeypatch.setattr("portal_app.rdp.window_focus.windows_of_processes", windows)
+    assert launcher.has_active_session("A")
+    windows.side_effect = OSError("enumeration failed")
+    monkeypatch.setattr("portal_app.rdp.launcher.time.monotonic", lambda: 100)
+    assert launcher.has_active_session("A")
+
+
+def test_focus_does_not_claim_success_when_windows_refuses(monkeypatch):
+    from portal_app.rdp import window_focus
+    monkeypatch.setattr(window_focus, "windows_of_processes", lambda _: [123])
+    monkeypatch.setattr(window_focus.user32, "IsIconic", lambda _: False)
+    monkeypatch.setattr(window_focus.user32, "SetForegroundWindow", lambda _: False)
+    assert not window_focus.focus_windows([11])
+
+
+def test_focus_handles_failed_window_enumeration(monkeypatch):
+    from portal_app.rdp import window_focus
+    monkeypatch.setattr(window_focus, "windows_of_processes", Mock(side_effect=OSError()))
+    assert not window_focus.focus_windows([11])
+
+
+def test_owned_dialog_is_recognised_as_a_live_rdp_client_window(qtbot):
+    import os
+
+    from PySide6.QtWidgets import QDialog, QWidget
+
+    owner = QWidget()
+    qtbot.addWidget(owner)
+    dialog = QDialog(owner)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    assert int(dialog.winId()) in windows_of_processes([os.getpid()])
+
+
 def test_the_portals_own_process_has_a_findable_window(qtbot):
     """Gegenprobe gegen die echte Windows-API statt gegen einen Mock."""
     import os

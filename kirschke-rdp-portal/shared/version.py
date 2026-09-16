@@ -98,9 +98,12 @@ from __future__ import annotations
 # 0.3.1: one machine state decides colour and buttons; orange marks an own session
 # holding a machine with no portal window, violet a foreign reservation.
 # 0.3.0: typed Windows identity, SID-based session ownership, one button matrix.
-PORTAL_VERSION = "0.6.1"
+# 0.6.2: portable profile paths and protocol-based console/RDP classification.
+# 0.6.3: one bundled admin password replaces profile-local password setup.
+# 0.6.4: explicit admin save to portable state beside the portal executable.
+PORTAL_VERSION = "0.6.5"
 # 1.4.0: every reported session carries its account SID, so the portal no longer
 # has to resolve Entra names against a cache that may not know them.
-AGENT_VERSION = "1.5.0"
+AGENT_VERSION = "1.5.1"
 
 __all__ = ["AGENT_VERSION", "PORTAL_VERSION"]

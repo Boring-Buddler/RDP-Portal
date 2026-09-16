@@ -19,9 +19,9 @@ from workstation_agent.wts.monitor import WTSSessionInfo
 @pytest.mark.parametrize(
     ("session", "expected"),
     [
-        ({"full_username": "KIRSCHKE\\becker"}, "KIRSCHKE\\becker"),
-        ({"domain": "KIRSCHKE", "username": "becker"}, "KIRSCHKE\\becker"),
-        ({"username": "becker"}, "becker"),
+        ({"full_username": "KIRSCHKE\\mustermann"}, "KIRSCHKE\\mustermann"),
+        ({"domain": "KIRSCHKE", "username": "mustermann"}, "KIRSCHKE\\mustermann"),
+        ({"username": "mustermann"}, "mustermann"),
         # A domain without a user name is an unowned session, not "KIRSCHKE\".
         ({"domain": "KIRSCHKE"}, ""),
         ({}, ""),
@@ -36,7 +36,7 @@ def test_session_username_covers_every_reported_shape(session, expected) -> None
 
 def test_session_username_matches_the_agent_property() -> None:
     """The portal's dict rule and WTSSessionInfo.full_username must agree."""
-    for domain, username in [("KIRSCHKE", "becker"), (None, "becker"), ("KIRSCHKE", None)]:
+    for domain, username in [("KIRSCHKE", "mustermann"), (None, "mustermann"), ("KIRSCHKE", None)]:
         info = WTSSessionInfo(session_id=3, username=username, domain=domain)
         assert session_username({"domain": domain, "username": username}) == info.full_username
 

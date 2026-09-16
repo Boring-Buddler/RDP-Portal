@@ -1,6 +1,17 @@
 # Kirschke RDP Workstation Portal
 
-**Version:** 0.2.12 (lokaler Pilot, Review vom 11.09.2026)
+**Version:** Portal 0.6.5 · Agent 1.5.1
+
+**Gemeinsame Maschineneinstellungen:** Alle Benutzer starten
+`Client/Kirschke-RDP-Portal.exe` aus demselben synchronisierten SharePoint-Ordner.
+Im Admin-Fenster schreibt **Speichern** alle angezeigten Maschineneinstellungen
+nach `state/portal-state.json` neben der EXE. Der Ordner wird automatisch angelegt.
+Der Pfad hängt weder vom Benutzernamen noch vom Arbeitsverzeichnis ab.
+Andere Portale laden die Änderungen nach der SharePoint-Synchronisierung automatisch.
+Persönliche Kontowahl und Benutzereinstellungen bleiben im jeweiligen Windows-Profil.
+Beim Update den vorhandenen `state`-Ordner beibehalten. Wenn dort noch kein Inventar
+liegt, übernimmt der erste Start ein erreichbares bisheriges Inventar; die alten
+Dateien bleiben erhalten. Ein vorhandener gemeinsamer Stand hat immer Vorrang.
 
 Unter **Maschinen → Details → Datei-Fallback einrichten …** erhält jede
 Maschine ihre eigene SMB-Freigabe. Das Portal speichert auf Wunsch nur die
@@ -49,15 +60,16 @@ des Zielrechners; das Kennwort wird nicht gespeichert. `PortalLeser` allein erh�
 keine administrative Abmeldeberechtigung.
 
 Neue Installationen starten ohne Beispielmaschinen. Bestehende Inventare bleiben erhalten.
-Der lokale Adminzugang wird beim ersten Öffnen eingerichtet; es gibt kein Standardpasswort.
-Nach fünf Fehlversuchen ist er 15 Minuten gesperrt. **Reichweite dieses Schutzes:** Der
-Passwort-Hash liegt im Profil des angemeldeten Benutzers, der ihn löschen und damit die
-Ersteinrichtung erneut auslösen kann. Der Adminbereich trennt Rollen in der Oberfläche
-und hält beiläufige Änderungen aus dem gemeinsamen Inventar heraus; eine Grenze gegen die
-Person am Gerät ist er nicht. Die wirksamen Kontrollen setzt Windows: die Freigabe-ACL auf
-dem gemeinsamen Speicher, im AD-Modus die Gruppe `RDP-Portal-Admins`, und für eine
-administrative Abmeldung echte Administrator-Anmeldedaten des Zielrechners.
-Im optionalen AD-Modus ist der lokale Passwort-Fallback standardmäßig ausgeschaltet.
+Der Portal-Adminzugang verwendet ab Version 0.6.3 auf allen PCs dasselbe globale,
+mit dem Rollout festgelegte Passwort. Im Programm liegt nur ein gesalzener
+PBKDF2-HMAC-SHA256-Hash. Es gibt keine lokale Ersteinrichtung oder Passwortänderung;
+bisherige `admin-security.json`-Dateien werden nicht mehr ausgewertet.
+Passwortänderungen werden über eine neue Portalversion verteilt. Nach fünf
+Fehlversuchen ist die Anmeldung in der laufenden Portalinstanz 15 Minuten gesperrt.
+Die Freischaltung gilt jeweils bis zum Sperren oder Schließen dieser Portalinstanz.
+Windows prüft weiterhin Freigabezugriffe und administrative Abmeldungen am Zielrechner.
+Im optionalen AD-Modus bleibt die Windows-Gruppenprüfung aktiv; der Passwort-Fallback
+ist dort standardmäßig ausgeschaltet.
 Programmlogs liegen unter `%LOCALAPPDATA%\KirschkeRDPPortal\logs\portal.log` und werden rotiert.
 
 Vorprüfung ohne RDP-Anmeldung oder Datenänderung:
@@ -297,11 +309,10 @@ The application uses the Kirschke Corporate Design system as specified in the pr
 
 ## Security Notes
 
-- No passwords are stored in the application or configuration. The local admin
-  password is kept only as a PBKDF2-HMAC-SHA256 hash (310 000 iterations, random
-  16-byte salt) and is rate-limited to five attempts per 15 minutes. See the
-  scope note under "Der lokale Adminzugang" above for what that gate does and
-  does not protect.
+- The shared portal admin password ships only as a PBKDF2-HMAC-SHA256 hash
+  (310 000 iterations, random 16-byte salt). Its verifier is identical across
+  installations; profile-local credentials cannot override it. Five failed
+  attempts pause the running portal's password gate for 15 minutes.
 - RDP profiles are validated to prevent injection attacks: control characters are
   rejected at the output boundary, and the target host is validated against an
   allowlist pattern.

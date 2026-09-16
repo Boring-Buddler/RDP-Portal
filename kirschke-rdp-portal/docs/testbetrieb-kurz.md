@@ -2,21 +2,33 @@
 
 ## 1. Client starten oder aktualisieren
 
-Empfohlen ab 0.2.0: **Kirschke-RDP-Portal-Setup.exe** ausführen. Das Portal vorher
-schließen. Das Setup ersetzt seine bisherige Installation unter
-`%LOCALAPPDATA%\Programs\KirschkeRDPPortal` und legt einen Startmenüeintrag an.
-Maschinen, Reservierungen und Einstellungen bleiben erhalten. Frühere portable
-Ordner werden nicht automatisch gesucht oder gelöscht; deren alte Verknüpfungen
-nicht mehr verwenden.
+Für den gemeinsamen SharePoint-Betrieb den Ordner **Client** aus dem Paket in den
+gemeinsam synchronisierten Programmordner übernehmen. Alle Benutzer starten die
+Datei `Kirschke-RDP-Portal.exe` dort. Den gesamten Client-Ordner zusammenlassen;
+Python ist auf den Arbeitsplatz-PCs nicht erforderlich.
 
-Das Testpaket vollständig in einen neuen Ordner entpacken. Das alte Portal schließen
-und im neuen Ordner die Datei `Client\Kirschke-RDP-Portal.exe` starten.
-Den gesamten Client-Ordner zusammenlassen. Python ist auf dem Test-PC nicht erforderlich.
-Das vorhandene Inventar bleibt erhalten.
-Im Kopf des geöffneten Portals muss **TEST 0.6.1** stehen. Falls dort eine ältere
-Version steht, die Verknüpfung auf die EXE im frisch entpackten Client-Ordner ändern.
+Vor einem Update die Portale schließen. Programmdateien aktualisieren und den
+vorhandenen Ordner **state** beibehalten. Dort liegen die gemeinsamen Daten.
+Im geöffneten Portal muss die Version **0.6.5** stehen.
+
+Im Admin-Fenster übernimmt **Speichern** alle angezeigten Maschineneinstellungen
+nach `state\portal-state.json` direkt neben der EXE. Der Ordner wird automatisch
+angelegt. Beim ersten Start ohne diese Datei wird ein erreichbares bisheriges
+Inventar übernommen; die bisherigen Dateien bleiben erhalten. Vorhandene Daten
+in `state` haben Vorrang vor lokalen Altständen.
+
+Andere Portale prüfen den gemeinsamen Stand alle fünf Sekunden und laden ihn,
+sobald SharePoint die Datei synchronisiert hat. Ungespeicherte Maschinenänderungen
+werden dabei nicht verworfen. Persönliche Anmeldekonten und Benutzereinstellungen
+bleiben im Windows-Profil.
+
+Das ebenfalls enthaltene Setup installiert eine separate lokale Portal-Kopie.
+Deren `state`-Ordner wird nicht über den SharePoint-Programmordner geteilt.
 
 Aus dem Quellcode: im Projektordner `python3.13 -m portal_app.app` ausführen.
+
+Die folgenden Update-Abschnitte dokumentieren ältere Versionen; für den aktuellen
+Speicherort gilt die Anleitung oben.
 
 ## Update 0.6.1: Versionsnummer in den Installationsfenstern
 

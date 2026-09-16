@@ -37,7 +37,7 @@ from portal_app.services.active_directory_sync import (
 )
 from portal_app.services.admin_security import (
     AdminLockoutError,
-    LocalAdminPasswordStore,
+    GlobalAdminPasswordVerifier,
     directory_mode,
 )
 from portal_app.services.agent_identity import machine_hostnames
@@ -64,7 +64,6 @@ from portal_app.ui.widgets.workstation_cards import WorkstationCardsWidget
 from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
 from portal_app.ui.widgets.workstation_dialog import WorkstationDialog
 from portal_app.version import PORTAL_VERSION
-from shared.agent_paths import expand_directory
 from shared.enums import EventResult, EventSource, EventType, ManualFlagType
 from shared.session_identity import is_active_session, is_console_session, session_username
 
@@ -100,7 +99,7 @@ class MainWindow(QMainWindow):
 
         self.store = LocalStore()
         self.directory_mode = directory_mode()
-        self.local_admin_password_store = LocalAdminPasswordStore()
+        self.admin_password_verifier = GlobalAdminPasswordVerifier()
         self.agent_status_service = LocalAgentStatusService(
             directory=self.store.agent_status_directory
         )
@@ -208,8 +207,8 @@ class MainWindow(QMainWindow):
             f"Der eingestellte Speicherort ist auf diesem PC nicht erreichbar:\n{intended}\n\n"
             f"Das Portal arbeitet vorerst lokal unter:\n{local}\n\n"
             "Maschinen und Reservierungen werden dabei NICHT mit den anderen "
-            "Portalen geteilt. Den Speicherort im Admin-Bereich korrigieren, sobald "
-            "der gemeinsame Ordner verfügbar ist."
+            "Portalen geteilt. Den Ordner state neben der Portal-EXE wieder verfügbar "
+            "machen und das Portal neu starten."
         )
 
     def _show_storage_fallback_notice(self) -> None:
@@ -369,9 +368,8 @@ class MainWindow(QMainWindow):
         self.admin_view.delete_requested.connect(self._delete_workstation)
         self.admin_view.rdp_access_requested.connect(self._manage_rdp_access)
         self.admin_view.lock_requested.connect(self._lock_admin)
-        self.admin_view.storage_directory_requested.connect(self._change_storage_directory)
+        self.admin_view.save_requested.connect(self._save_admin_settings)
         self.admin_view.active_directory_status_requested.connect(self._update_active_directory_status)
-        self.admin_view.admin_password_change_requested.connect(self._change_local_admin_password)
         self.settings_view.edit_user_requested.connect(self._edit_user)
         self.settings_view.agent_refresh_requested.connect(
             lambda: self._run_status_update_cycle(force=True)
@@ -671,7 +669,7 @@ class MainWindow(QMainWindow):
                     workstation,
                     EventType.RDP_DISCONNECT,
                     EventResult.SUCCESS,
-                    "Lokales RDP-Fenster geschlossen",
+                    "Lokales RDP-Fenster nicht mehr vorhanden",
                 )
 
     @Slot()
@@ -894,7 +892,7 @@ class MainWindow(QMainWindow):
 
     def _request_admin_access(self) -> bool:
         if self.directory_mode != "active_directory":
-            return self._request_local_admin_access()
+            return self._request_global_admin_access()
         authorization = check_windows_admin_authorization()
         if authorization.authorized:
             self._unlock_admin(f"Admin per Windows-Gruppe: {authorization.group_name}")
@@ -903,105 +901,30 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Admin-Zugang verweigert",
-                f"{authorization.message}\n\nDie lokale Testfreigabe ist deaktiviert.",
+                f"{authorization.message}\n\nDie Passwort-Freigabe ist im AD-Modus deaktiviert.",
             )
             return False
-        return self._request_local_admin_access()
+        return self._request_global_admin_access()
 
-    def _request_local_admin_access(self) -> bool:
-        if not self.local_admin_password_store.is_configured():
-            return self._configure_local_admin_password()
+    def _request_global_admin_access(self) -> bool:
         password, accepted = QInputDialog.getText(
             self,
             "Admin-Zugang",
-            "Lokales Admin-Passwort:",
+            "Globales Portal-Admin-Passwort:",
             QLineEdit.Password,
         )
         if not accepted:
             return False
         try:
-            correct = self.local_admin_password_store.verify_password(password)
+            correct = self.admin_password_verifier.verify_password(password)
         except AdminLockoutError as exc:
             QMessageBox.warning(self, "Adminzugang gesperrt", str(exc))
             return False
         if not correct:
             QMessageBox.warning(self, "Zugriff verweigert", "Das eingegebene Admin-Passwort ist nicht korrekt.")
             return False
-        self._unlock_admin("Lokales Admin-Passwort bestätigt")
+        self._unlock_admin("Globales Portal-Admin-Passwort bestätigt")
         return True
-
-    def _configure_local_admin_password(self) -> bool:
-        password, accepted = QInputDialog.getText(
-            self,
-            "Admin-Passwort einrichten",
-            "Noch kein lokales Admin-Passwort eingerichtet. Neues Passwort (mindestens 10 Zeichen):",
-            QLineEdit.Password,
-        )
-        if not accepted:
-            return False
-        confirmation, confirmed = QInputDialog.getText(
-            self,
-            "Admin-Passwort bestätigen",
-            "Neues Admin-Passwort wiederholen:",
-            QLineEdit.Password,
-        )
-        if not confirmed:
-            return False
-        if password != confirmation:
-            QMessageBox.warning(self, "Passwörter stimmen nicht überein", "Bitte die Einrichtung erneut starten.")
-            return False
-        try:
-            self.local_admin_password_store.set_password(password)
-        except (ValueError, OSError) as exc:
-            QMessageBox.warning(self, "Admin-Passwort ungültig", str(exc))
-            return False
-        self._unlock_admin("Lokales Admin-Passwort eingerichtet")
-        return True
-
-    def _change_local_admin_password(self) -> None:
-        if self.directory_mode == "active_directory" or not self._admin_unlocked:
-            return
-        current, accepted = QInputDialog.getText(
-            self,
-            "Admin-Passwort ändern",
-            "Aktuelles lokales Admin-Passwort:",
-            QLineEdit.Password,
-        )
-        if not accepted:
-            return
-        try:
-            correct = self.local_admin_password_store.verify_password(current)
-        except AdminLockoutError as exc:
-            QMessageBox.warning(self, "Adminzugang gesperrt", str(exc))
-            return
-        if not correct:
-            QMessageBox.warning(self, "Zugriff verweigert", "Das aktuelle Admin-Passwort ist nicht korrekt.")
-            return
-        new_password, accepted = QInputDialog.getText(
-            self,
-            "Admin-Passwort ändern",
-            "Neues lokales Admin-Passwort (mindestens 10 Zeichen):",
-            QLineEdit.Password,
-        )
-        if not accepted:
-            return
-        confirmation, confirmed = QInputDialog.getText(
-            self,
-            "Admin-Passwort bestätigen",
-            "Neues Admin-Passwort wiederholen:",
-            QLineEdit.Password,
-        )
-        if not confirmed:
-            return
-        if new_password != confirmation:
-            QMessageBox.warning(self, "Passwörter stimmen nicht überein", "Das Passwort wurde nicht geändert.")
-            return
-        try:
-            self.local_admin_password_store.set_password(new_password)
-        except (ValueError, OSError) as exc:
-            QMessageBox.warning(self, "Admin-Passwort ungültig", str(exc))
-            return
-        QMessageBox.information(self, "Admin-Passwort geändert", "Das lokale Admin-Passwort wurde aktualisiert.")
 
     def _unlock_admin(self, access_label: str) -> None:
         self._admin_unlocked = True
@@ -1029,36 +952,34 @@ class MainWindow(QMainWindow):
         self._apply_local_agent_fallbacks()
         self._poll_agent_status()
 
-    @Slot(str)
-    def _change_storage_directory(self, directory: str) -> None:
-        target = expand_directory(directory)
-        if target.name.casefold() in {"agent-status", "agenten-status"}:
-            QMessageBox.warning(
-                self,
-                "Kein Inventarordner",
-                "Ein Agent-Statusordner ist kein Inventar-Speicherort. "
-                "Den Datei-Fallback in den Details der betreffenden Maschine einrichten.",
-            )
+    @Slot()
+    def _save_admin_settings(self) -> None:
+        if not self._admin_unlocked:
             return
+        self._saved_workstations = deepcopy(self.workstations)
+        self.admin_view.save_button.setEnabled(False)
         try:
-            self.store.relocate(target, move_files=True)
-            self.agent_status_service.set_directory(self.store.agent_status_directory)
-            self.admin_view.set_storage_directory(str(self.store.directory))
-            self._persist()
-            self._update_storage_status("Speicherort gewechselt")
-            self._poll_agent_status()
-        except (OSError, ValueError) as exc:
-            QMessageBox.critical(
-                self,
-                "Speicherort konnte nicht geändert werden",
-                f"Die Dateien wurden nicht vollständig verschoben:\n{exc}",
-            )
-            return
-        QMessageBox.information(
-            self,
-            "Speicherort geändert",
-            f"Status und Ereignislog werden jetzt gespeichert unter:\n{self.store.directory}",
-        )
+            if self._persist():
+                self._sync_shared_store()
+                self._update_storage_status("Maschineneinstellungen gespeichert")
+        finally:
+            self.admin_view.save_button.setEnabled(self._admin_unlocked)
+
+    def _has_unsaved_machine_settings(self) -> bool:
+        """Ignore live session updates when checking for unsaved machine edits."""
+        transient = {
+            "agent_status", "agent_last_seen_utc", "agent_version",
+            "current_session_state", "current_session_user", "current_windows_session_id",
+            "last_session_event_utc", "etag",
+        }
+
+        def settings(workstations):
+            return {
+                ws.workstation_id: ws.to_schema().model_dump(exclude=transient)
+                for ws in workstations
+            }
+
+        return settings(self.workstations) != settings(self._saved_workstations)
 
     @Slot(Workstation)
     def on_workstation_selected(self, workstation: Workstation) -> None:
@@ -1607,10 +1528,11 @@ class MainWindow(QMainWindow):
                 return
             QMessageBox.warning(
                 self,
-                "RDP-Fenster bereits aktiv",
-                f"Für {workstation.display_name} läuft bereits ein von diesem Portal gestartetes "
-                "RDP-Fenster, das sich nicht in den Vordergrund holen ließ. "
-                "Wechsle über die Taskleiste dorthin; ein zweiter Start wurde verhindert.",
+                "RDP-Start oder Fenster noch aktiv",
+                f"Für {workstation.display_name} läuft noch ein RDP-Start oder ein sichtbares "
+                "RDP-Fenster. Windows konnte kein Fenster in den Vordergrund holen. "
+                "Prüfe auch offene Anmelde- und Fehlermeldungen. Falls kein Fenster erscheint, "
+                "versuche es nach 30 Sekunden erneut; ein Prozess ohne Fenster blockiert dann nicht mehr.",
             )
             return
         owned_sessions = workstation.owned_sessions(self.current_user.windows_accounts())
@@ -1977,7 +1899,7 @@ class MainWindow(QMainWindow):
 
     def _sync_shared_store(self) -> None:
         """Reload an updated OneDrive/SharePoint mirror after another portal saves."""
-        if self._pending_save:
+        if self._pending_save or self._has_unsaved_machine_settings():
             return
         if not self.store.has_external_changes():
             return
@@ -1998,10 +1920,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Paralleländerung erkannt",
-                f"Die gemeinsame SharePoint-Konfiguration wurde auf einem anderen Portal geändert.\n\n{exc}",
+                f"Die gemeinsame Konfiguration wurde auf einem anderen Portal geändert.\n\n{exc}",
             )
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Speichern fehlgeschlagen", f"Die lokalen Testdaten konnten nicht gespeichert werden: {exc}")
+            QMessageBox.warning(self, "Speichern fehlgeschlagen", f"Die Portaldaten konnten nicht gespeichert werden: {exc}")
         self._update_storage_status("Änderungen NICHT gespeichert – bitte erneut speichern oder aktualisieren")
         self._pending_save = True
         return False
@@ -2011,8 +1933,15 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "admin_view"):
             return
         timestamp = datetime.now().strftime("%H:%M:%S")
+        from shared.agent_paths import local_app_directory
+
+        location = (
+            "Nur auf diesem PC – das Portal für gemeinsame Einstellungen aus SharePoint starten"
+            if self.store.directory.is_relative_to(local_app_directory())
+            else "state neben der Portal-EXE · Verteilung nach SharePoint-Synchronisierung"
+        )
         self.admin_view.set_storage_status(
-            f"{action} · {timestamp} · portal-state.json und portal-events.jsonl"
+            f"{action} · {timestamp}\n{self.store.directory}\n{location}"
         )
 
     def _commit_workstation(self, workstation: Workstation) -> None:

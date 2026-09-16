@@ -168,7 +168,7 @@ def test_untrusted_machine_keeps_the_windows_default(tmp_path) -> None:
 def test_cleanup_old_removes_orphans_this_process_never_tracked(tmp_path) -> None:
     """After a crash the new process has an empty list; the folder still has files."""
     orphan = tmp_path / "rdp_PC-OLD_deadbeef.rdp"
-    orphan.write_text("full address:s:PC-OLD\nusername:s:KIRSCHKE\\becker\n", encoding="utf-8")
+    orphan.write_text("full address:s:PC-OLD\nusername:s:KIRSCHKE\\mustermann\n", encoding="utf-8")
     old = time.time() - 48 * 3600
     import os
 
