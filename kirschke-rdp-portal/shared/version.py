@@ -98,9 +98,27 @@ from __future__ import annotations
 # 0.3.1: one machine state decides colour and buttons; orange marks an own session
 # holding a machine with no portal window, violet a foreign reservation.
 # 0.3.0: typed Windows identity, SID-based session ownership, one button matrix.
-PORTAL_VERSION = "0.6.1"
+# 0.6.2: portable profile paths and protocol-based console/RDP classification.
+# 0.6.3: one bundled admin password replaces profile-local password setup.
+# 0.6.4: explicit admin save to portable state beside the portal executable.
+# 0.7.0: a connection assistant replaces the two-step "add a machine, then go
+# find its agent" dance. It sweeps the network for machines running an agent --
+# the pipe answers whether it exists before it checks who is asking, so agents
+# are findable without credentials and identifiable with them -- offers every one
+# it found for linking or for a new machine, derives the site from the address
+# (192.168.2.x Ettlingen, 192.168.20.x Munich) and sets up the file fallback
+# itself. It opens on its own when the inventory is empty, which is the first
+# start. Two things it fixes on the way: agent assignment used to read the status
+# folder of the very machine being assigned, so the list was empty exactly when
+# it was needed; and nothing ever re-established the SMB session after a restart,
+# so the fallback -- and with it the live channel, whose pipe target comes from
+# the same server -- stayed dead until somebody re-ran the setup dialog by hand.
+# The reader account may now ship with the release (see
+# portal_app/services/reader_account.py, which is empty in the repository and
+# filled at build time); a password entered on a PC still wins over it.
+PORTAL_VERSION = "0.7.0"
 # 1.4.0: every reported session carries its account SID, so the portal no longer
 # has to resolve Entra names against a cache that may not know them.
-AGENT_VERSION = "1.5.0"
+AGENT_VERSION = "1.5.1"
 
 __all__ = ["AGENT_VERSION", "PORTAL_VERSION"]

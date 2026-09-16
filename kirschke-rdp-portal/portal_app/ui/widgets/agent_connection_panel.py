@@ -128,13 +128,25 @@ class AgentConnectionPanel(QFrame):
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
 
-    def set_reader_account(self, username: str) -> None:
+    def set_reader_account(self, username: str, source: str = "stored") -> None:
+        """Show which reader account is in use and where it comes from.
+
+        The source matters to whoever reads this line: a bundled account needs no
+        action, a stored one was somebody's correction on this PC, and neither
+        means the same thing as having none.
+        """
         self.reader_user.setText(username)
         self.credentials_status.setText(
-            f"Hinterlegt: {username}. Das Kennwort liegt in der Windows-Anmeldeinformationsverwaltung."
-            if username
-            else "Noch kein Lesekonto hinterlegt. Ohne Konto verbindet Windows die Freigaben nur, "
-            "wenn dafür bereits Zugangsdaten gespeichert sind."
+            {
+                "bundled": f"Mitgeliefert mit dieser Portalversion: {username}. Ein Eintrag hier "
+                "gilt nur auf diesem PC und hat Vorrang.",
+                "stored": f"Auf diesem PC hinterlegt: {username}. Das Kennwort liegt in der "
+                "Windows-Anmeldeinformationsverwaltung, nicht in einer Portaldatei.",
+            }.get(
+                source if username else "none",
+                "Noch kein Lesekonto. Ohne Konto verbindet Windows die Freigaben nur, wenn "
+                "dafür bereits Zugangsdaten gespeichert sind.",
+            )
         )
 
     def set_status(self, message: str) -> None:

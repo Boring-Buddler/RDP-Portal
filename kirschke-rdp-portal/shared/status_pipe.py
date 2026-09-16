@@ -1,5 +1,6 @@
 """Bounded Windows named-pipe protocol for status and verified local logoff."""
 import json
+import logging
 import re
 import time
 import uuid
@@ -18,6 +19,10 @@ DEFAULT_TIMEOUT_MS = 5000
 LOGOFF_TIMEOUT_MS = 45000
 # Read/write data and attributes, without FILE_CREATE_PIPE_INSTANCE (0x4).
 CLIENT_ACCESS = 0x00120183
+
+
+class AgentResponseLostError(RuntimeError):
+    """A request was sent, but its outcome could not be received."""
 
 
 def io_operation(handle, operation, timeout_ms=DEFAULT_TIMEOUT_MS):
@@ -108,13 +113,29 @@ def _network_credentials(credentials):
 
 def _exchange(target, request, pipe_name=PIPE_NAME, credentials=None,
               response_timeout_ms=DEFAULT_TIMEOUT_MS):
+    import pywintypes
+
     with _network_credentials(credentials):
         handle = _open_pipe(target, pipe_name)
         try:
             write_message(handle, request)
-            raw = read_message(handle, timeout_ms=response_timeout_ms)
-            write_message(handle, b"OK")
-            return json.loads(raw)
+            try:
+                raw = read_message(handle, timeout_ms=response_timeout_ms)
+                response = json.loads(raw)
+                if not isinstance(response, dict):
+                    raise ValueError("Agent-Antwort ist kein Objekt")
+            except (OSError, pywintypes.error, ValueError) as exc:
+                raise AgentResponseLostError(
+                    "Die Anfrage wurde gesendet, aber die Agent-Antwort konnte nicht "
+                    "vollständig empfangen werden. Das Ergebnis ist noch nicht bestätigt."
+                ) from exc
+            try:
+                write_message(handle, b"OK")
+            except (OSError, pywintypes.error):
+                # The server may already have closed after its short ACK timeout.
+                # A complete response, including a rejection, remains authoritative.
+                logging.getLogger(__name__).debug("Agent-ACK nicht zugestellt", exc_info=True)
+            return response
         finally:
             handle.Close()
 

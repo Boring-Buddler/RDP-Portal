@@ -213,7 +213,7 @@ def test_reader_credentials_decode_the_stored_blob(monkeypatch):
 def test_reconnect_builds_one_session_per_server(monkeypatch):
     """Two machines behind one server must not produce a second, pointless
     WNetAddConnection2 that Windows would only answer with 1219."""
-    monkeypatch.setattr(share_connection, "load_reader_credentials", lambda: ("PortalLeser", "s"))
+    monkeypatch.setattr(share_connection, "stored_reader_credentials", lambda: ("PortalLeser", "s"))
     calls = []
     monkeypatch.setattr(
         win32wnet, "WNetAddConnection2", lambda *a: calls.append((a[0].lpRemoteName, a[2]))
@@ -232,7 +232,7 @@ def test_reconnect_builds_one_session_per_server(monkeypatch):
 
 
 def test_reconnect_skips_local_paths(monkeypatch):
-    monkeypatch.setattr(share_connection, "load_reader_credentials", lambda: None)
+    monkeypatch.setattr(share_connection, "stored_reader_credentials", lambda: None)
     monkeypatch.setattr(win32wnet, "WNetAddConnection2", lambda *a: pytest.fail("kein UNC-Pfad"))
     assert share_connection.reconnect_status_shares({"WS-001": r"C:\lokal"}) == {}
 
@@ -647,3 +647,127 @@ def test_settings_table_does_not_accumulate_widgets_on_refresh(qtbot):
     panel.set_workstations(machines[:1])
     assert panel.table.rowCount() == 1
     assert _orphan_cell_widgets(panel.table) == []
+
+
+# --- Mitgeliefertes gegen eingetragenes Lesekonto ----------------------------
+
+
+#: Stand-in for whatever a real release would have built in.
+RELEASE_SECRET = "release" + "-secret"
+
+
+def _bundle(monkeypatch, account="PortalLeser", secret=RELEASE_SECRET):
+    """Pretend this build shipped a reader account."""
+    from portal_app.services import reader_account
+
+    monkeypatch.setattr(reader_account, "BUNDLED_READER_ACCOUNT", account)
+    monkeypatch.setattr(reader_account, "BUNDLED_READER_PASSWORD", secret)
+
+
+def test_repository_ships_no_reader_password():
+    """The password is a release step. A value here would be a secret in git."""
+    from portal_app.services import reader_account
+
+    assert reader_account.BUNDLED_READER_PASSWORD == ""
+    assert reader_account.bundled_credentials() is None
+    assert not reader_account.has_bundled_password()
+
+
+def test_bundled_password_is_used_when_nothing_is_stored(monkeypatch):
+    _bundle(monkeypatch)
+    monkeypatch.setattr(share_connection, "stored_reader_credentials", lambda: None)
+    calls = []
+    monkeypatch.setattr(
+        win32wnet, "WNetAddConnection2", lambda *a: calls.append((a[2], a[1]))
+    )
+    assert share_connection.connect_status_share(r"\\NB12KI\RDP-Status")[0]
+    assert calls == [(r"NB12KI\PortalLeser", RELEASE_SECRET)]
+
+
+def test_stored_password_is_tried_after_a_refused_bundled_one(monkeypatch):
+    """A machine set up by hand keeps working even though the release disagrees."""
+    _bundle(monkeypatch)
+    monkeypatch.setattr(
+        share_connection, "stored_reader_credentials", lambda: ("PortalLeser", "local-secret")
+    )
+    attempts = []
+
+    def connect(resource, password, username, flags):
+        attempts.append(password)
+        if password == RELEASE_SECRET:
+            raise pywintypes.error(1326, "WNetAddConnection2", "falsches Kennwort")
+
+    monkeypatch.setattr(win32wnet, "WNetAddConnection2", connect)
+    success, _ = share_connection.connect_status_share(r"\\NB12KI\RDP-Status")
+    assert success
+    assert attempts == [RELEASE_SECRET, "local-secret"]
+
+
+def test_identical_stored_and_bundled_password_is_tried_once(monkeypatch):
+    _bundle(monkeypatch)
+    monkeypatch.setattr(
+        share_connection, "stored_reader_credentials", lambda: ("PortalLeser", RELEASE_SECRET)
+    )
+    attempts = []
+    monkeypatch.setattr(
+        win32wnet, "WNetAddConnection2", lambda *a: attempts.append(a[1])
+    )
+    share_connection.connect_status_share(r"\\NB12KI\RDP-Status")
+    assert attempts == [RELEASE_SECRET]
+
+
+def test_stored_account_outranks_the_bundled_one_for_display(monkeypatch):
+    _bundle(monkeypatch)
+    monkeypatch.setattr(
+        share_connection, "stored_reader_credentials", lambda: ("Sonderleser", "x")
+    )
+    assert share_connection.load_reader_credentials() == ("Sonderleser", "x")
+    assert share_connection.reader_account_name() == "Sonderleser"
+    assert share_connection.reader_account_source() == "stored"
+
+
+def test_reader_source_names_where_the_account_came_from(monkeypatch):
+    monkeypatch.setattr(share_connection, "stored_reader_credentials", lambda: None)
+    assert share_connection.reader_account_source() == "none"
+    _bundle(monkeypatch)
+    assert share_connection.reader_account_source() == "bundled"
+    assert share_connection.reader_account_name() == "PortalLeser"
+
+
+def test_without_any_account_windows_uses_what_it_already_has(monkeypatch):
+    """Not passing credentials is how a share set up through the dialog stays usable."""
+    monkeypatch.setattr(share_connection, "stored_reader_credentials", lambda: None)
+    calls = []
+    monkeypatch.setattr(
+        win32wnet, "WNetAddConnection2", lambda *a: calls.append((a[1], a[2]))
+    )
+    share_connection.connect_status_share(r"\\NB12KI\RDP-Status")
+    assert calls == [(None, None)]
+
+
+def test_wizard_hides_credentials_when_the_release_brings_an_account(qtbot, monkeypatch):
+    _bundle(monkeypatch)
+    monkeypatch.setattr(share_connection, "stored_reader_credentials", lambda: None)
+    wizard = MachineRegistrationWizard()
+    qtbot.addWidget(wizard)
+    page = wizard.page(MachineRegistrationWizard.SCAN_PAGE)
+    page.credentials.load_account()
+    assert not page.credentials.isVisible()
+    assert "bringt ein Lesekonto mit" in page.credentials.hint.text()
+    # An agent that answers but cannot be read is what the fields are for.
+    page._on_found(AgentProbe("192.168.2.91", agent_present=True, message="nicht lesbar"))
+    page._on_finished(1)
+    assert page.credentials.isVisibleTo(page)
+
+
+def test_wizard_asks_at_once_when_there_is_no_account_at_all(qtbot, monkeypatch):
+    from portal_app.services import reader_account
+
+    monkeypatch.setattr(reader_account, "BUNDLED_READER_PASSWORD", "")
+    monkeypatch.setattr(share_connection, "stored_reader_credentials", lambda: None)
+    wizard = MachineRegistrationWizard()
+    qtbot.addWidget(wizard)
+    page = wizard.page(MachineRegistrationWizard.SCAN_PAGE)
+    page.credentials.load_account()
+    assert page.credentials.isVisibleTo(page)
+    assert page.credentials.user.text() == "PortalLeser"

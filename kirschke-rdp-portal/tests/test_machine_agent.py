@@ -140,7 +140,7 @@ def test_reported_session_carries_the_sid_the_portal_compares_against():
     """The agent is the only component that can resolve this without a name cache."""
     info = WTSSessionInfo(
         session_id=2,
-        username="ChristianBecker",
+        username="ErikaMustermann",
         domain="AzureAD",
         sid="S-1-12-1-1-2-3-4",
         is_console_session=True,
@@ -167,4 +167,35 @@ def test_a_remote_monitor_reports_no_sid_instead_of_resolving_it_locally():
     monitor = WTSMonitor.__new__(WTSMonitor)
     monitor.server_name = "SOMEWHERE-ELSE"
 
-    assert monitor._query_sid(2, "AzureAD" + chr(92) + "ChristianBecker") is None
+    assert monitor._query_sid(2, "AzureAD" + chr(92) + "ErikaMustermann") is None
+
+
+@pytest.mark.parametrize("remote,protocol,station,expected_console", [
+    (False, 2, "RDP-Tcp#1", False),
+    (False, 0, "Console", True),
+    (False, None, "RDP-Tcp#1", False),
+    (False, None, "Console", True),
+    (True, None, None, False),
+])
+def test_console_id_does_not_override_rdp_or_a_remote_server(
+    monkeypatch, remote, protocol, station, expected_console,
+):
+    from workstation_agent.wts import monitor as module
+
+    monitor = WTSMonitor.__new__(WTSMonitor)
+    monitor.server_name = "REMOTE" if remote else None
+    monkeypatch.setattr(module.kernel32, "WTSGetActiveConsoleSessionId", lambda: 2)
+    monkeypatch.setattr(monitor, "_query_number", lambda *args: protocol)
+    monkeypatch.setattr(monitor, "_query_text", lambda *args: "tester")
+    monkeypatch.setattr(monitor, "_query_sid", lambda *args: None)
+    monkeypatch.setattr(monitor, "_query_buffer", lambda *args: None)
+    monkeypatch.setattr(monitor, "_query_client_address", lambda *args: None)
+    info = monitor._get_session_info(2, module.WTS_CONNECTSTATE_CLASS.WTSActive, station)
+    assert info.is_console_session is expected_console
+    if protocol == 2:
+        assert info.is_rdp_session
+
+
+def test_explicit_console_protocol_is_not_rdp_even_with_old_station_name():
+    info = WTSSessionInfo(2, username="tester", protocol_type=0, display_name="RDP-Tcp#1")
+    assert not info.is_rdp_session

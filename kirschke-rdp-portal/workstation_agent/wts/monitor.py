@@ -231,6 +231,8 @@ class WTSSessionInfo:
     def is_rdp_session(self) -> bool:
         if not self.username:
             return False
+        if self.protocol_type in (0, 2):
+            return self.protocol_type == 2
         station_name = (self.display_name or "").upper()
         return self.protocol_type == 2 or station_name.startswith("RDP-")
 
@@ -409,7 +411,11 @@ class WTSMonitor:
         )
         if station_name is None:
             station_name = self._query_text(session_id, WTS_INFO_CLASS.WTSWinStationName)
-        console_session_id = int(kernel32.WTSGetActiveConsoleSessionId())
+        # This API only describes the local machine, even for a remote monitor.
+        console_session_id = (
+            int(kernel32.WTSGetActiveConsoleSessionId())
+            if not self.server_name else NO_CONSOLE_SESSION
+        )
         login_time = None
         info_buffer = self._query_buffer(session_id, WTS_INFO_CLASS.WTSSessionInfo)
         if info_buffer:
@@ -437,7 +443,10 @@ class WTSMonitor:
             protocol_type=protocol_type,
             is_console_session=(
                 protocol_type == 0
-                or (console_session_id != NO_CONSOLE_SESSION and session_id == console_session_id)
+                or (protocol_type is None
+                    and not (station_name or "").upper().startswith("RDP-")
+                    and console_session_id != NO_CONSOLE_SESSION
+                    and session_id == console_session_id)
             ),
         )
 

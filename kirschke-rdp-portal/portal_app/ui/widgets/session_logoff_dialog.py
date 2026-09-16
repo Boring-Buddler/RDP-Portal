@@ -55,7 +55,7 @@ class LogoffWorker(QThread):
                 )
             self.result.emit(
                 False,
-                f"Die Abmeldung wurde von Windows abgebrochen (Fehler {code or type(exc).__name__})."
+                f"Die Abmeldung konnte nicht bestätigt werden (Fehler {code or type(exc).__name__})."
                 f"{hint}\n\nDetails: {detail}\n\n"
                 "Alternativ kannst du dich verbinden und auf dem Zielrechner "
                 "Start → Benutzer → Abmelden wählen.",

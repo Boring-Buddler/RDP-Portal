@@ -10,7 +10,7 @@ from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget as 
 from shared.version import AGENT_VERSION
 
 BACKSLASH = chr(92)
-BASE = {"session_id": 2, "domain": "AzureAD", "username": "ChristianBecker",
+BASE = {"session_id": 2, "domain": "AzureAD", "username": "ErikaMustermann",
         "session_state": "connected", "login_time": "2026-09-14T10:50:33+00:00"}
 
 
@@ -18,7 +18,7 @@ def test_a_console_session_is_named_as_such():
     line = Detail._session_line({**BASE, "is_console_session": True})
 
     assert "Konsole am Gerät" in line
-    assert "AzureAD" + BACKSLASH + "ChristianBecker" in line
+    assert "AzureAD" + BACKSLASH + "ErikaMustermann" in line
     assert "Verbunden" in line
 
 

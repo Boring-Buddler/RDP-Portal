@@ -1,4 +1,4 @@
-"""Guard for finding S2: the local admin gate now rate-limits guessing.
+"""Guard for finding S2: the global admin gate now rate-limits guessing.
 
 .env.example documented MAX_FAILED_LOGIN_ATTEMPTS and LOCKOUT_DURATION_MINUTES;
 neither was implemented, so attempts were unbounded.
@@ -11,17 +11,15 @@ from portal_app.services.admin_security import (
     LOCKOUT_SECONDS,
     MAX_FAILED_ATTEMPTS,
     AdminLockoutError,
-    LocalAdminPasswordStore,
+    GlobalAdminPasswordVerifier,
 )
 
-PASSWORD = "Korrektes-Kennwort-2026"
+PASSWORD = "KirschkeKirschke"
 
 
 @pytest.fixture
-def store(tmp_path):
-    created = LocalAdminPasswordStore(tmp_path / "admin-security.json")
-    created.set_password(PASSWORD)
-    return created
+def store():
+    return GlobalAdminPasswordVerifier()
 
 
 @pytest.fixture
@@ -81,29 +79,51 @@ def test_lockout_message_names_the_remaining_minutes(store, clock) -> None:
     assert caught.value.remaining_seconds == LOCKOUT_SECONDS
 
 
-def test_a_damaged_file_also_counts_as_a_failed_attempt(tmp_path) -> None:
-    path = tmp_path / "admin-security.json"
-    path.write_text("{not json", encoding="utf-8")
-    store = LocalAdminPasswordStore(path)
-    for _ in range(MAX_FAILED_ATTEMPTS):
-        assert store.verify_password("irgendetwas") is False
-    assert store.lockout_remaining_seconds() == LOCKOUT_SECONDS
+@pytest.mark.parametrize("old_config", [None, "{not json", '{"password_hash":"old-local-hash"}'])
+def test_global_password_works_with_new_and_existing_profiles(tmp_path, monkeypatch, old_config):
+    for name in ("first", "second"):
+        local_data = tmp_path / name
+        monkeypatch.setenv("LOCALAPPDATA", str(local_data))
+        path = local_data / "KirschkeRDPPortal" / "admin-security.json"
+        if old_config is not None:
+            path.parent.mkdir(parents=True)
+            path.write_text(old_config, encoding="utf-8")
+        verifier = GlobalAdminPasswordVerifier()
+        assert verifier.verify_password(PASSWORD)
+        assert not verifier.verify_password("Altes-lokales-Passwort")
+        if old_config is None:
+            assert not path.exists()
+        else:
+            assert path.read_text(encoding="utf-8") == old_config
 
 
-def test_setting_a_new_password_clears_a_lockout(store, clock) -> None:
-    for _ in range(MAX_FAILED_ATTEMPTS):
-        store.verify_password("falsch")
-    assert store.lockout_remaining_seconds() == LOCKOUT_SECONDS
-    store.set_password("Neues-Kennwort-2026")
-    assert store.lockout_remaining_seconds() == 0
-    assert store.verify_password("Neues-Kennwort-2026") is True
+def test_password_is_case_sensitive_and_exact(store):
+    for password in (PASSWORD.lower(), PASSWORD + " ", " " + PASSWORD, "Kirschke", ""):
+        assert not store.verify_password(password)
 
 
-def test_counter_is_not_persisted_to_the_users_own_file(store, tmp_path) -> None:
-    """A counter in that file would be as deletable as the hash beside it."""
-    import json
+def test_unlock_requires_global_password_and_locking_requires_it_again(tmp_path, monkeypatch, qtbot):
+    from unittest.mock import Mock
 
-    for _ in range(MAX_FAILED_ATTEMPTS):
-        store.verify_password("falsch")
-    data = json.loads((tmp_path / "admin-security.json").read_text(encoding="utf-8"))
-    assert set(data) == {"version", "algorithm", "iterations", "salt", "password_hash"}
+    from portal_app.services.local_store import LocalStore
+    from portal_app.ui.main_window import MainWindow
+
+    monkeypatch.setenv("RDP_PORTAL_DIRECTORY_MODE", "local")
+    local_store = LocalStore(tmp_path / "portal-state.json")
+    monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: local_store)
+    window = MainWindow(automatic_live_status=False)
+    qtbot.addWidget(window)
+    prompt = Mock(return_value=("wrong-local-password", True))
+    monkeypatch.setattr("portal_app.ui.main_window.QInputDialog.getText", prompt)
+    monkeypatch.setattr("portal_app.ui.main_window.QMessageBox.warning", Mock())
+    assert not window._request_admin_access()
+    assert not window._admin_unlocked
+    prompt.return_value = (PASSWORD, True)
+    assert window._request_admin_access()
+    assert window._admin_unlocked
+    assert "Globales" in window.admin_view.access_status.text()
+    window._lock_admin()
+    assert not window._admin_unlocked
+    prompt.return_value = ("", False)
+    assert not window._request_admin_access()
+    assert not window._admin_unlocked

@@ -13,7 +13,7 @@ from portal_app.models.user import MockUser
 from portal_app.models.workstation import Workstation
 from portal_app.rdp.generator import RDPFileGenerator, RDPGenerationError
 from portal_app.rdp.launcher import RDPSessionLauncher
-from portal_app.services.admin_security import LocalAdminPasswordStore
+from portal_app.services.admin_security import GlobalAdminPasswordVerifier
 from portal_app.services.agent_status import LocalAgentStatusService
 from portal_app.services.local_store import LocalStore, StoreConflictError, StoreReadError
 from shared.agent_snapshot import AgentSnapshot, load_agent_snapshots, write_agent_snapshot
@@ -235,11 +235,15 @@ def test_remote_commands_do_not_execute_in_pilot():
 
 
 @pytest.mark.parametrize("content", ["broken", "[]", '{"iterations":-1,"salt":"AA==","password_hash":"AA=="}'])
-def test_corrupt_admin_file_does_not_reopen_setup(tmp_path, content):
-    store = LocalAdminPasswordStore(tmp_path / "admin.json")
-    store.path.write_text(content, encoding="utf-8")
-    assert store.is_configured()
-    assert not store.verify_password("any password")
+def test_corrupt_legacy_admin_file_cannot_override_global_password(tmp_path, monkeypatch, content):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    path = tmp_path / "KirschkeRDPPortal" / "admin-security.json"
+    path.parent.mkdir()
+    path.write_text(content, encoding="utf-8")
+    verifier = GlobalAdminPasswordVerifier()
+    assert not verifier.verify_password("any password")
+    assert verifier.verify_password("KirschkeKirschke")
+    assert path.read_text(encoding="utf-8") == content
 
 
 def test_event_timestamps_have_utc_offsets():

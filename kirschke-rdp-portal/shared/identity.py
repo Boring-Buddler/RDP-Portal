@@ -150,9 +150,9 @@ class WindowsIdentity:
         r"""The account name to write into an .rdp file.
 
         With ``enablerdsaadauth:i:1`` Windows runs the Entra web sign-in and wants
-        the plain UPN.  Without it the same Entra account has to be named through
-        the compatibility pseudo-domain, ``AzureAD\user@domain.tld``, or Windows
-        authenticates something else and the target refuses the remote logon.
+        the plain UPN. Without it we explicitly select the known Entra account
+        through the compatibility pseudo-domain, ``AzureAD\user@domain.tld``.
+        Windows also supports a plain UPN for classic authentication.
         """
         if not self.is_entra:
             return self.down_level or self.upn

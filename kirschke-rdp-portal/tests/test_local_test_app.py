@@ -20,7 +20,7 @@ from portal_app.services.active_directory_sync import (
     check_active_directory_readiness,
     sync_rdp_group_members,
 )
-from portal_app.services.admin_security import LocalAdminPasswordStore, directory_mode
+from portal_app.services.admin_security import directory_mode
 from portal_app.services.agent_status import LocalAgentStatusService
 from portal_app.services.directory_users import discover_windows_domain_accounts
 from portal_app.services.local_identity import detect_initial_user
@@ -187,7 +187,8 @@ def test_local_store_writes_and_moves_shared_status_and_event_log(tmp_path):
     assert len(store.load_events()) == 1
     assert not source.exists()
     marker = json.loads((source.parent / "storage-location.json").read_text(encoding="utf-8"))
-    assert marker["storage_directory"] == str(target)
+    from shared.agent_paths import expand_directory
+    assert expand_directory(marker["storage_directory"]) == target
 
 
 def test_local_store_detects_external_shared_file_change(tmp_path):
@@ -206,19 +207,19 @@ def test_rdp_access_members_and_directory_cache_are_shared_and_moved(tmp_path):
     store = LocalStore(source)
     user = MockUser.create_user()
     workstation = create_test_workstation()
-    workstation.rdp_access_users = ["KIRSCHKE\\becker"]
+    workstation.rdp_access_users = ["KIRSCHKE\\mustermann"]
     store.save([workstation], user, [])
-    assert store.save_directory_accounts(["KIRSCHKE\\becker", "user@firma.de"]) == [
-        "KIRSCHKE\\becker",
+    assert store.save_directory_accounts(["KIRSCHKE\\mustermann", "user@firma.de"]) == [
+        "KIRSCHKE\\mustermann",
         "user@firma.de",
     ]
 
     loaded, _, _ = store.load([], user)
-    assert loaded[0].rdp_access_users == ["KIRSCHKE\\becker"]
+    assert loaded[0].rdp_access_users == ["KIRSCHKE\\mustermann"]
     target = tmp_path / "sharepoint" / "RDP-Portal"
     store.relocate(target)
     assert store.directory_users_path == target / "portal-directory-users.json"
-    assert store.load_directory_accounts() == ["KIRSCHKE\\becker", "user@firma.de"]
+    assert store.load_directory_accounts() == ["KIRSCHKE\\mustermann", "user@firma.de"]
 
 
 def test_remote_discovery_uses_reverse_dns(monkeypatch):
@@ -240,7 +241,7 @@ def test_windows_domain_lookup_returns_selectable_accounts(monkeypatch):
         stdout = """
 User accounts for \\KIRSCHKE
 -------------------------------------------------------------------------------
-becker       mueller.test     service-rdp
+mustermann       mueller.test     service-rdp
 The command completed successfully.
 """
 
@@ -248,7 +249,7 @@ The command completed successfully.
     monkeypatch.setattr("portal_app.services.directory_users.subprocess.run", lambda *args, **kwargs: Result())
     result = discover_windows_domain_accounts()
 
-    assert result.accounts == ["KIRSCHKE\\becker", "KIRSCHKE\\mueller.test", "KIRSCHKE\\service-rdp"]
+    assert result.accounts == ["KIRSCHKE\\mueller.test", "KIRSCHKE\\mustermann", "KIRSCHKE\\service-rdp"]
 
 
 def test_ad_group_sync_uses_current_windows_context_without_passwords(monkeypatch):
@@ -256,7 +257,7 @@ def test_ad_group_sync_uses_current_windows_context_without_passwords(monkeypatc
 
     class Result:
         returncode = 0
-        stdout = '{"added":["becker"],"removed":["altuser"]}'
+        stdout = '{"added":["mustermann"],"removed":["altuser"]}'
         stderr = ""
 
     def fake_run(*args, **kwargs):
@@ -265,10 +266,10 @@ def test_ad_group_sync_uses_current_windows_context_without_passwords(monkeypatc
         return Result()
 
     monkeypatch.setattr("portal_app.services.active_directory_sync.subprocess.run", fake_run)
-    result = sync_rdp_group_members("RDP-WS-001", ["KIRSCHKE\\becker"])
+    result = sync_rdp_group_members("RDP-WS-001", ["KIRSCHKE\\mustermann"])
 
     assert result.success
-    assert result.added == ["becker"]
+    assert result.added == ["mustermann"]
     assert result.removed == ["altuser"]
     # PowerShell must be started from its absolute System32 path so a
     # powershell.exe next to the portal cannot take over the AD change.
@@ -394,7 +395,7 @@ def test_admin_actions_include_disconnect_and_delete(qtbot):
     assert admin.rdp_access.isEnabled()
     admin.set_directory_mode("local")
     assert admin.rdp_access.isHidden()
-    assert not admin.change_admin_password.isHidden()
+    assert "globale Passwort" in admin.active_directory_status.text()
     with qtbot.waitSignal(admin.delete_requested) as signal:
         admin._delete_selected()
     assert signal.args == [workstations[0]]
@@ -421,23 +422,6 @@ def test_test_admin_password_can_be_disabled_for_production(monkeypatch):
     assert is_test_password_fallback_allowed()
     monkeypatch.setenv("RDP_PORTAL_ALLOW_TEST_ADMIN_PASSWORD", "false")
     assert not is_test_password_fallback_allowed()
-
-
-def test_local_admin_password_uses_a_salted_hash(tmp_path):
-    password_store = LocalAdminPasswordStore(tmp_path / "admin-security.json")
-
-    assert not password_store.is_configured()
-    with pytest.raises(ValueError):
-        password_store.set_password("zu-kurz")
-    password_store.set_password("ein-sicheres-testpasswort")
-
-    assert password_store.is_configured()
-    assert password_store.verify_password("ein-sicheres-testpasswort")
-    assert not password_store.verify_password("falsches-passwort")
-    password_store.set_password("noch-ein-sicheres-testpasswort")
-    assert password_store.verify_password("noch-ein-sicheres-testpasswort")
-    assert not password_store.verify_password("ein-sicheres-testpasswort")
-    assert "ein-sicheres-testpasswort" not in password_store.path.read_text(encoding="utf-8")
 
 
 def test_directory_mode_defaults_to_local_and_can_enable_ad(monkeypatch):
@@ -476,7 +460,7 @@ def test_rdp_access_dialog_selects_and_manually_adds_accounts(qtbot):
     try:
         dialog = RDPAccessDialog(
             create_test_workstation(),
-            ["KIRSCHKE\\becker"],
+            ["KIRSCHKE\\mustermann"],
             "1 Benutzer aus der Windows-Domäne gefunden.",
         )
         qtbot.addWidget(dialog)
@@ -487,7 +471,7 @@ def test_rdp_access_dialog_selects_and_manually_adds_accounts(qtbot):
         dialog._add_selected()
         dialog.manual_account.setText("mueller@firma.de")
         dialog._add_manual()
-        assert dialog.selected_members == ["KIRSCHKE\\becker", "mueller@firma.de"]
+        assert dialog.selected_members == ["KIRSCHKE\\mustermann", "mueller@firma.de"]
         assert "mueller@firma.de" in dialog.known_accounts
         dialog._accept_for_active_directory()
         assert dialog.sync_to_active_directory
@@ -659,7 +643,7 @@ def test_hostname_target_keeps_web_account_in_rdp_file(tmp_path):
 def test_server_identity_warning_is_only_suppressed_after_explicit_trust(tmp_path):
     workstation = Workstation(
         workstation_id="WS-TRUST",
-        display_name="GeprÃ¼fte Maschine",
+        display_name="Geprüfte Maschine",
         hostname="PC-TRUST",
         trust_unverified_server=True,
     )
@@ -670,7 +654,7 @@ def test_server_identity_warning_is_only_suppressed_after_explicit_trust(tmp_pat
     untrusted_path = generator.generate(
         Workstation(
             workstation_id="WS-NO-TRUST",
-            display_name="UngeprÃ¼fte Maschine",
+            display_name="Ungeprüfte Maschine",
             hostname="PC-NO-TRUST",
         ).get_rdp_profile()
     )
@@ -738,14 +722,14 @@ def test_rdp_diagnostics_reports_reachable_port_without_credentials(monkeypatch,
         workstation_id="WS-DIAG",
         display_name="Diagnose",
         hostname="PC-DIAG",
-        username_hint="KIRSCHKE\\becker",
+        username_hint="KIRSCHKE\\mustermann",
     ).get_rdp_profile()
 
     result = run_rdp_diagnostics(profile)
 
     assert result.port_open
     assert "TCP-Port 3389 (RDP): ERREICHBAR" in result.report
-    assert "KIRSCHKE\\becker" in result.report
+    assert "KIRSCHKE\\mustermann" in result.report
     assert "Passwort: wird nicht protokolliert" in result.report
     assert "Fehlercode: Beispiel" in result.report
     assert "Gespeicherte Windows-Anmeldedaten" in result.report
@@ -998,18 +982,6 @@ def test_agent_config_reads_json_file(tmp_path, monkeypatch):
     assert config.poll_interval == 45
     assert config.status_directory == str(tmp_path / "agent-status")
     assert config.publish_local_status is True
-
-
-def test_fixed_admin_password_is_no_longer_accepted(tmp_path):
-    """There is no built-in password, and an unconfigured store accepts nothing."""
-    store = LocalAdminPasswordStore(tmp_path / "admin-security.json")
-    assert store.is_configured() is False
-    for candidate in ("Kirschke", "kirschke", "", "Kirschke2026"):
-        assert store.verify_password(candidate) is False
-    # Once a password is set, only that one verifies.
-    store.set_password("Korrektes-Kennwort-2026")
-    assert store.verify_password("Kirschke") is False
-    assert store.verify_password("Korrektes-Kennwort-2026") is True
 
 
 def test_session_event_export_contains_audit_fields():

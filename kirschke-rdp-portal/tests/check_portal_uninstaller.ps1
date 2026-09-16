@@ -17,3 +17,10 @@ Set-Content -LiteralPath $data -Value '{}'
 Remove-Portal
 if ((Test-Path -LiteralPath $installDirectory) -or (Test-Path -LiteralPath $shortcut)) { throw 'Uninstall incomplete' }
 if (-not (Test-Path -LiteralPath $data)) { throw 'Inventory deleted' }
+New-Item -ItemType Directory -Path (Join-Path $installDirectory 'state') -Force | Out-Null
+$portableState = Join-Path $installDirectory 'state\portal-state.json'
+Set-Content -LiteralPath $portableState -Value '{"version":4}'
+Set-Content -LiteralPath (Join-Path $installDirectory 'Kirschke-RDP-Portal.exe') -Value 'test payload'
+Remove-Portal
+if (-not (Test-Path -LiteralPath $portableState)) { throw 'Portable inventory deleted' }
+if (Test-Path -LiteralPath (Join-Path $installDirectory 'Kirschke-RDP-Portal.exe')) { throw 'Program not removed' }

@@ -86,7 +86,11 @@ def version_report(project: Path, entries: list[tuple[Path, str]]) -> str:
         "1. Auf JEDER Zielmaschine: Kirschke-RDP-Agent-Setup.exe ausfuehren.",
         "   Der Agent muss zur Portal-Version passen; aeltere Agenten melden",
         "   keine Windows-SID, dann faellt das Portal auf Namensvergleich zurueck.",
-        "2. Auf den Arbeitsplaetzen: Kirschke-RDP-Portal-Setup.exe ausfuehren.",
+        "2. Client\\ in den gemeinsamen SharePoint-Programmordner uebernehmen.",
+        "   Alle Benutzer starten dort Kirschke-RDP-Portal.exe.",
+        "   Admin > Speichern schreibt nach state\\ neben der EXE.",
+        "   Beim Update den vorhandenen state-Ordner unbedingt beibehalten.",
+        "   Das Portal-Setup installiert alternativ eine separate lokale Kopie.",
         "",
         "Falls eine Anwendungssteuerungsrichtlinie das Setup blockiert, lassen",
         "sich die Ordner Client\\ und Agent\\ direkt verwenden; im Ordner Agent\\",
@@ -154,8 +158,11 @@ def main() -> None:
         archive.write(agent_setup, agent_setup.name)
         for source, prefix in ((client, "Client"), (agent, "Agent")):
             for path in sorted(source.rglob("*")):
+                if "state" in path.relative_to(source).parts:
+                    continue
                 if path.is_file():
                     archive.write(path, Path(prefix) / path.relative_to(source))
+        archive.writestr("Client/state/", b"")
         for document in sorted((project / DOCUMENTATION).glob("*.md")):
             archive.write(document, Path("Dokumentation") / document.name)
         archive.writestr(

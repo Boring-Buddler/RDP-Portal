@@ -1,13 +1,78 @@
 # Kirschke RDP Workstation Portal
 
-**Version:** 0.6.1 (Stand: 16.09.2026)
+**Version:** Portal 0.7.0 · Agent 1.5.1
+
+## Verbindungsassistent
+
+Beim ersten Start ohne Maschinen öffnet sich der **Verbindungsassistent**
+automatisch; später jederzeit über **Einstellungen → Agenten, Zuordnung und
+Datei-Fallback → Verbindungsassistent öffnen** oder **Admin → + Maschine**.
+
+Drei Wege:
+
+1. **Agenten im Netzwerk suchen** (Standard). Der Assistent klopft jede Adresse
+   des gewählten Bereichs daraufhin ab, ob dort der Statuskanal des Agenten
+   antwortet. Vorgeschlagen werden das eigene /24 sowie `192.168.2.0/24` und
+   `192.168.20.0/24`. Die Suche ändert auf den Zielrechnern nichts und läuft
+   nur auf Knopfdruck, nie im Hintergrund. Mehr als 1024 Adressen werden
+   abgelehnt, statt eine unvollständige Suche vorzutäuschen.
+2. **Diesen lokalen Rechner** – wie bisher über die Windows-Netzwerkkonfiguration.
+3. **Zielrechner manuell** – wie bisher über DNS-Vorwärts- und Reverse-Lookup.
+
+Gefundene Agenten erscheinen mit Maschinen-ID, Hostname und Agent-Version. Auf
+der Zuordnungsseite wird je Agent entschieden, ob eine **neue Maschine angelegt**
+oder eine **vorhandene verknüpft** wird. Der **Standort** ergibt sich aus der
+IP-Adresse (`192.168.2.x` = Ettlingen, `192.168.20.x` = München) und bleibt
+änderbar. Für jede eingerichtete Maschine setzt das Portal anschließend den
+Datei-Fallback `\\RECHNER\RDP-Status` und verbindet ihn.
+
+**Beim Start verbindet das Portal alle eingerichteten Statusfreigaben selbst.**
+Vorher überlebten Pfad und gespeicherte Zugangsdaten zwar den Neustart, die
+SMB-Sitzung aber nicht - der Datei-Fallback und mit ihm der Live-Kanal (dessen
+Pipe-Ziel vom selben Server stammt) blieben tot, bis jemand den
+Einrichtungsdialog erneut durchlief.
+
+### Lesekonto
+
+Das Portal liest Statusfreigaben und den Agent-Statuskanal als `PortalLeser`,
+dem schreibgeschützten lokalen Konto, das das Agent-Setup auf jedem Ziel-PC
+anlegt. Es gibt zwei Quellen, höchste zuerst:
+
+1. **Auf diesem PC hinterlegt** – wer im Assistenten oder in den Einstellungen
+   ein Konto einträgt, überstimmt damit die Auslieferung. Windows speichert es
+   in der Anmeldeinformationsverwaltung dieses Benutzers; in keiner Portaldatei.
+2. **Mit der Portalversion mitgeliefert** – siehe
+   `portal_app/services/reader_account.py`. Im Quellcode steht dort **kein**
+   Kennwort; es wird beim Bauen einer Auslieferung eingetragen, so wie der
+   Admin-Hash in `admin_security.py` gepflegt wird.
+
+Ist beides vorhanden, wird zuerst das mitgelieferte und danach das hinterlegte
+Kennwort probiert. Ist keines vorhanden, fragt der Assistent sofort. Ein Agent,
+der zwar läuft, den das Portal aber nicht lesen darf, wird als solcher
+ausgewiesen - das ist eine Rechtefrage, keine Erreichbarkeitsfrage.
+
+**Zentrale Verwaltung:** Unter **Einstellungen** zeigt eine Tabelle je Maschine
+die Agent-Zuordnung, die Quelle des letzten Status (Live-Kanal, Datei-Fallback
+oder keine Meldung) und den Fallbackordner. Die Zuordnung ist dort direkt
+umstellbar; **Alle Fallbacks jetzt verbinden** baut die SMB-Sitzungen neu auf.
+
+**Gemeinsame Maschineneinstellungen:** Alle Benutzer starten
+`Client/Kirschke-RDP-Portal.exe` aus demselben synchronisierten SharePoint-Ordner.
+Im Admin-Fenster schreibt **Speichern** alle angezeigten Maschineneinstellungen
+nach `state/portal-state.json` neben der EXE. Der Ordner wird automatisch angelegt.
+Der Pfad hängt weder vom Benutzernamen noch vom Arbeitsverzeichnis ab.
+Andere Portale laden die Änderungen nach der SharePoint-Synchronisierung automatisch.
+Persönliche Kontowahl und Benutzereinstellungen bleiben im jeweiligen Windows-Profil.
+Beim Update den vorhandenen `state`-Ordner beibehalten. Wenn dort noch kein Inventar
+liegt, übernimmt der erste Start ein erreichbares bisheriges Inventar; die alten
+Dateien bleiben erhalten. Ein vorhandener gemeinsamer Stand hat immer Vorrang.
 
 Unter **Maschinen → Details → Datei-Fallback einrichten …** erhält jede
 Maschine ihre eigene SMB-Freigabe. Das Portal speichert auf Wunsch nur die
 Zugangsdaten in der Windows-Anmeldeinformationsverwaltung des aktuellen Benutzers;
 Kennwörter gelangen nicht in Portaldateien.
 
-Agent 1.5.0 startet rechnerweit als SYSTEM über die Windows-Aufgabenplanung und
+Agent 1.3.0 startet rechnerweit als SYSTEM über die Windows-Aufgabenplanung und
 erfasst RDP- und Konsolensitzungen mit Anmeldezeiten und einem begrenzten Verlauf.
 Der Agent schreibt als SYSTEM in seinen lokalen Ordner
 `C:\RDP-Portal-Daten\agenten-status`. Das Portal liest dessen Freigabe
@@ -17,12 +82,6 @@ Das Testpaket enthält jetzt `Kirschke-RDP-Portal-Setup.exe` und
 `Kirschke-RDP-Agent-Setup.exe`, jeweils mit Deinstallation über Windows.
 
 **Schnellstart:** [Kurzanleitung für Client, Anmeldekonten und Agent-Setup](docs/testbetrieb-kurz.md).
-
-**Dokumentation:**
-- [Benutzerhandbuch](docs/benutzerhandbuch.md) - Umfassende Anleitung für Endbenutzer und Administratoren
-- [Pilotbetrieb-Anleitung](docs/pilotbetrieb-anleitung.md) - Schritt-für-Schritt Anleitung für den Pilotbetrieb
-- [Active Directory Setup](docs/active-directory-setup.md) - AD-Integration vorbereiten
-- [Agent Installation](docs/agent-installation.md) - Agenten auf Zielrechnern einrichten
 Den Fallback je Maschine in deren Details einstellen. Beim Update bleibt der frühere
 globale Ordner als Alt-Standard wirksam, bis die jeweilige Maschine einen eigenen
 Pfad erhalten hat.
@@ -55,15 +114,16 @@ des Zielrechners; das Kennwort wird nicht gespeichert. `PortalLeser` allein erh�
 keine administrative Abmeldeberechtigung.
 
 Neue Installationen starten ohne Beispielmaschinen. Bestehende Inventare bleiben erhalten.
-Der lokale Adminzugang wird beim ersten Öffnen eingerichtet; es gibt kein Standardpasswort.
-Nach fünf Fehlversuchen ist er 15 Minuten gesperrt. **Reichweite dieses Schutzes:** Der
-Passwort-Hash liegt im Profil des angemeldeten Benutzers, der ihn löschen und damit die
-Ersteinrichtung erneut auslösen kann. Der Adminbereich trennt Rollen in der Oberfläche
-und hält beiläufige Änderungen aus dem gemeinsamen Inventar heraus; eine Grenze gegen die
-Person am Gerät ist er nicht. Die wirksamen Kontrollen setzt Windows: die Freigabe-ACL auf
-dem gemeinsamen Speicher, im AD-Modus die Gruppe `RDP-Portal-Admins`, und für eine
-administrative Abmeldung echte Administrator-Anmeldedaten des Zielrechners.
-Im optionalen AD-Modus ist der lokale Passwort-Fallback standardmäßig ausgeschaltet.
+Der Portal-Adminzugang verwendet ab Version 0.6.3 auf allen PCs dasselbe globale,
+mit dem Rollout festgelegte Passwort. Im Programm liegt nur ein gesalzener
+PBKDF2-HMAC-SHA256-Hash. Es gibt keine lokale Ersteinrichtung oder Passwortänderung;
+bisherige `admin-security.json`-Dateien werden nicht mehr ausgewertet.
+Passwortänderungen werden über eine neue Portalversion verteilt. Nach fünf
+Fehlversuchen ist die Anmeldung in der laufenden Portalinstanz 15 Minuten gesperrt.
+Die Freischaltung gilt jeweils bis zum Sperren oder Schließen dieser Portalinstanz.
+Windows prüft weiterhin Freigabezugriffe und administrative Abmeldungen am Zielrechner.
+Im optionalen AD-Modus bleibt die Windows-Gruppenprüfung aktiv; der Passwort-Fallback
+ist dort standardmäßig ausgeschaltet.
 Programmlogs liegen unter `%LOCALAPPDATA%\KirschkeRDPPortal\logs\portal.log` und werden rotiert.
 
 Vorprüfung ohne RDP-Anmeldung oder Datenänderung:
@@ -108,34 +168,29 @@ kirschke-rdp-portal/
 ## Features Implemented (Phase 1)
 
 - [x] PySide6 application with Kirschke Corporate Design
-- [x] Workstation overview with table view and card grid
+- [x] Workstation overview with table view
 - [x] Filtering by site, status, agent status, and search
 - [x] Workstation detail view with all information
-- [x] Session log view with filtering and export
+- [x] Session log view with filtering
 - [x] Manual flag system (Berechnung laeuft, Wartung, Gesperrt)
 - [x] Blocking logic for connections and logoff
-- [x] Validated RDP file generation with resolution presets
-- [x] Secure mstsc.exe launching with process monitoring
+- [x] Validated RDP file generation
+- [x] Secure mstsc.exe launching
 - [x] Local mstsc.exe process monitoring with duplicate-start protection
 - [x] Occupied-session warnings and connection blocking, including disconnected sessions
 - [x] Close warning while portal-launched RDP windows are still running
 - [x] Mock data for development
-- [x] User roles (User vs Admin) with password protection
+- [x] User roles (User vs Admin)
 - [x] Local JSON persistence for the test build
 - [x] Editable workstation and general RDP profiles
-- [x] Workstation and free-target ping tools with network diagnosis
-- [x] Two-week workstation reservation calendar with agent synchronization
-- [x] Password-protected local admin session with rate limiting
+- [x] Workstation and free-target ping tools
+- [x] Two-week workstation reservation calendar
+- [x] Password-protected local admin session
 - [x] CSV/JSON session-log export
 - [x] Correct local WTS session enumeration and RDP/console separation
 - [x] Credential-free local agent status bridge for end-to-end testing
 - [x] Agent staleness/offline evaluation in the portal
 - [x] Asynchronous local `ipconfig /all` display with copy action
-- [x] Live status polling service with configurable interval (2-60 seconds)
-- [x] Agent identity resolution and machine-to-agent mapping
-- [x] Session takeover for console sessions with confirmation
-- [x] Diagnostic tools: Agent status inspection, share folder scanning
-- [x] Per-machine fallback folder configuration for agent status files
 
 ## Features Planned
 
@@ -167,7 +222,7 @@ kirschke-rdp-portal/
 - [x] PyInstaller packaging (portable Windows folder build)
 - [ ] Intune deployment documentation
 - [ ] Comprehensive tests
-- [x] User documentation (see [docs/benutzerhandbuch.md](docs/benutzerhandbuch.md))
+- [ ] User documentation
 
 ## Requirements
 
@@ -308,11 +363,10 @@ The application uses the Kirschke Corporate Design system as specified in the pr
 
 ## Security Notes
 
-- No passwords are stored in the application or configuration. The local admin
-  password is kept only as a PBKDF2-HMAC-SHA256 hash (310 000 iterations, random
-  16-byte salt) and is rate-limited to five attempts per 15 minutes. See the
-  scope note under "Der lokale Adminzugang" above for what that gate does and
-  does not protect.
+- The shared portal admin password ships only as a PBKDF2-HMAC-SHA256 hash
+  (310 000 iterations, random 16-byte salt). Its verifier is identical across
+  installations; profile-local credentials cannot override it. Five failed
+  attempts pause the running portal's password gate for 15 minutes.
 - RDP profiles are validated to prevent injection attacks: control characters are
   rejected at the output boundary, and the target host is validated against an
   allowlist pattern.
@@ -335,6 +389,22 @@ The application uses the Kirschke Corporate Design system as specified in the pr
   and either proven session ownership or real administrator credentials for the
   target computer. Note the UAC caveat in
   [docs/no-ad-pilotbetrieb.md](docs/no-ad-pilotbetrieb.md) for local accounts.
+- Der Agent-Suchlauf fragt nur, ob die Named Pipe des Agenten existiert, und
+  holt mit dem Lesekonto denselben schreibgeschützten `STATUS/1`-Schnappschuss,
+  den das Dashboard ohnehin verwendet. Er schreibt auf keinem Ziel etwas, läuft
+  nur auf ausdrücklichen Start und lehnt Bereiche über 1024 Adressen ab.
+- Ein mit der Auslieferung mitgeliefertes Lesekonto-Kennwort liegt im Programm im
+  **Klartext**, weil eine SMB-Anmeldung keinen Hash verwenden kann. Wer an die
+  EXE kommt, erhält damit Lesezugriff auf den Statusordner jedes Arbeitsplatzes.
+  `PortalLeser` ist dafür bewusst eng geschnitten: nur Lesen auf einen Ordner,
+  kein Administrator, keine Abmeldeberechtigung, und interaktive, Remote-,
+  Batch- und Dienstanmeldung sind ihm verwehrt. Wer das nicht will, lässt
+  `BUNDLED_READER_PASSWORD` leer; dann fragt der Assistent einmal pro PC.
+- Ein auf einem PC hinterlegtes Lesekonto überstimmt das mitgelieferte, damit
+  eine neue Portalversion eine Korrektur vor Ort nicht stillschweigend aufhebt.
+- Beim Wiederverbinden einer Statusfreigabe wird nie eine SMB-Verbindung getrennt,
+  die eine andere Anwendung hält; eine bestehende Sitzung unter einem anderen
+  Konto wird gemeldet, nicht ersetzt.
 - Admin actions require explicit confirmation and reasoning.
 - Roughly 5 700 lines of Entra/Graph/SharePoint code ship but are **not
   integrated and untested**; one known defect makes the token cache inoperable.

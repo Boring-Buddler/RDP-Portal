@@ -37,7 +37,7 @@ def run_rdp_diagnostics(profile: RDPProfileSchema, timeout_seconds: float = 3.0)
         f"RDP-Verbindungsdiagnose · {timestamp}",
         f"Maschine: {profile.display_name}",
         f"Ziel: {target} ({mode.value})",
-        f"RDP-Benutzer: {profile.username_hint or 'Beim Start abfragen'}",
+        f"RDP-Benutzer: {profile.effective_rdp_username() or 'Beim Start abfragen'}",
         f"Webkonto / Entra: {'aktiv' if profile.effective_entra_sso_enabled() else 'aus'}",
         f"Serveridentitäts-Ausnahme: {'aktiv' if profile.trust_unverified_server else 'aus'}",
         "Passwort: wird nicht protokolliert",
@@ -87,9 +87,11 @@ def run_rdp_diagnostics(profile: RDPProfileSchema, timeout_seconds: float = 3.0)
             "  sprachunabhängig ist nur ihre SID S-1-5-32-555:",
             "      $name = (Get-LocalGroup -SID 'S-1-5-32-555').Name",
             "- Meldet der Zielrechner 'Benutzerkonto nicht zur Remoteanmeldung autorisiert' (0x3 / 0x9),",
-            "  ist das Konto authentifiziert, aber nicht berechtigt. Bei Entra-Konten muss der",
-            "  Gruppeneintrag 'AzureAD\\<UPN>' lauten, nicht den Anzeigenamen verwenden: Windows prüft",
-            "  die SID, und ein über den Anzeigenamen eingetragenes Konto kann eine andere SID haben.",
+            "  prüfen Sie am Ziel das tatsächlich verwendete Konto und dessen SID sowie die",
+            "  wirksamen Rechte für die Remotedesktopanmeldung. Die Meldung allein bestätigt",
+            "  nicht, dass Windows das im Portal ausgewählte Konto verwendet hat.",
+            "- Für Entra ohne Webanmeldung sind UPN und AzureAD\\<UPN> unterstützte Kontonamen.",
+            "  Webanmeldung verwendet den UPN und benötigt einen Hostnamen statt einer IP-Adresse.",
         )
     )
     report = "\n".join(lines)

@@ -62,7 +62,15 @@ def is_console_session(session: Mapping[str, Any]) -> bool:
     session has no RDP client, so Windows can prove nothing about who is asking.
     An agent too old to report the field looks like an RDP session here and is
     then refused by the agent itself, which is the safe direction.
+
+    Prefer the queried protocol over a derived console flag: older agents could
+    report both RDP protocol and a console flag during a session transition.
     """
+    protocol = session.get("protocol_type")
+    if protocol in (0, 2):
+        return protocol == 0
+    if str(session.get("display_name") or "").upper().startswith("RDP-"):
+        return False
     return bool(session.get("is_console_session"))
 
 

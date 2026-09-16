@@ -6,7 +6,7 @@ from datetime import datetime
 from portal_app.services.agent_identity import match_agent, mismatch_message
 from shared.identity import WindowsIdentity
 from shared.session_identity import is_active_session, is_console_session, session_username
-from shared.status_pipe import request_agent_logoff, request_snapshot
+from shared.status_pipe import AgentResponseLostError, request_agent_logoff, request_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ NOT_YOUR_SESSION = (
 #: A local console session has no RDP client, so nothing about the requester can
 #: be proven to the agent.  See :mod:`workstation_agent.session_control`.
 CONSOLE_SESSION_NOT_OWN = (
-    "Das ist eine lokale Konsolensitzung am Gerät selbst. Für sie kann Windows "
+    "Der Agent meldet diese Sitzung aktuell als lokale Konsolensitzung. Für sie kann Windows "
     "keinen anfragenden RDP-Client bestätigen, deshalb lässt der Agent die normale "
     "Abmeldung nicht zu. Möglich sind: am Gerät abmelden, die Sitzung per RDP "
     "übernehmen und dort abmelden, oder die administrative Abmeldung."
@@ -349,7 +349,7 @@ def _logoff_session(
             administrative=not require_owner,
             credentials=admin_credentials,
         )
-    except TimeoutError:
+    except (TimeoutError, AgentResponseLostError):
         # Der Agent antwortet erst, wenn Windows die Sitzung vollstaendig abgebaut
         # hat. Dauert das laenger als die Antwortfrist, ist die Abmeldung deshalb
         # nicht gescheitert -- sie war nur nicht quittiert, und genau das wurde

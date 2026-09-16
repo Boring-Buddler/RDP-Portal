@@ -42,7 +42,7 @@ GW_OWNER = 4
 
 
 def windows_of_processes(pids: Iterable[int]) -> list[int]:
-    """Return the visible, unowned top-level windows of the given processes."""
+    """Return visible top-level windows, including credential/error dialogs."""
     wanted = {int(pid) for pid in pids}
     if not wanted:
         return []
@@ -54,31 +54,28 @@ def windows_of_processes(pids: Iterable[int]) -> list[int]:
         if (
             process_id.value in wanted
             and user32.IsWindowVisible(hwnd)
-            and not user32.GetWindow(hwnd, GW_OWNER)
         ):
             found.append(int(hwnd))
         return True
 
-    user32.EnumWindows(WNDENUMPROC(visit), 0)
+    if not user32.EnumWindows(WNDENUMPROC(visit), 0):
+        raise ctypes.WinError(ctypes.get_last_error())
     return found
 
 
 def focus_windows(pids: Iterable[int]) -> bool:
-    """Restore and raise the windows of the given processes; True if one came up.
-
-    ``SetForegroundWindow`` is refused by Windows unless the caller already owns
-    the foreground window.  That holds here because this runs from a click in the
-    portal, but it is not guaranteed -- so a restored-but-not-raised window still
-    counts as success: the user can see it in the taskbar, which is what the old
-    dead-end message could not offer.
-    """
+    """Restore windows and report whether Windows accepted a foreground request."""
     raised = False
-    for hwnd in windows_of_processes(pids):
+    try:
+        windows = windows_of_processes(pids)
+    except OSError:
+        logger.debug("RDP-Fenstersuche fehlgeschlagen", exc_info=True)
+        return False
+    for hwnd in windows:
         try:
             if user32.IsIconic(hwnd):
                 user32.ShowWindow(hwnd, SW_RESTORE)
-            user32.SetForegroundWindow(hwnd)
-            raised = True
+            raised = bool(user32.SetForegroundWindow(hwnd)) or raised
         except OSError:
             logger.debug("Fenster %s konnte nicht in den Vordergrund geholt werden", hwnd)
     return raised

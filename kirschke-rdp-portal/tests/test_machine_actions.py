@@ -30,7 +30,7 @@ from shared.enums import AgentStatus, ManualFlagType, SessionState
 from shared.identity import IdentityMatch
 
 BACKSLASH = chr(92)
-MY_NAME = "AzureAD" + BACKSLASH + "ChristianBecker"
+MY_NAME = "AzureAD" + BACKSLASH + "ErikaMustermann"
 MY_SID = "S-1-12-1-1-2-3-4"
 OTHER_NAME = "AzureAD" + BACKSLASH + "SomeoneElse"
 

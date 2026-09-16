@@ -10,8 +10,8 @@ from shared.identity import (
 )
 
 BACKSLASH = chr(92)
-ENTRA_DOWN_LEVEL = ENTRA_DOMAIN + BACKSLASH + "ChristianBecker"
-ENTRA_UPN = "becker@prof-kirschke.de"
+ENTRA_DOWN_LEVEL = ENTRA_DOMAIN + BACKSLASH + "ErikaMustermann"
+ENTRA_UPN = "mustermann@example.com"
 ENTRA_QUALIFIED = ENTRA_DOMAIN + BACKSLASH + ENTRA_UPN
 
 
@@ -23,7 +23,7 @@ ENTRA_QUALIFIED = ENTRA_DOMAIN + BACKSLASH + ENTRA_UPN
         (ENTRA_UPN, None, ENTRA_UPN),
         # AzureAD\upn is both at once, which is what lets the .rdp spelling switch.
         (ENTRA_QUALIFIED, ENTRA_QUALIFIED, ENTRA_UPN),
-        ("KIRSCHKE" + BACKSLASH + "becker", "KIRSCHKE" + BACKSLASH + "becker", None),
+        ("KIRSCHKE" + BACKSLASH + "mustermann", "KIRSCHKE" + BACKSLASH + "mustermann", None),
         ("", None, None),
         (None, None, None),
     ],
@@ -40,7 +40,7 @@ def test_each_spelling_lands_in_its_own_field(spelling, down_level, upn) -> None
         (ENTRA_DOWN_LEVEL, True),
         (ENTRA_QUALIFIED, True),
         ("azuread" + BACKSLASH + "someone", True),
-        ("KIRSCHKE" + BACKSLASH + "becker", False),
+        ("KIRSCHKE" + BACKSLASH + "mustermann", False),
         (ENTRA_UPN, False),  # a bare UPN carries no domain to recognise
     ],
 )
@@ -49,7 +49,7 @@ def test_entra_accounts_are_recognised_by_their_domain(spelling, is_entra) -> No
 
 
 def test_an_entra_sid_identifies_the_account_even_without_a_domain() -> None:
-    assert WindowsIdentity.from_names("becker", sid="S-1-12-1-1-2-3-4").is_entra is True
+    assert WindowsIdentity.from_names("mustermann", sid="S-1-12-1-1-2-3-4").is_entra is True
 
 
 def test_a_sid_decides_the_comparison_in_both_directions() -> None:
@@ -68,7 +68,7 @@ def test_a_sid_decides_the_comparison_in_both_directions() -> None:
 
 
 def test_without_sids_a_name_match_is_reported_as_unverified() -> None:
-    mine = WindowsIdentity.from_names("azuread" + BACKSLASH + "christianbecker")
+    mine = WindowsIdentity.from_names("azuread" + BACKSLASH + "erikamustermann")
     theirs = WindowsIdentity.from_names(ENTRA_DOWN_LEVEL)
 
     match = mine.matches(theirs)
@@ -107,8 +107,8 @@ def test_nothing_matches_a_missing_identity() -> None:
         # No UPN known, so the display name is the best available spelling.
         (ENTRA_DOWN_LEVEL, ENTRA_DOWN_LEVEL, ENTRA_DOWN_LEVEL),
         # Another domain is none of our business.
-        ("KIRSCHKE" + BACKSLASH + "becker",) * 3,
-        ("becker",) * 3,
+        ("KIRSCHKE" + BACKSLASH + "mustermann",) * 3,
+        ("mustermann",) * 3,
         (None, None, None),
         ("", None, None),
     ],
@@ -126,7 +126,7 @@ def test_display_never_invents_a_name() -> None:
 
 def test_identity_is_built_from_one_reported_session() -> None:
     identity = WindowsIdentity.from_session(
-        {"domain": ENTRA_DOMAIN, "username": "ChristianBecker", "sid": "S-1-12-1-1-2-3-4"}
+        {"domain": ENTRA_DOMAIN, "username": "ErikaMustermann", "sid": "S-1-12-1-1-2-3-4"}
     )
 
     assert identity.down_level == ENTRA_DOWN_LEVEL

@@ -29,6 +29,8 @@ class MachineDiscovery:
 
     def as_prefill(self) -> dict[str, str]:
         """Return values understood by the machine profile form."""
+        from portal_app.services.site_mapping import site_for_address
+
         return {
             "display_name": self.hostname or self.fqdn or self.ip_address or "Neue Maschine",
             "hostname": self.hostname,
@@ -37,6 +39,9 @@ class MachineDiscovery:
             "subnet_mask": self.subnet_mask or "",
             "default_gateway": self.default_gateway or "",
             "dns_server": self.dns_server or "",
+            # The address decides the office; see portal_app.services.site_mapping
+            # for why a host name deliberately does not.
+            "site": site_for_address(self.ip_address),
         }
 
 

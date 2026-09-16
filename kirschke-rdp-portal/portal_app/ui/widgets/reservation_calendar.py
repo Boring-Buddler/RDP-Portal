@@ -61,8 +61,8 @@ RESERVATION_COLORS = (
 def short_account(value: str) -> str:
     r"""The readable part of an account name, for the narrow calendar tile.
 
-    A reservation stores the UPN (``becker@prof-kirschke.de``) or a down-level
-    name (``DOMAIN\becker``). Neither fits a day tile, and the domain part is
+    A reservation stores the UPN (``mustermann@example.com``) or a down-level
+    name (``DOMAIN\mustermann``). Neither fits a day tile, and the domain part is
     the same for everyone here, so it carries no information. The full value
     stays in the tooltip.
     """
