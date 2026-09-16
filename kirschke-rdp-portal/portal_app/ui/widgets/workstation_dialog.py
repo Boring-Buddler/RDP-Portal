@@ -133,10 +133,10 @@ class WorkstationDialog(QDialog):
         self.entra_sso = QCheckBox("Webkonto / Microsoft Entra verwenden (nur Hostname oder FQDN)")
         self.entra_sso.toggled.connect(self._update_target_note)
         self.trust_unverified_server = QCheckBox(
-            "Zertifikatswarnung fÃ¼r diese Maschine nach BestÃ¤tigung Ã¼berspringen"
+            "Zertifikatswarnung für diese Maschine nach Bestätigung überspringen"
         )
         self.trust_unverified_server.setToolTip(
-            "Nur nach PrÃ¼fung der Zieladresse aktivieren. Die ServeridentitÃ¤t wird dann nicht mehr von Windows abgefragt."
+            "Nur nach Prüfung der Zieladresse aktivieren. Die Serveridentität wird dann nicht mehr von Windows abgefragt."
         )
         self.hostname.textChanged.connect(self._update_target_note)
         self.fqdn.textChanged.connect(self._update_target_note)
@@ -160,7 +160,7 @@ class WorkstationDialog(QDialog):
         form.addRow("Maschinen-Benutzername", self.username_hint)
         form.addRow("RD-Gateway", self.gateway_hostname)
         form.addRow("Authentifizierung", self.entra_sso)
-        form.addRow("ServeridentitÃ¤t", self.trust_unverified_server)
+        form.addRow("Serveridentität", self.trust_unverified_server)
         form.addRow("Darstellung", self.screen_mode)
         form.addRow("Auflösung", self.resolution)
         form.addRow("Monitore", self.use_all_monitors)

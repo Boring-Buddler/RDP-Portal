@@ -84,4 +84,68 @@ class FallbackScanner(QObject):
         self.pool.waitForDone(3000)
 
 
-__all__ = ["FallbackScanner"]
+class _ReconnectSignals(QObject):
+    finished = Signal(object)
+
+
+class _ReconnectTask(QRunnable):
+    def __init__(self, paths: dict[str, str]) -> None:
+        super().__init__()
+        self.paths = paths
+        self.signals = _ReconnectSignals()
+
+    @Slot()
+    def run(self) -> None:
+        from portal_app.services.share_connection import reconnect_status_shares
+
+        try:
+            results = reconnect_status_shares(self.paths)
+        except Exception as exc:  # noqa: BLE001 - reported as one failed attempt
+            results = {key: (False, f"{type(exc).__name__}: {exc}") for key in self.paths}
+        self.signals.finished.emit(results)
+
+
+class ShareReconnector(QObject):
+    """Rebuild the SMB sessions the configured fallbacks need, off the UI thread.
+
+    An unreachable SMB host blocks for the SMB timeout, and this runs at startup
+    -- on the UI thread it would be a portal that shows no window until every
+    switched-off machine has timed out.
+    """
+
+    completed = Signal(object)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.pool = QThreadPool(self)
+        self.pool.setMaxThreadCount(1)
+        self._busy = False
+        self._stopped = False
+
+    @property
+    def busy(self) -> bool:
+        return self._busy
+
+    def request(self, paths: dict[str, str]) -> bool:
+        """Start one reconnect pass. False when one is running or none apply."""
+        if self._stopped or self._busy or not paths:
+            return False
+        self._busy = True
+        task = _ReconnectTask(dict(paths))
+        task.signals.finished.connect(self._on_finished)
+        self.pool.start(task)
+        return True
+
+    @Slot(object)
+    def _on_finished(self, results: object) -> None:
+        self._busy = False
+        if not self._stopped:
+            self.completed.emit(results)
+
+    def stop(self) -> None:
+        self._stopped = True
+        self.pool.clear()
+        self.pool.waitForDone(3000)
+
+
+__all__ = ["FallbackScanner", "ShareReconnector"]

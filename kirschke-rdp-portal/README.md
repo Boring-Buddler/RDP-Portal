@@ -1,6 +1,60 @@
 # Kirschke RDP Workstation Portal
 
-**Version:** Portal 0.6.5 · Agent 1.5.1
+**Version:** Portal 0.7.0 · Agent 1.5.1
+
+## Verbindungsassistent
+
+Beim ersten Start ohne Maschinen oeffnet sich der **Verbindungsassistent**
+automatisch; spaeter jederzeit ueber **Einstellungen -> Agenten, Zuordnung und
+Datei-Fallback -> Verbindungsassistent oeffnen** oder **Admin -> + Maschine**.
+
+Drei Wege:
+
+1. **Agenten im Netzwerk suchen** (Standard). Der Assistent klopft jede Adresse
+   des gewaehlten Bereichs daraufhin ab, ob dort der Statuskanal des Agenten
+   antwortet. Vorgeschlagen werden das eigene /24 sowie `192.168.2.0/24` und
+   `192.168.20.0/24`. Die Suche aendert auf den Zielrechnern nichts und laeuft
+   nur auf Knopfdruck, nie im Hintergrund. Mehr als 1024 Adressen werden
+   abgelehnt, statt eine unvollstaendige Suche vorzutaeuschen.
+2. **Diesen lokalen Rechner** - wie bisher ueber die Windows-Netzwerkkonfiguration.
+3. **Zielrechner manuell** - wie bisher ueber DNS-Vorwaerts- und Reverse-Lookup.
+
+Gefundene Agenten erscheinen mit Maschinen-ID, Hostname und Agent-Version. Auf
+der Zuordnungsseite wird je Agent entschieden, ob eine **neue Maschine angelegt**
+oder eine **vorhandene verknuepft** wird. Der **Standort** ergibt sich aus der
+IP-Adresse (`192.168.2.x` = Ettlingen, `192.168.20.x` = Muenchen) und bleibt
+aenderbar. Fuer jede eingerichtete Maschine setzt das Portal anschliessend den
+Datei-Fallback `\\RECHNER\RDP-Status` und verbindet ihn.
+
+**Beim Start verbindet das Portal alle eingerichteten Statusfreigaben selbst.**
+Vorher ueberlebten Pfad und gespeicherte Zugangsdaten zwar den Neustart, die
+SMB-Sitzung aber nicht - der Datei-Fallback und mit ihm der Live-Kanal (dessen
+Pipe-Ziel vom selben Server stammt) blieben tot, bis jemand den
+Einrichtungsdialog erneut durchlief.
+
+### Lesekonto
+
+Das Portal liest Statusfreigaben und den Agent-Statuskanal als `PortalLeser`,
+dem schreibgeschuetzten lokalen Konto, das das Agent-Setup auf jedem Ziel-PC
+anlegt. Es gibt zwei Quellen, hoechste zuerst:
+
+1. **Auf diesem PC hinterlegt** - wer im Assistenten oder in den Einstellungen
+   ein Konto eintraegt, ueberstimmt damit die Auslieferung. Windows speichert es
+   in der Anmeldeinformationsverwaltung dieses Benutzers; in keiner Portaldatei.
+2. **Mit der Portalversion mitgeliefert** - siehe
+   `portal_app/services/reader_account.py`. Im Quellcode steht dort **kein**
+   Kennwort; es wird beim Bauen einer Auslieferung eingetragen, so wie der
+   Admin-Hash in `admin_security.py` gepflegt wird.
+
+Ist beides vorhanden, wird zuerst das mitgelieferte und danach das hinterlegte
+Kennwort probiert. Ist keines vorhanden, fragt der Assistent sofort. Ein Agent,
+der zwar laeuft, den das Portal aber nicht lesen darf, wird als solcher
+ausgewiesen - das ist eine Rechtefrage, keine Erreichbarkeitsfrage.
+
+**Zentrale Verwaltung:** Unter **Einstellungen** zeigt eine Tabelle je Maschine
+die Agent-Zuordnung, die Quelle des letzten Status (Live-Kanal, Datei-Fallback
+oder keine Meldung) und den Fallbackordner. Die Zuordnung ist dort direkt
+umstellbar; **Alle Fallbacks jetzt verbinden** baut die SMB-Sitzungen neu auf.
 
 **Gemeinsame Maschineneinstellungen:** Alle Benutzer starten
 `Client/Kirschke-RDP-Portal.exe` aus demselben synchronisierten SharePoint-Ordner.
@@ -335,6 +389,22 @@ The application uses the Kirschke Corporate Design system as specified in the pr
   and either proven session ownership or real administrator credentials for the
   target computer. Note the UAC caveat in
   [docs/no-ad-pilotbetrieb.md](docs/no-ad-pilotbetrieb.md) for local accounts.
+- Der Agent-Suchlauf fragt nur, ob die Named Pipe des Agenten existiert, und
+  holt mit dem Lesekonto denselben schreibgeschuetzten `STATUS/1`-Schnappschuss,
+  den das Dashboard ohnehin verwendet. Er schreibt auf keinem Ziel etwas, laeuft
+  nur auf ausdruecklichen Start und lehnt Bereiche ueber 1024 Adressen ab.
+- Ein mit der Auslieferung mitgeliefertes Lesekonto-Kennwort liegt im Programm im
+  **Klartext**, weil eine SMB-Anmeldung keinen Hash verwenden kann. Wer an die
+  EXE kommt, erhaelt damit Lesezugriff auf den Statusordner jedes Arbeitsplatzes.
+  `PortalLeser` ist dafuer bewusst eng geschnitten: nur Lesen auf einen Ordner,
+  kein Administrator, keine Abmeldeberechtigung, und interaktive, Remote-,
+  Batch- und Dienstanmeldung sind ihm verwehrt. Wer das nicht will, laesst
+  `BUNDLED_READER_PASSWORD` leer; dann fragt der Assistent einmal pro PC.
+- Ein auf einem PC hinterlegtes Lesekonto ueberstimmt das mitgelieferte, damit
+  eine neue Portalversion eine Korrektur vor Ort nicht stillschweigend aufhebt.
+- Beim Wiederverbinden einer Statusfreigabe wird nie eine SMB-Verbindung getrennt,
+  die eine andere Anwendung haelt; eine bestehende Sitzung unter einem anderen
+  Konto wird gemeldet, nicht ersetzt.
 - Admin actions require explicit confirmation and reasoning.
 - Roughly 5 700 lines of Entra/Graph/SharePoint code ship but are **not
   integrated and untested**; one known defect makes the token cache inoperable.

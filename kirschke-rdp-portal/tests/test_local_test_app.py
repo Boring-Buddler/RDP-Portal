@@ -643,7 +643,7 @@ def test_hostname_target_keeps_web_account_in_rdp_file(tmp_path):
 def test_server_identity_warning_is_only_suppressed_after_explicit_trust(tmp_path):
     workstation = Workstation(
         workstation_id="WS-TRUST",
-        display_name="GeprÃ¼fte Maschine",
+        display_name="Geprüfte Maschine",
         hostname="PC-TRUST",
         trust_unverified_server=True,
     )
@@ -654,7 +654,7 @@ def test_server_identity_warning_is_only_suppressed_after_explicit_trust(tmp_pat
     untrusted_path = generator.generate(
         Workstation(
             workstation_id="WS-NO-TRUST",
-            display_name="UngeprÃ¼fte Maschine",
+            display_name="Ungeprüfte Maschine",
             hostname="PC-NO-TRUST",
         ).get_rdp_profile()
     )

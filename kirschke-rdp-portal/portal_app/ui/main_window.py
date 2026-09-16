@@ -43,7 +43,7 @@ from portal_app.services.admin_security import (
 from portal_app.services.agent_identity import machine_hostnames
 from portal_app.services.agent_status import LocalAgentStatusService
 from portal_app.services.directory_users import discover_windows_domain_accounts
-from portal_app.services.fallback_scanning import FallbackScanner
+from portal_app.services.fallback_scanning import FallbackScanner, ShareReconnector
 from portal_app.services.live_status_polling import AutomaticLiveStatusPoller
 from portal_app.services.local_identity import detect_initial_user
 from portal_app.services.local_store import LocalStore, StoreConflictError
@@ -54,7 +54,10 @@ from portal_app.services.windows_admin_auth import (
 )
 from portal_app.ui.design import Typography
 from portal_app.ui.icons import kirschke_window_icon
-from portal_app.ui.widgets.machine_registration_wizard import MachineRegistrationWizard
+from portal_app.ui.widgets.machine_registration_wizard import (
+    AgentAssignment,
+    MachineRegistrationWizard,
+)
 from portal_app.ui.widgets.management_pages import AdministrationWidget, SettingsWidget
 from portal_app.ui.widgets.rdp_access_dialog import RDPAccessDialog
 from portal_app.ui.widgets.reservation_calendar import ReservationCalendarWidget
@@ -110,6 +113,11 @@ class MainWindow(QMainWindow):
         self._logoff_in_progress: set[str] = set()
         self.fallback_scanner = FallbackScanner(parent=self)
         self.fallback_scanner.completed.connect(self._on_fallback_scan_completed)
+        self.share_reconnector = ShareReconnector(parent=self)
+        self.share_reconnector.completed.connect(self._on_shares_reconnected)
+        # Agent IDs a sweep has seen, so the settings table can offer an agent
+        # before any machine claims it.
+        self._discovered_agent_ids: list[str] = []
         self.workstations: list[Workstation] = []
         self.reservations: list[Reservation] = []
         self.session_events: list[SessionEvent] = []
@@ -149,6 +157,22 @@ class MainWindow(QMainWindow):
         self.shared_store_sync_timer.setInterval(5000)
         self.shared_store_sync_timer.timeout.connect(self._sync_shared_store)
         self.shared_store_sync_timer.start()
+        if self._automatic_live_status_enabled:
+            # Both of these reach the network on their own, which is exactly what
+            # ``automatic_live_status=False`` exists to switch off -- a test must
+            # not sweep a subnet or open a modal assistant.
+            #
+            # Rebuild the SMB sessions the configured fallbacks need. Without
+            # this the paths and the saved Windows credentials both survived a
+            # restart while the connection did not, so the file fallback -- and
+            # the live channel, whose pipe target is derived from the same
+            # server -- stayed dead until somebody re-ran the setup dialog.
+            QTimer.singleShot(0, self._reconnect_status_shares)
+            if not self.workstations:
+                # An empty inventory is the first start. Adding machines is
+                # otherwise an admin action, but here it is the only way past an
+                # empty window, so the assistant opens without the password gate.
+                QTimer.singleShot(150, lambda: self._run_connection_wizard(first_run=True))
 
     def _load_data(self) -> None:
         fallback = []  # A new pilot must not offer fictitious targets as real PCs.
@@ -378,6 +402,14 @@ class MainWindow(QMainWindow):
         self.settings_view.status_refresh_interval_changed.connect(
             self._set_status_refresh_interval
         )
+        agent_panel = self.settings_view.agent_connection
+        agent_panel.wizard_requested.connect(lambda: self._run_connection_wizard())
+        agent_panel.reconnect_requested.connect(self._reconnect_status_shares)
+        agent_panel.credentials_save_requested.connect(self._save_reader_credentials)
+        agent_panel.agent_assignment_changed.connect(self._set_agent_assignment)
+        agent_panel.fallback_setup_requested.connect(self._setup_fallback_by_id)
+        self._show_reader_account()
+        self._refresh_agent_panel()
         self.calendar_view.reservations_changed.connect(self._on_reservations_changed)
         self.detail_view.back_requested.connect(self._show_machines)
         self.detail_view.edit_requested.connect(self._edit_workstation)
@@ -603,6 +635,312 @@ class MainWindow(QMainWindow):
         finally:
             self.agent_poll_timer.start()
             dialog.deleteLater()
+
+    # --- Connection assistant and central agent administration ---------------
+
+    def _configured_fallback_paths(self) -> dict[str, str]:
+        """Every explicitly configured UNC fallback, keyed by machine ID."""
+        return {
+            ws.workstation_id: ws.agent_fallback_directory
+            for ws in self.workstations
+            if ws.agent_fallback_is_explicit
+            and (ws.agent_fallback_directory or "").startswith("\\\\")
+        }
+
+    @Slot()
+    def _reconnect_status_shares(self) -> None:
+        """Ask Windows to re-establish the SMB session of every status share."""
+        paths = self._configured_fallback_paths()
+        if not paths:
+            self._refresh_agent_panel()
+            return
+        if self.share_reconnector.request(paths):
+            self.settings_view.agent_connection.set_status(
+                f"{len(paths)} Statusfreigabe(n) werden verbunden …"
+            )
+
+    @Slot(object)
+    def _on_shares_reconnected(self, results: object) -> None:
+        if not isinstance(results, dict):
+            return
+        failures = [message for success, message in results.values() if not success]
+        connected = len(results) - len(failures)
+        summary = f"{connected} von {len(results)} Statusfreigabe(n) verbunden."
+        if failures:
+            # Name the first few rather than only counting them: a wrong password
+            # and a switched-off machine need different reactions.
+            summary += " " + " ".join(sorted(set(failures))[:3])
+        self.settings_view.agent_connection.set_status(summary)
+        logger.info("Statusfreigaben verbunden: %s", summary)
+        self._poll_agent_status(blocking=False)
+
+    def _run_connection_wizard(self, *, first_run: bool = False) -> None:
+        """Search for agents, then create or link the machines they belong to."""
+        wizard = MachineRegistrationWizard(
+            parent=self, workstations=self.workstations, first_run=first_run
+        )
+        # The sweep and the live poller both talk to the same single-instance
+        # pipes; letting the timer fire into a running scan only produces
+        # spurious failures on machines the scan is already holding.
+        self.agent_poll_timer.stop()
+        try:
+            accepted = wizard.exec() == QDialog.Accepted
+        finally:
+            self.agent_poll_timer.start()
+        self._remember_discovered_agents(wizard)
+        self._show_reader_account()
+        if not accepted:
+            return
+        if wizard.mode == "scan":
+            self._apply_agent_assignments(wizard.assignments)
+            return
+        self._create_machine_from_preview(wizard)
+
+    def _remember_discovered_agents(self, wizard: MachineRegistrationWizard) -> None:
+        known = set(self._discovered_agent_ids)
+        for probe in wizard.probes:
+            if probe.identified:
+                known.add(probe.workstation_id)
+        self._discovered_agent_ids = sorted(known)
+        self._refresh_agent_panel()
+
+    def _create_machine_from_preview(self, wizard: MachineRegistrationWizard) -> None:
+        """The single-machine route: show the full profile form as before."""
+        dialog = WorkstationDialog(
+            suggested_id=self._next_workstation_id(),
+            prefill=wizard.prefill,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.Accepted or not dialog.workstation:
+            return
+        if any(ws.workstation_id == dialog.workstation.workstation_id for ws in self.workstations):
+            QMessageBox.warning(self, "Doppelte ID", "Diese Maschinen-ID ist bereits vergeben.")
+            return
+        fallback, explicit = self.store.get_workstation_agent_status_directory(
+            dialog.workstation.workstation_id
+        )
+        dialog.workstation.agent_fallback_directory = str(fallback)
+        dialog.workstation.agent_fallback_is_explicit = explicit
+        self.workstations.append(dialog.workstation)
+        probe = wizard.selected_probe
+        if probe is not None and probe.identified:
+            self._attach_agent(dialog.workstation, probe)
+        self._refresh_workstation_views()
+        if dialog.should_save or probe is not None:
+            self._commit_workstation(dialog.workstation)
+            self._persist()
+        self._refresh_agent_panel()
+
+    def _apply_agent_assignments(self, assignments: list[AgentAssignment]) -> None:
+        """Create or link one machine per chosen agent and connect its fallback."""
+        if not assignments:
+            return
+        created: list[str] = []
+        linked: list[str] = []
+        problems: list[str] = []
+        for assignment in assignments:
+            probe = assignment.probe
+            claimed = next(
+                (
+                    ws
+                    for ws in self.workstations
+                    if (ws.agent_workstation_id or "").strip().casefold()
+                    == probe.workstation_id.casefold()
+                    and ws.workstation_id != assignment.workstation_id
+                ),
+                None,
+            )
+            if claimed is not None:
+                problems.append(
+                    f"{probe.workstation_id}: bereits {claimed.display_name} zugeordnet."
+                )
+                continue
+            if assignment.creates_machine:
+                workstation = self._machine_from_assignment(assignment)
+                if workstation is None:
+                    problems.append(f"{probe.target}: keine gültigen Verbindungsdaten ermittelt.")
+                    continue
+                self.workstations.append(workstation)
+                created.append(workstation.display_name)
+            else:
+                workstation = next(
+                    (
+                        ws
+                        for ws in self.workstations
+                        if ws.workstation_id == assignment.workstation_id
+                    ),
+                    None,
+                )
+                if workstation is None:
+                    problems.append(f"{assignment.workstation_id}: Maschine nicht mehr vorhanden.")
+                    continue
+                if assignment.site:
+                    workstation.site = assignment.site
+                linked.append(workstation.display_name)
+            message = self._attach_agent(workstation, probe)
+            if message:
+                problems.append(message)
+            self._commit_workstation(workstation)
+        self._refresh_workstation_views()
+        self._persist()
+        self._poll_agent_status(blocking=False)
+        self._refresh_agent_panel()
+        self._report_assignments(created, linked, problems)
+
+    def _report_assignments(
+        self,
+        created: list[str],
+        linked: list[str],
+        problems: list[str],
+    ) -> None:
+        lines = []
+        if created:
+            lines.append(f"Neu angelegt: {', '.join(created)}")
+        if linked:
+            lines.append(f"Verknüpft: {', '.join(linked)}")
+        if problems:
+            lines.append("\nNicht eingerichtet:\n" + "\n".join(problems))
+        if not lines:
+            return
+        show = QMessageBox.warning if problems else QMessageBox.information
+        show(self, "Verbindungsassistent", "\n".join(lines))
+
+    def _machine_from_assignment(self, assignment: AgentAssignment) -> Workstation | None:
+        """Build a machine from what the agent and DNS reported about it."""
+        prefill = assignment.prefill()
+        if not (prefill.get("hostname") or prefill.get("ip_address") or prefill.get("fqdn")):
+            return None
+        workstation_id = self._next_workstation_id()
+        fallback, explicit = self.store.get_workstation_agent_status_directory(workstation_id)
+        return Workstation(
+            workstation_id=workstation_id,
+            display_name=prefill.get("display_name") or workstation_id,
+            hostname=prefill.get("hostname", ""),
+            fqdn=prefill.get("fqdn") or None,
+            ip_address=prefill.get("ip_address") or None,
+            subnet_mask=prefill.get("subnet_mask") or None,
+            default_gateway=prefill.get("default_gateway") or None,
+            dns_server=prefill.get("dns_server") or None,
+            site=prefill.get("site") or None,
+            agent_fallback_directory=str(fallback),
+            agent_fallback_is_explicit=explicit,
+        )
+
+    def _attach_agent(self, workstation: Workstation, probe) -> str:
+        """Record the agent for a machine and set up its file fallback.
+
+        Returns a problem description, or an empty string on success. Both steps
+        belong together: an agent that is reachable over the pipe today may be
+        reachable only over the share tomorrow, and the assignment is what makes
+        either channel attributable to this machine.
+        """
+        if probe.identified:
+            workstation.agent_workstation_id = probe.workstation_id
+        return self._auto_setup_fallback(workstation, probe)
+
+    def _auto_setup_fallback(self, workstation: Workstation, probe) -> str:
+        """Point a machine at its agent's own status share and connect it.
+
+        The agent setup always creates ``RDP-Status`` on the target, so the path
+        is derivable rather than something a person has to type per machine --
+        which is what made this step get skipped and the fallback stay unset.
+        """
+        from portal_app.services.share_connection import connect_status_share
+
+        server = (probe.hostname or probe.target or workstation.hostname or "").split(".", 1)[0]
+        if not server:
+            return f"{workstation.display_name}: kein Servername für die Statusfreigabe."
+        path = rf"\\{server}\RDP-Status"
+        connected, message = connect_status_share(path)
+        if not connected:
+            return f"{workstation.display_name}: {message}"
+        try:
+            stored = self.store.set_workstation_agent_status_directory(
+                workstation.workstation_id, path
+            )
+        except (OSError, ValueError) as exc:
+            return f"{workstation.display_name}: Fallback nicht gespeichert ({exc})."
+        workstation.agent_fallback_directory = str(stored)
+        workstation.agent_fallback_is_explicit = True
+        return ""
+
+    def _show_reader_account(self) -> None:
+        """Tell the settings page which reader account is in use, and whence."""
+        from portal_app.services.share_connection import (
+            reader_account_name,
+            reader_account_source,
+        )
+
+        try:
+            name, source = reader_account_name(), reader_account_source()
+        except Exception:  # noqa: BLE001 - an absent credential store is not an error
+            name, source = "", "none"
+        self.settings_view.agent_connection.set_reader_account(name, source)
+
+    @Slot(str, str)
+    def _save_reader_credentials(self, username: str, password: str) -> None:
+        from portal_app.services.share_connection import save_reader_credentials
+
+        try:
+            save_reader_credentials(username, password)
+        except Exception as exc:  # noqa: BLE001 - shown, never fatal
+            self.settings_view.agent_connection.set_status(
+                f"Lesekonto konnte nicht gespeichert werden: {exc}"
+            )
+            return
+        self._show_reader_account()
+        self._reconnect_status_shares()
+
+    @Slot(str, str)
+    def _set_agent_assignment(self, workstation_id: str, agent_id: str) -> None:
+        """Apply an assignment made in the settings table."""
+        workstation = next(
+            (ws for ws in self.workstations if ws.workstation_id == workstation_id), None
+        )
+        if workstation is None:
+            return
+        expected = (agent_id or workstation.workstation_id).strip().casefold()
+        if any(
+            ws is not workstation
+            and (ws.agent_workstation_id or ws.workstation_id).strip().casefold() == expected
+            for ws in self.workstations
+        ):
+            QMessageBox.warning(
+                self,
+                "Agent bereits zugeordnet",
+                "Dieser Agent ist bereits einer anderen Maschine zugeordnet.",
+            )
+            self._refresh_agent_panel()
+            return
+        saved = next(
+            (ws for ws in self._saved_workstations if ws.workstation_id == workstation_id), None
+        )
+        previous = workstation.agent_workstation_id
+        workstation.agent_workstation_id = agent_id or None
+        if saved is not None:
+            saved.agent_workstation_id = agent_id or None
+        if not self._persist():
+            workstation.agent_workstation_id = previous
+            if saved is not None:
+                saved.agent_workstation_id = previous
+        self._poll_agent_status(blocking=False)
+        self._refresh_agent_panel()
+
+    @Slot(str)
+    def _setup_fallback_by_id(self, workstation_id: str) -> None:
+        workstation = next(
+            (ws for ws in self.workstations if ws.workstation_id == workstation_id), None
+        )
+        if workstation is not None:
+            self._setup_workstation_fallback(workstation)
+            self._refresh_agent_panel()
+
+    def _refresh_agent_panel(self) -> None:
+        if not hasattr(self, "settings_view"):
+            return
+        panel = self.settings_view.agent_connection
+        panel.set_known_agents(self._discovered_agent_ids)
+        panel.set_workstations(self.workstations)
 
     @staticmethod
     def _cleanup_stale_rdp_files() -> None:
@@ -1008,29 +1346,7 @@ class MainWindow(QMainWindow):
         return f"WS-{max(numbers, default=0) + 1:03d}"
 
     def _add_workstation(self) -> None:
-        wizard = MachineRegistrationWizard(parent=self)
-        if wizard.exec() != QDialog.Accepted:
-            return
-        dialog = WorkstationDialog(
-            suggested_id=self._next_workstation_id(),
-            prefill=wizard.prefill,
-            parent=self,
-        )
-        if dialog.exec() != QDialog.Accepted or not dialog.workstation:
-            return
-        if any(ws.workstation_id == dialog.workstation.workstation_id for ws in self.workstations):
-            QMessageBox.warning(self, "Doppelte ID", "Diese Maschinen-ID ist bereits vergeben.")
-            return
-        fallback, explicit = self.store.get_workstation_agent_status_directory(
-            dialog.workstation.workstation_id
-        )
-        dialog.workstation.agent_fallback_directory = str(fallback)
-        dialog.workstation.agent_fallback_is_explicit = explicit
-        self.workstations.append(dialog.workstation)
-        self._refresh_workstation_views()
-        if dialog.should_save:
-            self._commit_workstation(dialog.workstation)
-            self._persist()
+        self._run_connection_wizard()
 
     @Slot(Workstation)
     def _edit_workstation(self, workstation: Workstation) -> None:
@@ -1822,7 +2138,7 @@ class MainWindow(QMainWindow):
             "Der RDP-Port ist erreichbar." if result.port_open else "Der RDP-Port konnte nicht erreicht werden."
         )
         message.setInformativeText(
-            f"Der vollstÃ¤ndige, passwortfreie Report wurde gespeichert unter:\n{result.log_path}"
+            f"Der vollständige, passwortfreie Report wurde gespeichert unter:\n{result.log_path}"
         )
         message.setDetailedText(result.report)
         copy_button = message.addButton("Report kopieren", QMessageBox.ActionRole)
@@ -1981,6 +2297,9 @@ class MainWindow(QMainWindow):
         self.agent_poll_timer.stop()
         self.live_status_poller.stop()
         self.fallback_scanner.stop()
+        # Its pool waits for a running reconnect on destruction, so a slow SMB
+        # host would otherwise hold the closing portal open with no window left.
+        self.share_reconnector.stop()
         cleanup_rdp_files()
         event.accept()
 
@@ -2129,6 +2448,17 @@ class MainWindow(QMainWindow):
             QWizard QPushButton:hover { background: #edf4f8; border-color: #6389a4; }
             QWizard QPushButton:default { background: #4f7897; color: #ffffff; border-color: #4f7897; }
             QWizard QPushButton:disabled { background: #edf1f3; color: #8a99a3; border-color: #d3dce1; }
+            QWizard QComboBox { background: #ffffff; color: #17212b; font-size: 9pt; min-height: 22px; border: 1px solid #aebfca; border-radius: 6px; padding: 5px 9px; }
+            QWizard QComboBox QAbstractItemView { background: #ffffff; color: #17212b; selection-background-color: #4f7897; selection-color: #ffffff; border: 1px solid #aebfca; }
+            QWizard QListWidget, QWizard QTableWidget { background: #ffffff; color: #17212b; border: 1px solid #aebfca; border-radius: 6px; }
+            QWizard QListWidget::item { padding: 5px 4px; }
+            QWizard QListWidget::indicator { width: 14px; height: 14px; border: 1px solid #7f96a6; border-radius: 3px; background: #ffffff; margin-right: 4px; }
+            QWizard QListWidget::indicator:checked { background: #4f7897; border-color: #37627f; }
+            QWizard QListWidget::indicator:hover { border-color: #4f7897; }
+            QWizard QListWidget::item:hover, QWizard QTableWidget::item:hover { background: #edf4f8; }
+            QWizard QHeaderView::section { background: #edf1f3; color: #3c5567; border: 0; border-bottom: 1px solid #aebfca; padding: 6px 8px; font-weight: 600; }
+            QWizard QProgressBar { background: #edf1f3; color: #263844; border: 1px solid #aebfca; border-radius: 6px; min-height: 18px; text-align: center; }
+            QWizard QProgressBar::chunk { background: #4f7897; border-radius: 5px; }
         """
         if not dark_mode:
             return light_style
@@ -2221,6 +2551,17 @@ class MainWindow(QMainWindow):
             QWizard QPushButton:hover { background: #315164; border-color: #9ac3da; }
             QWizard QPushButton:default { background: #5b91b1; color: #ffffff; border-color: #8cc0db; }
             QWizard QPushButton:disabled { background: #22343f; color: #8095a3; border-color: #3d5868; }
+            QWizard QComboBox { background: #1a2a35; color: #f1f6fa; font-size: 9pt; min-height: 22px; border: 1px solid #557386; border-radius: 6px; padding: 5px 9px; }
+            QWizard QComboBox QAbstractItemView { background: #1a2a35; color: #f1f6fa; selection-background-color: #5b91b1; selection-color: #ffffff; border: 1px solid #557386; }
+            QWizard QListWidget, QWizard QTableWidget { background: #1a2a35; color: #f1f6fa; border: 1px solid #557386; border-radius: 6px; }
+            QWizard QListWidget::item { padding: 5px 4px; }
+            QWizard QListWidget::indicator { width: 14px; height: 14px; border: 1px solid #8fa6b5; border-radius: 3px; background: #22343f; margin-right: 4px; }
+            QWizard QListWidget::indicator:checked { background: #5b91b1; border-color: #9ac3da; }
+            QWizard QListWidget::indicator:hover { border-color: #9ac3da; }
+            QWizard QListWidget::item:hover, QWizard QTableWidget::item:hover { background: #274050; }
+            QWizard QHeaderView::section { background: #22343f; color: #cfe0ea; border: 0; border-bottom: 1px solid #557386; padding: 6px 8px; font-weight: 600; }
+            QWizard QProgressBar { background: #22343f; color: #e7f0f5; border: 1px solid #557386; border-radius: 6px; min-height: 18px; text-align: center; }
+            QWizard QProgressBar::chunk { background: #5b91b1; border-radius: 5px; }
             QCheckBox { color: #e7f0f5; }
             QCheckBox::indicator { width: 15px; height: 15px; border: 1px solid #789bae; background: #1a2a35; border-radius: 3px; }
             QCheckBox::indicator:checked { background: #5f96b8; border-color: #8fc1dd; }

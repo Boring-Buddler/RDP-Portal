@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
+from portal_app.ui.widgets.agent_connection_panel import AgentConnectionPanel
 
 
 class AdministrationWidget(QWidget):
@@ -447,8 +448,13 @@ class SettingsWidget(QWidget):
         self.status_refresh_interval.setAccessibleName("Intervall der automatischen Statusaktualisierung")
         self.status_refresh_interval.valueChanged.connect(self.status_refresh_interval_changed)
         refresh_layout.addWidget(self.status_refresh_interval)
-        layout.insertWidget(0, refresh_card)
-        layout.insertWidget(1, agent_card)
+        # Order matters: everything that decides whether a machine reports at all
+        # comes first, the diagnosis of that decision second, and the per-user
+        # conveniences after it.
+        self.agent_connection = AgentConnectionPanel()
+        layout.insertWidget(0, self.agent_connection)
+        layout.insertWidget(1, refresh_card)
+        layout.insertWidget(2, agent_card)
         layout.addStretch()
         self.refresh()
         self.network_load_timer = QTimer(self)
