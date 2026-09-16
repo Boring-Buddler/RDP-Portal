@@ -9,7 +9,7 @@ Python ist auf den Arbeitsplatz-PCs nicht erforderlich.
 
 Vor einem Update die Portale schließen. Programmdateien aktualisieren und den
 vorhandenen Ordner **state** beibehalten. Dort liegen die gemeinsamen Daten.
-Im geöffneten Portal muss die Version **0.6.5** stehen.
+Im geöffneten Portal muss die Version **0.7.0** stehen.
 
 Im Admin-Fenster übernimmt **Speichern** alle angezeigten Maschineneinstellungen
 nach `state\portal-state.json` direkt neben der EXE. Der Ordner wird automatisch
@@ -29,6 +29,46 @@ Aus dem Quellcode: im Projektordner `python3.13 -m portal_app.app` ausführen.
 
 Die folgenden Update-Abschnitte dokumentieren ältere Versionen; für den aktuellen
 Speicherort gilt die Anleitung oben.
+
+## Update 0.7.0: Verbindungsassistent, Standort und automatischer Datei-Fallback
+
+**Beim ersten Start ohne angelegte Maschine öffnet sich der Verbindungsassistent
+von selbst.** Er braucht dafür bewusst kein Adminpasswort — sonst käme man über
+das leere Fenster nicht hinaus. Später steht er unter
+**Einstellungen → Agenten, Zuordnung und Datei-Fallback → Verbindungsassistent
+öffnen** und unter **Admin → + Maschine**.
+
+Der Assistent kann das Netzwerk nach Rechnern durchsuchen, auf denen der Agent
+läuft. Vorgeschlagen werden das eigene Subnetz sowie `192.168.2.0/24` und
+`192.168.20.0/24`. Die Suche läuft nur auf Knopfdruck, ändert auf den
+Zielrechnern nichts und findet Agenten auch dann, wenn das Portal sie noch nicht
+lesen darf — ein solcher Agent wird als „gefunden, nicht identifiziert" geführt.
+
+Gefundene Agenten lassen sich mehrfach auswählen. Auf der nächsten Seite wird je
+Agent entschieden, ob eine **neue Maschine angelegt** oder eine **vorhandene
+verknüpft** wird. Der **Standort** ergibt sich aus der IP-Adresse
+(`192.168.2.x` = Ettlingen, `192.168.20.x` = München) und bleibt änderbar.
+
+**Der Datei-Fallback wird dabei selbst eingerichtet.** Für jede Maschine setzt
+das Portal `\\RECHNER\RDP-Status` und verbindet die Freigabe. Ebenso baut das
+Portal bei jedem Start alle eingerichteten Statusfreigaben wieder auf. Bisher
+überlebten Pfad und gespeicherte Zugangsdaten zwar den Neustart, die
+SMB-Verbindung aber nicht — deshalb musste der Einrichtungsdialog erneut
+durchlaufen werden, bevor der Agent überhaupt meldete. Das betraf auch den
+Live-Kanal, weil dessen Ziel aus demselben Freigabepfad stammt.
+
+**Lesekonto:** Das Portal meldet sich als `PortalLeser` an, dem
+schreibgeschützten Konto aus dem Agent-Setup. Bringt die Portalversion ein
+Kennwort mit, ist nichts einzugeben. Andernfalls fragt der Assistent einmal
+danach; Windows merkt es sich für diesen Benutzer, und das Portal schreibt es in
+keine Datei. Ein hier eingetragenes Konto hat immer Vorrang vor dem
+mitgelieferten — eine Korrektur vor Ort überlebt also ein Update.
+
+**Zentral in den Einstellungen** zeigt eine Tabelle je Maschine die
+Agent-Zuordnung, woher der letzte Status kam (Live-Kanal, Datei-Fallback oder
+keine Meldung) und den Fallbackordner. Die Zuordnung ist dort direkt
+umstellbar. **Alle Fallbacks jetzt verbinden** baut die SMB-Verbindungen neu auf,
+ohne das Portal neu zu starten.
 
 ## Update 0.6.1: Versionsnummer in den Installationsfenstern
 
