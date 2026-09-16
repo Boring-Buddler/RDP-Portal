@@ -1,6 +1,6 @@
 # Kirschke RDP Workstation Portal
 
-**Version:** 0.2.12 (lokaler Pilot, Review vom 11.09.2026)
+**Version:** 0.6.1 (Stand: 16.09.2026)
 
 Unter **Maschinen → Details → Datei-Fallback einrichten …** erhält jede
 Maschine ihre eigene SMB-Freigabe. Das Portal speichert auf Wunsch nur die
@@ -17,6 +17,12 @@ Das Testpaket enthält jetzt `Kirschke-RDP-Portal-Setup.exe` und
 `Kirschke-RDP-Agent-Setup.exe`, jeweils mit Deinstallation über Windows.
 
 **Schnellstart:** [Kurzanleitung für Client, Anmeldekonten und Agent-Setup](docs/testbetrieb-kurz.md).
+
+**Dokumentation:**
+- [Benutzerhandbuch](docs/benutzerhandbuch.md) - Umfassende Anleitung für Endbenutzer und Administratoren
+- [Pilotbetrieb-Anleitung](docs/pilotbetrieb-anleitung.md) - Schritt-für-Schritt Anleitung für den Pilotbetrieb
+- [Active Directory Setup](docs/active-directory-setup.md) - AD-Integration vorbereiten
+- [Agent Installation](docs/agent-installation.md) - Agenten auf Zielrechnern einrichten
 Den Fallback je Maschine in deren Details einstellen. Beim Update bleibt der frühere
 globale Ordner als Alt-Standard wirksam, bis die jeweilige Maschine einen eigenen
 Pfad erhalten hat.
@@ -102,29 +108,34 @@ kirschke-rdp-portal/
 ## Features Implemented (Phase 1)
 
 - [x] PySide6 application with Kirschke Corporate Design
-- [x] Workstation overview with table view
+- [x] Workstation overview with table view and card grid
 - [x] Filtering by site, status, agent status, and search
 - [x] Workstation detail view with all information
-- [x] Session log view with filtering
+- [x] Session log view with filtering and export
 - [x] Manual flag system (Berechnung laeuft, Wartung, Gesperrt)
 - [x] Blocking logic for connections and logoff
-- [x] Validated RDP file generation
-- [x] Secure mstsc.exe launching
+- [x] Validated RDP file generation with resolution presets
+- [x] Secure mstsc.exe launching with process monitoring
 - [x] Local mstsc.exe process monitoring with duplicate-start protection
 - [x] Occupied-session warnings and connection blocking, including disconnected sessions
 - [x] Close warning while portal-launched RDP windows are still running
 - [x] Mock data for development
-- [x] User roles (User vs Admin)
+- [x] User roles (User vs Admin) with password protection
 - [x] Local JSON persistence for the test build
 - [x] Editable workstation and general RDP profiles
-- [x] Workstation and free-target ping tools
-- [x] Two-week workstation reservation calendar
-- [x] Password-protected local admin session
+- [x] Workstation and free-target ping tools with network diagnosis
+- [x] Two-week workstation reservation calendar with agent synchronization
+- [x] Password-protected local admin session with rate limiting
 - [x] CSV/JSON session-log export
 - [x] Correct local WTS session enumeration and RDP/console separation
 - [x] Credential-free local agent status bridge for end-to-end testing
 - [x] Agent staleness/offline evaluation in the portal
 - [x] Asynchronous local `ipconfig /all` display with copy action
+- [x] Live status polling service with configurable interval (2-60 seconds)
+- [x] Agent identity resolution and machine-to-agent mapping
+- [x] Session takeover for console sessions with confirmation
+- [x] Diagnostic tools: Agent status inspection, share folder scanning
+- [x] Per-machine fallback folder configuration for agent status files
 
 ## Features Planned
 
@@ -156,7 +167,7 @@ kirschke-rdp-portal/
 - [x] PyInstaller packaging (portable Windows folder build)
 - [ ] Intune deployment documentation
 - [ ] Comprehensive tests
-- [ ] User documentation
+- [x] User documentation (see [docs/benutzerhandbuch.md](docs/benutzerhandbuch.md))
 
 ## Requirements
 
