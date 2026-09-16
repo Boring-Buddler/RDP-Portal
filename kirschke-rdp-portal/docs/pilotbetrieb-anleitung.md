@@ -4,7 +4,7 @@ Diese Anleitung trennt bewusst zwischen Aufgaben im Portal, Aufgaben in Active
 Directory (AD) und Aufgaben auf den Zielrechnern. Zuerst mit **einer**
 Testmaschine und **einem** Testnutzer arbeiten.
 
-Stand 09.09.2026: Zuerst die [aktuelle Abnahmeliste](code-review-testbetrieb.md)
+Stand 16.09.2026: Zuerst die [aktuelle Abnahmeliste](code-review-testbetrieb.md)
 bearbeiten. AD ist optional. Ohne ausdrücklich gewählten AD-Modus verwendet das
 Portal den lokalen Passwortzugang. Der Agent läuft im Pilot als Aufgabe bei der
 Benutzeranmeldung; Remote-Abmelden über den Agent ist deaktiviert.

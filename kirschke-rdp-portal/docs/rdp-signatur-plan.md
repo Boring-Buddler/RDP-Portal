@@ -1,6 +1,6 @@
 # Plan: Signierte .rdp-Dateien (Option 3) mit Ausblick auf eine eigene CA (Option 5)
 
-Stand: 2026-09-15 · Portal 0.3.10 · betrifft den Verbindungsstart, nicht den Agenten
+Stand: 16.09.2026 · Portal 0.6.1 · betrifft den Verbindungsstart, nicht den Agenten
 
 ## Warum und wann
 

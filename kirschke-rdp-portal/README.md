@@ -7,7 +7,7 @@ Maschine ihre eigene SMB-Freigabe. Das Portal speichert auf Wunsch nur die
 Zugangsdaten in der Windows-Anmeldeinformationsverwaltung des aktuellen Benutzers;
 Kennwörter gelangen nicht in Portaldateien.
 
-Agent 1.3.0 startet rechnerweit als SYSTEM über die Windows-Aufgabenplanung und
+Agent 1.5.0 startet rechnerweit als SYSTEM über die Windows-Aufgabenplanung und
 erfasst RDP- und Konsolensitzungen mit Anmeldezeiten und einem begrenzten Verlauf.
 Der Agent schreibt als SYSTEM in seinen lokalen Ordner
 `C:\RDP-Portal-Daten\agenten-status`. Das Portal liest dessen Freigabe

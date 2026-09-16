@@ -1,6 +1,6 @@
-# Status der nicht integrierten Cloud-Module (Phase 2/3)
+# Status der nicht integrierten Cloud-Module (Phase 2)
 
-Stand: 11.09.2026. Gilt für Portal 0.2.12 / Agent 1.3.0.
+Stand: 16.09.2026. Gilt für Portal 0.6.1 / Agent 1.5.0.
 
 ## Worum es geht
 
@@ -14,9 +14,9 @@ umzugehen ist — damit niemand sie für einsatzbereit hält.
 
 | Modul | Zeilen | Status |
 | --- | --- | --- |
-| `portal_app/auth/entra_auth.py` | 686 | nicht integriert, **defekt** (siehe unten) |
-| `portal_app/graph/client.py` | 908 | nicht integriert, ungetestet |
-| `portal_app/graph/sharepoint.py` | 1 249 | nicht integriert, ungetestet |
+| `portal_app/auth/entra_auth.py` | 700 | nicht integriert, **defekt** (siehe unten) |
+| `portal_app/graph/client.py` | 913 | nicht integriert, ungetestet |
+| `portal_app/graph/sharepoint.py` | 1 254 | nicht integriert, ungetestet |
 | `portal_app/graph/mock_graph.py` | 99 | Testdouble ohne Test |
 | `workstation_agent/graph/client.py` | 1 045 | nicht integriert, ungetestet |
 | `workstation_agent/graph/sharepoint.py` | 338 | nicht integriert, ungetestet |

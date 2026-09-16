@@ -1,10 +1,10 @@
 # Codeprüfung und erster Testbetrieb
 
-Stand: 11.09.2026, Portal 0.2.12 / Agent 1.3.0.
+Stand: 16.09.2026, Portal 0.6.1 / Agent 1.5.0.
 
 ## Nachtrag: zielseitig autorisierte Agent-Abmeldung
 
-Portal 0.2.12 und Agent 1.3.0 ersetzen den auf Entra-/Arbeitsgruppenrechnern mit
+Portal 0.6.1 und Agent 1.5.0 ersetzen den auf Entra-/Arbeitsgruppenrechnern mit
 Windows-Fehler 5 abgewiesenen Remote-WTS-Aufruf. Der SYSTEM-Agent prüft lokal die
 exakte Sitzung und führt die Abmeldung lokal aus. Eigentümeranfragen sind zusätzlich
 an den vom Agenten beobachteten RDP-Client gebunden. Administrative Anforderungen

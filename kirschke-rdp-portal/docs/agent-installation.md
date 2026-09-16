@@ -1,6 +1,6 @@
 # Kirschke RDP-Agent installieren
 
-Stand 11.09.2026: Portal 0.2.12, Agent 1.3.0. Siehe auch
+Stand 16.09.2026: Portal 0.6.1, Agent 1.5.0. Siehe auch
 [Prüfbericht und Pilotabnahme](code-review-testbetrieb.md).
 
 Der Agent liest auf dem Ziel-PC die Windows-Sitzungen über die WTS-API. Er läuft
@@ -26,7 +26,7 @@ Unternehmensrichtlinie Skripte oder unsignierte EXE-Dateien blockiert, ist eine
 reguläre IT-Freigabe erforderlich. Setup und Hilfsskripte setzen keine
 `ExecutionPolicy Bypass`.
 
-Agent 1.3.0 führt die eigentliche Installation nativ aus. Die Setup-EXE startet
+Agent 1.5.0 führt die eigentliche Installation nativ aus. Die Setup-EXE startet
 intern kein `Install-Agent.ps1` mehr und funktioniert daher auch bei einer
 PowerShell-Ausführungsrichtlinie, die lokale Skripte sperrt. Administratorrechte
 und eine mögliche Freigabe der unsignierten Setup-EXE durch die

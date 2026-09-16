@@ -1,9 +1,71 @@
 # Kirschke RDP Workstation Portal
 
-## Serverloser Projektplan und Copy-and-paste-Prompt für Codex oder Claude
+## Serverloser Projektplan und Copy-and-paste-Prompt für KI-Agenten
 
-Version: 2.0  
-Stand: 27.08.2026
+Version: 3.0  
+Stand: 16.09.2026  
+Aktuelle Portal-Version: 0.6.1 | Aktuelle Agent-Version: 1.5.0
+
+---
+
+**Änderungshistorie:**
+- v3.0 (16.09.2026): Aktualisierung auf Version 0.6.1, neue Features integriert, Status der Phasen dokumentiert
+- v2.0 (27.08.2026): Ursprüngliches Dokument
+
+---
+
+## 0. Aktueller Implementierungsstand (16.09.2026)
+
+### Umgesetzte Phasen
+
+#### Phase 1 – Lokaler UI-MVP: ✅ **ABGESCHLOSSEN**
+
+- [x] PySide6-Projekt mit Kirschke-Designsystem
+- [x] Workstation-Übersicht (Karten- und Tabellenansicht)
+- [x] Workstation-Detailansicht mit allen Informationen
+- [x] Validierte .rdp-Erzeugung mit Auflösungspresets
+- [x] Start von mstsc.exe mit Prozessmonitoring
+- [x] Manuelle Flags (Berechnung läuft, Wartung, Gesperrt)
+- [x] Rollen- und Adminoberflächen mit lokalem JSON-Speicher
+- [x] Sitzungsprotokollierung (Logon/Reconnect/Disconnect/Logoff)
+- [x] Live-Status-Polling (2-60 Sekunden konfigurierbar)
+- [x] Agent-Zuordnung und Identitätsauflösung
+- [x] Sitzungsübernahme für Console-Sessions
+- [x] Diagnosetools (Ping, ipconfig, Agent-Statusinspektion)
+- [x] Per-Maschine Fallback-Ordner für Agenten-Statusdateien
+- [x] 2K/4K Auflösungsunterstützung bis Bildschirmgröße
+- [x] Eigene Ruhesitzung blau/orange gestrichelt
+
+#### Phase 2 – SharePoint und Entra: ⚠️ **TEILWEISE IMPLEMENTIERT**
+
+- [ ] Entra-Anmeldung (MSAL integriert, aber nicht aktiviert)
+- [ ] Graph-Client (vorhanden, aber nicht integriert)
+- [ ] SharePoint-Listen (Schema definiert, aber lokaler Speicher aktiv)
+- [ ] ETag-Konfliktschutz (für zukünftige SharePoint-Integration vorbereitet)
+- [ ] Workstation- und Flag-Synchronisation
+- [ ] Launch-Audit
+
+**Status:** Code für Phase 2 existiert (~5700 Zeilen), ist aber **nicht integriert und ungetestet**. Siehe [docs/phase2-status.md](../kirschke-rdp-portal/docs/phase2-status.md)
+
+#### Phase 3 – Tatsächliches Sitzungs-Tracking: ✅ **ABGESCHLOSSEN**
+
+- [x] Windows-Agent als Dienst
+- [x] WTS-Sitzungsereignisse (Logon/Reconnect/Disconnect/Logoff)
+- [x] Session-ID und Benutzer-Identifikation
+- [x] Agent-Statuskanal mit SDDL-Sicherheit
+- [x] SQLite-Outbox für Offline-Ereignisse
+- [x] Idempotente Synchronisation
+- [x] Reservierungssynchronisation zwischen Agenten
+
+#### Phase 4 – Adminaktionen: ✅ **ABGESCHLOSSEN**
+
+- [x] AdminCommand-Liste (lokal implementiert)
+- [x] Agent-Polling mit Backoff
+- [x] Sitzungen trennen und abmelden (über Agenten-Statuskanal)
+- [x] Override mit Begründung und Bestätigung
+- [x] Ergebnisbestätigung durch Agenten
+- [x] Audit-Export (CSV/JSON)
+- [ ] Intune-Paketierung (vorbereitet, aber nicht finalisiert)
 
 ---
 
@@ -662,269 +724,6 @@ Gestaltungsregeln:
 
 ---
 
-# Copy-and-paste-Prompt für Codex oder Claude
-
-~~~text
-Du bist Senior Python-Entwickler, Windows-Systementwickler, Security Engineer und UX/UI-Designer für technische Unternehmensanwendungen.
-
-Entwickle das Projekt „Kirschke RDP Workstation Portal“ als lokale Windows-Anwendung ohne eigenen dauerhaft laufenden Portalserver.
-
-## Verbindliches Ziel
-
-Die Anwendung verwaltet Büro-Workstations und erfüllt genau diese Kernaufgaben:
-
-1. Workstations mit hinterlegten RDP-Verbindungsdaten anzeigen.
-2. Per Klick eine validierte lokale .rdp-Datei erzeugen und mstsc.exe starten.
-3. Tatsächliche RDP-Anmeldung, Wiederverbindung, Trennung und endgültige Abmeldung protokollieren.
-4. Anzeigen, wer wann auf welcher Workstation verbunden beziehungsweise angemeldet war.
-5. Manuelle Flags „Berechnung läuft“, „Wartung“ und „Gesperrt“ setzen und aufheben.
-6. Bei aktivem Flag normale Verbindungs- und Logoff-Aktionen in der Anwendung blockieren.
-7. Admins Trennen, Logoff, Flag-Aufhebung und Override mit Begründung ermöglichen.
-8. Workstation-Daten, Flags, Adminbefehle und Logs in SharePoint-Listen speichern.
-9. Entra ID für Benutzeridentität und Rollen verwenden.
-
-Automatische Berechnungserkennung ist ausdrücklich ausgeschlossen. Prüfe weder CPU/GPU noch Prozesse und implementiere keine CalculationJob-Erkennung. Das Flag „Berechnung läuft“ wird ausschließlich manuell gesetzt und aufgehoben.
-
-## Architektur
-
-Implementiere:
-
-- lokale PySide6-Portal-App auf Benutzer- und Admin-PCs;
-- Python-Windows-Agent als Dienst auf jeder verwalteten Workstation;
-- SharePoint-Listen als zentrale Datenablage;
-- Microsoft Graph als Zugriffsschicht;
-- Microsoft Entra ID / MSAL für Anmeldung;
-- mstsc.exe für die eigentliche RDP-Verbindung.
-
-Kein FastAPI-Webportal, kein PostgreSQL-Server und kein eigener dauerhaft laufender Portal-PC.
-
-## Technologiestack
-
-- Python 3.12+;
-- PySide6;
-- MSAL Python;
-- Microsoft Graph;
-- Pydantic;
-- pywin32 und/oder ctypes für WTS;
-- SQLite nur als lokale Agent-Outbox;
-- PyInstaller;
-- pytest, Ruff und Typprüfung;
-- Intune-Paketierung vorbereiten.
-
-Windows-spezifische APIs müssen hinter Adaptern liegen, damit Kernlogik und Tests auch ohne Windows ausführbar sind.
-
-## Zustände
-
-Halte drei Dimensionen getrennt:
-
-1. AgentStatus: online, stale, offline, error.
-2. SessionState: none, logon, connected, reconnected, disconnected, logged_off.
-3. ManualFlag: none, calculation_running, maintenance, blocked.
-
-ManualFlag enthält Grund, Projekt optional, setzenden Benutzer, Zeitpunkt und optionales Ablaufdatum.
-
-## Manuelle Sperre
-
-Bei calculation_running, maintenance oder blocked:
-
-- Verbinden in der normalen UI deaktivieren;
-- Grund, Besitzer und Zeitpunkt anzeigen;
-- Logoff für normale Benutzer blockieren;
-- Disconnect bei calculation_running weiterhin erlauben;
-- Admin-Override nur nach erneuter Zustandsprüfung, deutlicher Warnung und Pflichtbegründung;
-- Anfrage und Ergebnis vollständig protokollieren.
-
-Das Flag darf niemals anhand eines Prozesses automatisch gesetzt oder gelöscht werden.
-
-Dokumentiere klar, dass die UI-Sperre direkten manuellen Aufruf von mstsc.exe nicht technisch verhindert. Der Agent protokolliert auch direkte RDP-Sitzungen. Eine harte Durchsetzung über Gateway, Firewall oder dynamische Windows-Rechte gehört nicht in den MVP.
-
-## Tatsächliches RDP-Tracking
-
-Der Workstation-Agent ist die maßgebliche Quelle. Erfasse:
-
-- launch_requested;
-- rdp_logon;
-- rdp_reconnect;
-- rdp_disconnect;
-- rdp_logoff;
-- admin_disconnect_requested/completed/failed;
-- admin_logoff_requested/completed/failed;
-- manual_flag_set/cleared;
-- admin_override.
-
-Verwende bevorzugt SERVICE_CONTROL_SESSIONCHANGE, WTS Session Events und WTSQuerySessionInformation. Unterscheide Disconnect und Logoff überall konsequent.
-
-Speichere soweit verfügbar:
-
-- UTC-Zeit;
-- Workstation;
-- Windows-Session-ID;
-- Benutzer-UPN/Domain;
-- Clientname und Client-IP;
-- Eventtyp;
-- Ergebnis;
-- Akteur bei Portal-/Adminaktionen;
-- Grund;
-- Event-ID und Correlation-ID;
-- Quelle und Agent-Version.
-
-Wenn SharePoint nicht erreichbar ist, speichere Ereignisse in einer lokalen SQLite-Outbox und synchronisiere sie später idempotent über eine eindeutige Event-ID.
-
-## SharePoint-Listen
-
-Erstelle beziehungsweise dokumentiere:
-
-1. RDP_Workstations
-   - Stammdaten, RDP-Profil, manuelles Flag, Agentstatus und aktuelle Sitzung.
-2. RDP_SessionEvents
-   - append-only Ereignisse.
-3. RDP_AdminCommands
-   - refresh_status, disconnect_session, logoff_session, clear_manual_flag.
-4. RDP_AccessRules
-   - optional Benutzer-/Gruppen- und Zielzuordnung.
-
-Verwende ETags und If-Match für Flagänderungen. Bei HTTP 412 neu laden und einen verständlichen Konflikt anzeigen. Überschreibe niemals still den Status eines anderen Benutzers.
-
-Der Agent darf keine beliebigen Shell-, CMD- oder PowerShell-Befehle ausführen. Adminbefehle sind streng typisiert, kurzlebig, idempotent und an Workstation sowie Session-ID gebunden.
-
-## Authentifizierung
-
-Portal-App:
-
-- MSAL Public Client;
-- interaktive Anmeldung und sicherer Token-Cache;
-- bevorzugt Broker/WAM, sonst localhost redirect;
-- Rollen aus Entra-Sicherheitsgruppen;
-- keine Passwortverarbeitung.
-
-Agent:
-
-- app-only Zugriff mit Zertifikat;
-- nur notwendige SharePoint-Listen;
-- Zertifikat im Windows-Zertifikatsspeicher;
-- privater Schlüssel nur für das Dienstkonto;
-- keine Client-Secrets im Code.
-
-Gruppen:
-
-- RDP Portal Users;
-- RDP Portal Admins.
-
-Adminrechte niemals aus einem editierbaren SharePoint-Feld allein ableiten.
-
-## mstsc.exe
-
-Lies ein validiertes RDP-Profil aus RDP_Workstations, schreibe eine temporäre .rdp-Datei und starte mstsc.exe über subprocess.Popen mit Argumentliste.
-
-Erlaubte Profilfelder:
-
-- Hostname/FQDN;
-- Username-Hinweis;
-- Entra-SSO;
-- optional RD-Gateway;
-- Bildschirm/Mehrmonitor;
-- Zwischenablage;
-- Laufwerke, Drucker, Audio.
-
-Keine Passwörter speichern. Keine frei übergebenen RDP-Zeilen erlauben. Hostname, Gateway und alle Optionen strikt validieren, damit kein SharePoint-Wert zusätzliche RDP-Parameter einschleusen kann.
-
-Für Entra-RDP Computername/FQDN und bei Bedarf enablerdsaadauth:i:1 verwenden. Der Klick wird als launch_requested protokolliert; eine erfolgreiche Verbindung wird erst durch den Agent bestätigt.
-
-## Rollen und UI
-
-Benutzer:
-
-- Workstations ansehen und verbinden;
-- manuelles Flag „Berechnung läuft“ setzen;
-- eigenes Flag aufheben;
-- keine fremde Sitzung abmelden.
-
-Admins:
-
-- Workstations und RDP-Profile verwalten;
-- alle Flags setzen/aufheben;
-- Sitzungen trennen;
-- nach Warnung und Begründung Logoff auslösen;
-- Overrides durchführen;
-- Agentstatus prüfen;
-- Logs filtern und als CSV/JSON exportieren.
-
-UI-Seiten:
-
-1. Workstation-Übersicht.
-2. Workstation-Detail mit RDP-Profil, Session, Flag und Timeline.
-3. Sitzungslog mit Login, Reconnect, Disconnect und Logoff.
-4. Administration für Profile, Gruppen, Agenten und Befehle.
-5. Audit- und Exportansicht.
-
-## Kirschke Corporate Design
-
-Lies zuerst Kirschke_Corporate_Design_Masterprompt.md und verwende die originalen Kirschke-Assets.
-
-Zentrale Farben:
-
-- #668BB0 Markenblau;
-- #231F20 Anthrazit;
-- #778C77 Grün;
-- #80A3CA Hellblau;
-- #F4F5F2 Hintergrund;
-- #FFFFFF Oberfläche;
-- #151515 Text;
-- #CDD3CD Rahmen;
-- #1F5F99 Fokus/Info;
-- #3F6F4B Erfolg;
-- #8A611F Warnung;
-- #9B2F2F Fehler.
-
-Die UI wirkt technisch präzise, sachlich, robust und modern. Klare Achsen, Weißraum, feine Linien, rechteckige Flächen und sparsame 45-Grad-Einschnitte. Keine generische SaaS-Optik, kein Glassmorphism und keine Pill-Buttons. Original-Logos nicht verändern. GT America nur mit lizenzierter Datei, sonst Inter, Segoe UI, Arial oder Helvetica. Tokens zentral halten. Tastaturbedienung, High-DPI, Fokuszustände und WCAG-AA prüfen.
-
-## Ausfallverhalten
-
-Bei SharePoint-/Graph-Ausfall:
-
-- bestehende Flags lokal beibehalten;
-- keine Adminbefehle ausführen;
-- Events in Outbox puffern;
-- Status als möglicherweise veraltet anzeigen;
-- niemals Flag automatisch löschen;
-- keine Aktion fälschlich als erfolgreich melden.
-
-## Vorgehen
-
-1. Repository und Kirschke-Assets inventarisieren.
-2. Architektur, SharePoint-Schema und Berechtigungen dokumentieren.
-3. Gemeinsame Enums und Pydantic-Schemas anlegen.
-4. PySide6-MVP mit Mockdaten und Kirschke-Design bauen.
-5. Sichere RDP-Profilvalidierung und mstsc-Start implementieren.
-6. Entra/MSAL und Graph integrieren.
-7. SharePoint-Listen und ETag-Konflikte implementieren.
-8. Windows-Agent und WTS-Events implementieren.
-9. Offline-Outbox und idempotente Synchronisation implementieren.
-10. Adminbefehle, Warnungen, Pflichtbegründung und Ergebnisbestätigung implementieren.
-11. Tests, visuelle Prüfung, PyInstaller und Intune-Dokumentation ergänzen.
-
-## Abnahmekriterien
-
-- kein eigener Portalserver erforderlich;
-- lokale Anwendung startet reproduzierbar;
-- Entra-Anmeldung und Rollen funktionieren;
-- RDP-Profile enthalten keine Passwörter;
-- mstsc.exe wird mit validierten Daten gestartet;
-- launch_requested und tatsächliche Sitzung werden getrennt protokolliert;
-- Logon, Reconnect, Disconnect und Logoff sind unterscheidbar;
-- direkte RDP-Anmeldungen werden vom Agent erkannt;
-- „Berechnung läuft“ wird ausschließlich manuell gesetzt;
-- aktives Flag blockiert normale Logoff-Aktionen in der App;
-- Admin-Override verlangt eine Begründung;
-- Adminbefehl gilt erst nach Agentbestätigung als erfolgreich;
-- Offline-Ereignisse werden später ohne Duplikate synchronisiert;
-- ETag-Konflikte überschreiben keine fremden Änderungen;
-- keine beliebigen Remote-Befehle möglich;
-- Kirschke-Design-Tokens und Original-Logos werden korrekt eingesetzt;
-- relevante Tests bestehen;
-- README, SharePoint-Einrichtung, Entra-App-Registrierungen, Agent-Installation und Intune-Verteilung sind dokumentiert.
-
-Beginne mit einer kurzen Bestandsaufnahme und einer konkreten Implementierungsreihenfolge. Implementiere anschließend Phase 1 vollständig. Beende die Arbeit nicht mit einem bloßen Mock-up oder einer Empfehlungsliste.
 ~~~
 
 ---
