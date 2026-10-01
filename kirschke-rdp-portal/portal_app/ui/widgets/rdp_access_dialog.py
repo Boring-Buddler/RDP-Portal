@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from portal_app.models.workstation import Workstation
+from portal_app.ui.design import apply_scaled_geometry
 
 
 class RDPAccessDialog(QDialog):
@@ -39,8 +40,7 @@ class RDPAccessDialog(QDialog):
         self.sync_to_active_directory = False
         self.setObjectName("rdpAccessDialog")
         self.setWindowTitle("RDP-Zugriff verwalten")
-        self.setMinimumSize(760, 570)
-        self.resize(820, 620)
+        apply_scaled_geometry(self, (760, 570), (820, 620))
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 22)

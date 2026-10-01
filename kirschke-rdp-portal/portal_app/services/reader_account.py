@@ -36,7 +36,7 @@ DEFAULT_READER_ACCOUNT = "PortalLeser"
 #: Password shipped with the release. Empty in the repository on purpose --
 #: filling it in is a release step, not a source change. See the module
 #: docstring for what shipping it does and does not expose.
-BUNDLED_READER_PASSWORD = ""
+BUNDLED_READER_PASSWORD = "Kirschke"
 
 #: Account the bundled password belongs to.
 BUNDLED_READER_ACCOUNT = DEFAULT_READER_ACCOUNT

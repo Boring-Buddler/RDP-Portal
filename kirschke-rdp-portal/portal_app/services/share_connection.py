@@ -1,4 +1,5 @@
 """Connect to an SMB status folder without exposing credentials to a shell."""
+import os
 import re
 from pathlib import Path, PureWindowsPath
 
@@ -31,7 +32,33 @@ def credential_payload(server: str, username: str, password: str) -> dict:
     }
 
 
-def connect_share(path: str, username: str, password: str, remember: bool) -> tuple[str, str]:
+def verify_writable(directory: Path) -> None:
+    """Durch einen echten Schreibversuch prüfen, ob dieser Ordner beschreibbar ist.
+
+    Nötig für das gemeinsame Protokoll. Die Agentenfreigaben sind mit Leserecht
+    eingerichtet, und dort *hineinzukommen* sagt nichts darüber, ob man
+    hineinschreiben darf. Ohne diese Prüfung fiele das erst beim ersten Ereignis
+    auf -- also dann, wenn niemand mehr an die Einstellung denkt.
+
+    Die Probedatei wird wieder entfernt; bleibt sie liegen, ist das zwar
+    unschön, aber kein Grund, die Einrichtung scheitern zu lassen.
+    """
+    probe = directory / f".rdp-portal-schreibtest-{os.getpid()}.tmp"
+    try:
+        probe.write_text("Schreibtest des RDP-Portals", encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(
+            f"Der Ordner ist erreichbar, aber nicht beschreibbar ({exc.strerror or exc}). "
+            "Für das gemeinsame Protokoll braucht das verwendete Konto Schreibrecht; "
+            "das Lesekonto der Agentenfreigaben genügt dafür nicht."
+        ) from None
+    try:
+        probe.unlink()
+    except OSError:
+        pass
+
+
+def connect_share(path: str, username: str, password: str, remember: bool, require_write: bool = False) -> tuple[str, str]:
     import pywintypes
     import win32cred
     import win32wnet
@@ -66,6 +93,8 @@ def connect_share(path: str, username: str, password: str, remember: bool) -> tu
                          "VPN, Freigabename, Benutzername, Kennwort und Berechtigungen prüfen.") from None
     except OSError:
         raise ValueError("Verbindung hergestellt, aber der Statusordner oder seine JSON-Dateien sind nicht lesbar.") from None
+    if require_write:
+        verify_writable(Path(path))
     if remember:
         try:
             win32cred.CredWrite(credential_payload(server, username, password), 0)
@@ -74,6 +103,8 @@ def connect_share(path: str, username: str, password: str, remember: bool) -> tu
             detail = f"Windows-Fehler {error}" if error is not None else type(exc).__name__
             raise ValueError(f"Freigabe erreichbar, aber die Zugangsdaten konnten nicht gespeichert werden ({detail}). "
                              "Ohne Speicherung erneut verbinden oder die Windows-Richtlinie prüfen.") from None
+    if require_write:
+        return path, f"Freigabe beschreibbar; {len(json_files)} JSON-Datei(en) lesbar."
     return path, f"Freigabe erreichbar; {len(json_files)} JSON-Datei(en) lesbar."
 
 

@@ -40,6 +40,24 @@ RESERVATION_TEXT_FIELDS = (
     "color",
 )
 
+#: Aufschaltungen, die eine Maschine mitfuehren darf. Eine pro Windows-Konto
+#: reicht -- es geht darum, wer gerade davor sitzt, nicht um eine Historie.
+MAX_SESSION_CLAIMS = 32
+
+#: Felder einer Aufschaltmeldung. ``account`` ist das Windows-Konto, unter dem
+#: verbunden wurde, ``owner_upn`` der Mensch dahinter. Beide werden gebraucht,
+#: weil auf einer Maschine mit einem einzigen gemeinsamen Konto genau diese
+#: Verbindung fehlte: Der Kontoname ist bei allen derselbe, und jedes Portal
+#: erkannte ihn als das eigene Konto wieder.
+CLAIM_TEXT_FIELDS = (
+    "account",
+    "owner_upn",
+    "owner_display",
+    "client_name",
+    "claimed_at_utc",
+    "login_time",
+)
+
 
 def get_agent_snapshot_directory() -> Path:
     configured = os.environ.get("AGENT_STATUS_DIR")
@@ -69,6 +87,14 @@ class AgentSnapshot:
     #: fuehrt keine Buchung mehr" bedeutet. Das Portal darf nur im zweiten Fall
     #: eigene Eintraege verwerfen -- sonst loescht ein alter Agent jede Buchung.
     reservations: list[dict[str, Any]] | None = None
+    #: Wer sich unter welchem Windows-Konto auf diese Maschine aufgeschaltet
+    #: hat, gemeldet von den Portalen. Siehe
+    #: :mod:`workstation_agent.claim_store`.
+    #:
+    #: ``None`` heisst wie bei den Reservierungen "dieser Agent kennt das
+    #: nicht" (eine Version vor 1.6.0) und ist etwas anderes als eine leere
+    #: Liste, die "niemand hat sich gemeldet" bedeutet.
+    session_claims: list[dict[str, Any]] | None = None
     version: int = SNAPSHOT_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -85,6 +111,7 @@ class AgentSnapshot:
             "rdp_sessions": self.rdp_sessions,
             "session_history": self.session_history,
             **({} if self.reservations is None else {"reservations": self.reservations}),
+            **({} if self.session_claims is None else {"session_claims": self.session_claims}),
         }
 
     @classmethod
@@ -148,6 +175,11 @@ class AgentSnapshot:
                 if data.get("reservations") is None
                 else validate_reservations(data["reservations"])
             ),
+            session_claims=(
+                None
+                if data.get("session_claims") is None
+                else validate_session_claims(data["session_claims"])
+            ),
         )
 
     def age_seconds(self, now: datetime | None = None) -> float:
@@ -185,6 +217,44 @@ def validate_reservations(raw: Any) -> list[dict[str, Any]]:
             if not str(item.get(key) or "").strip():
                 raise ValueError(f"Missing reservation field: {key}")
         checked.append({key: item.get(key) for key in RESERVATION_TEXT_FIELDS})
+    return checked
+
+
+def validate_session_claims(raw: Any) -> list[dict[str, Any]]:
+    """Aufschaltmeldungen prüfen, die von einer Freigabe oder einer Pipe kommen.
+
+    Genauso ungeprüfte Herkunft wie die Reservierungen, und mit demselben
+    Ergebnis: Form und Größe werden hier begrenzt, bevor irgendetwas davon
+    angezeigt wird. Eine Meldung ist eine Aussage darüber, wer sich aufgeschaltet
+    hat, und kein Nachweis -- das Portal darf daraufhin nur eine Zuordnung
+    wegnehmen, nie eine geben.
+
+    ``session_id`` reist als Zahl mit, weil der Agent die Meldung an die Sitzung
+    bindet, die er zu ihr gefunden hat.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
+        raise ValueError("Invalid session claim list")
+    if len(raw) > MAX_SESSION_CLAIMS:
+        raise ValueError("Too many session claims in snapshot")
+    checked: list[dict[str, Any]] = []
+    for item in raw:
+        for key in CLAIM_TEXT_FIELDS:
+            value = item.get(key)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"Invalid session claim field: {key}")
+            if isinstance(value, str) and len(value) > MAX_IDENTIFIER_LENGTH:
+                raise ValueError(f"Session claim field too long: {key}")
+        for key in ("account", "owner_upn"):
+            if not str(item.get(key) or "").strip():
+                raise ValueError(f"Missing session claim field: {key}")
+        session_id = item.get("session_id")
+        if session_id is not None and (type(session_id) is not int or session_id < 0):
+            raise ValueError("Invalid session claim ID")
+        checked.append(
+            {key: item.get(key) for key in CLAIM_TEXT_FIELDS} | {"session_id": session_id}
+        )
     return checked
 
 
@@ -260,10 +330,12 @@ def load_agent_snapshots(directory: Path | None = None, *, errors: list[str] | N
 
 
 __all__ = [
+    "MAX_SESSION_CLAIMS",
     "AgentSnapshot",
     "SnapshotFileResult",
     "get_agent_snapshot_directory",
     "load_agent_snapshots",
     "scan_agent_snapshots",
+    "validate_session_claims",
     "write_agent_snapshot",
 ]

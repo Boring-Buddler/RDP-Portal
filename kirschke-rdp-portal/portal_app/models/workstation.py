@@ -97,6 +97,18 @@ class Workstation:
     # None heisst "nicht gemeldet" (Agent aelter als 1.5.0 oder nicht
     # erreichbar) und ist etwas anderes als eine leere Liste.
     agent_reservations: list[dict] | None = None
+    #: Aufschaltungen, die Portale dem Agenten dieser Maschine gemeldet haben:
+    #: welcher Mensch sich unter welchem Windows-Konto verbunden hat. Gebraucht
+    #: fuer Maschinen mit einem einzigen gemeinsamen Konto, bei denen der
+    #: Kontoname nichts darueber sagt, wer davor sitzt -- ohne diese Meldung
+    #: erkennt jedes Portal das gemeinsame Konto als das eigene wieder und
+    #: zeigt die Maschine allen als "von dir belegt".
+    #:
+    #: Ebenfalls fluechtig und wie die Reservierungen kein Rechtenachweis: der
+    #: Agent kann nicht pruefen, wer eine Meldung abgesetzt hat. Sie darf
+    #: deshalb nur Zuordnung *wegnehmen*, nie eine geben -- siehe
+    #: :meth:`owned_sessions`.
+    agent_session_claims: list[dict] | None = None
     agent_session_history: list[dict] = field(default_factory=list)
     agent_status: AgentStatus = AgentStatus.OFFLINE
     agent_last_seen_utc: datetime | None = None
@@ -360,7 +372,9 @@ class Workstation:
         )
 
     def can_choose_session(self) -> bool:
-        return self.enabled and not self.is_blocked() and not self.reservation_block_reason and bool(self.session_accounts())
+        # Eine fremde Reservierung steht hier bewusst nicht mehr: sie hat den
+        # Rückweg auf die eigene laufende Sitzung versperrt. Siehe can_connect.
+        return self.enabled and not self.is_blocked() and bool(self.session_accounts())
 
     def matching_sessions(self, default_username: str | None = None) -> list[dict]:
         """UI account matching only; Windows remains responsible for authentication."""
@@ -376,16 +390,16 @@ class Workstation:
                          "session_state": self.current_session_state.value}]
         return sessions
 
-    def foreign_sessions(self, identity: OwnAccounts) -> list[dict]:
+    def foreign_sessions(self, identity: OwnAccounts, user_upn: str | None = None) -> list[dict]:
         """Active sessions that do not belong to the portal user."""
-        own = {id(item) for item in self.owned_sessions(identity)}
+        own = {id(item) for item in self.owned_sessions(identity, user_upn)}
         return [
             item
             for item in self.reported_sessions()
             if is_active_session(item) and id(item) not in own
         ]
 
-    def foreign_session_is_idle(self, identity: OwnAccounts) -> bool:
+    def foreign_session_is_idle(self, identity: OwnAccounts, user_upn: str | None = None) -> bool:
         """Whether somebody else holds this machine without being connected to it.
 
         Closing an RDP window does not end the Windows session, it disconnects
@@ -399,7 +413,7 @@ class Workstation:
         covers a colleague who connected with plain ``mstsc``, and there is no
         flag left standing when somebody's portal simply disappears.
         """
-        sessions = self.foreign_sessions(identity)
+        sessions = self.foreign_sessions(identity, user_upn)
         return bool(sessions) and all(
             str(item.get("session_state") or "").casefold()
             == SessionState.DISCONNECTED.value
@@ -417,13 +431,109 @@ class Workstation:
             if is_active_session(item) and session_username(item).strip().casefold() == account
         ]
 
-    def owned_sessions(self, identity: OwnAccounts) -> list[dict]:
+    def session_claim(self, session: dict) -> dict | None:
+        """Die gemeldete Aufschaltung zu einer Sitzung, falls es eine gibt.
+
+        Zuerst ueber Sitzungs-ID und Anmeldezeitpunkt, weil der Agent die
+        Meldung an genau die Sitzung bindet, die er zu ihr gefunden hat. Ist
+        sie noch nicht gebunden -- die Meldung kommt beim Starten von mstsc,
+        die Sitzung entsteht erst danach --, zaehlt der Kontoname.
+        """
+        account = session_username(session).strip().casefold()
+        session_id = session.get("session_id")
+        login_time = str(session.get("login_time") or "").strip()
+        fallback: dict | None = None
+        for claim in self.agent_session_claims or []:
+            if not isinstance(claim, dict):
+                continue
+            if str(claim.get("account") or "").strip().casefold() != account or not account:
+                continue
+            bound_id, bound_login = claim.get("session_id"), str(claim.get("login_time") or "").strip()
+            if bound_id is not None and login_time and bound_login:
+                if bound_id == session_id and bound_login == login_time:
+                    return claim
+                continue
+            fallback = fallback or claim
+        return fallback
+
+    def reports_session_claims(self) -> bool:
+        """Ob der Agent dieser Maschine Aufschaltungen überhaupt meldet.
+
+        ``None`` heißt "diese Frage kann der Agent nicht beantworten" -- eine
+        Version vor 1.6.0 oder gar keine Meldung. Das ist etwas anderes als eine
+        leere Liste, und die Unterscheidung ist hier wesentlich: Nur wenn der
+        Agent Aufschaltungen führt, darf das Ausbleiben einer Meldung als
+        "nicht über das Portal verbunden" gelesen werden.
+        """
+        return self.agent_session_claims is not None
+
+    def unreported_sessions(self) -> list[dict]:
+        """Aktive Sitzungen ohne Aufschaltmeldung eines Portals.
+
+        Weil jede vom Portal gestartete Verbindung gemeldet wird, sind das
+        vermutlich Sitzungen, die anders zustande kamen -- direkt über ``mstsc``
+        etwa, oder am Gerät selbst. "Vermutlich", weil eine Meldung auch
+        verloren gehen kann; das Portal wiederholt sie deshalb, solange die
+        Sitzung besteht.
+        """
+        if not self.reports_session_claims():
+            return []
+        return [
+            item
+            for item in self.reported_sessions()
+            if is_active_session(item) and self.session_claim(item) is None
+        ]
+
+    def session_people(self) -> list[str]:
+        """Wer diese Maschine hält, so gut das Portal es sagen kann.
+
+        Der Name des Menschen, wenn sich ein Portal zu der Sitzung gemeldet hat,
+        sonst der Windows-Kontoname. Auf einer Maschine mit einem gemeinsamen
+        Konto ist der Unterschied der ganze Punkt: Dort heißt die Sitzung bei
+        allen gleich, und erst die Meldung sagt, wer davor sitzt.
+        """
+        names: dict[str, str] = {}
+        for item in self.reported_sessions():
+            if not is_active_session(item):
+                continue
+            name = self.session_owner_display(item) or session_username(item).strip()
+            if name:
+                names.setdefault(name.casefold(), name)
+        return sorted(names.values(), key=str.casefold)
+
+    def session_owner_display(self, session: dict) -> str | None:
+        """Der Name des Menschen, der sich zu dieser Sitzung gemeldet hat."""
+        claim = self.session_claim(session) or {}
+        name = str(claim.get("owner_display") or claim.get("owner_upn") or "").strip()
+        return name or None
+
+    def claimed_by_other(self, session: dict, user_upn: str | None) -> bool:
+        """Ob sich jemand anderes als ``user_upn`` zu dieser Sitzung gemeldet hat.
+
+        Ohne ``user_upn`` ist die Antwort immer ``False``: ein Aufrufer, der
+        seine eigene Kennung nicht nennt, kann nicht sinnvoll unterscheiden,
+        und eine Meldung darf nie mehr tun als eine Zuordnung wegnehmen.
+        """
+        me = (user_upn or "").strip().casefold()
+        if not me:
+            return False
+        owner = str((self.session_claim(session) or {}).get("owner_upn") or "").strip().casefold()
+        return bool(owner) and owner != me
+
+    def owned_sessions(self, identity: OwnAccounts, user_upn: str | None = None) -> list[dict]:
         """Active sessions belonging to any of the portal user's own accounts.
 
         Compares SIDs when the agent reported one, and falls back to comparing
         names otherwise -- see :meth:`owned_session_match` for which of the two
         decided.  Either way this is a UI hint: the agent authorizes a logoff
         independently and never trusts what the portal claims here.
+
+        Eine gemeldete fremde Aufschaltung nimmt eine Sitzung aus dieser Liste
+        heraus. Auf einer Maschine mit einem gemeinsamen Windows-Konto ist der
+        Kontoname sonst bei allen derselbe, und jedes Portal haelt die Sitzung
+        fuer die eigene. Umgekehrt gilt das bewusst nicht: eine Meldung macht
+        eine fremde Sitzung nie zur eigenen. Der Agent kann nicht pruefen, wer
+        sie abgesetzt hat, und die Abmeldung haengt an dieser Liste.
         """
         accounts = as_windows_identities(identity)
         if not accounts:
@@ -433,17 +543,19 @@ class Workstation:
             for item in self.reported_sessions()
             if is_active_session(item)
             and any(account.matches(WindowsIdentity.from_session(item)) for account in accounts)
+            and not self.claimed_by_other(item, user_upn)
         ]
 
-    def owned_session_match(self, identity: OwnAccounts) -> IdentityMatch:
+    def owned_session_match(
+        self, identity: OwnAccounts, user_upn: str | None = None
+    ) -> IdentityMatch:
         """The strongest way an own session could be recognised, for honest labels."""
         accounts = as_windows_identities(identity)
         if not accounts:
             return IdentityMatch.NO
         matches = [
             account.matches(WindowsIdentity.from_session(item))
-            for item in self.reported_sessions()
-            if is_active_session(item)
+            for item in self.owned_sessions(identity, user_upn)
             for account in accounts
         ]
         if any(match.is_proof for match in matches):
@@ -454,14 +566,26 @@ class Workstation:
         self,
         default_username: str | None = None,
         identity: OwnAccounts = None,
+        user_upn: str | None = None,
     ) -> bool:
-        """Check if connection is allowed."""
-        if not self.enabled or self.reservation_block_reason:
+        """Whether a connection can start without anything needing to be said first.
+
+        Eine fremde Reservierung zählt hier nicht mehr als Hindernis. Sie hat
+        zwei Leute gleichzeitig ausgesperrt: die reservierende Person kam wegen
+        der laufenden fremden Sitzung nicht auf die Maschine, und die
+        angemeldete Person kam wegen der Reservierung weder zurück auf ihre
+        eigene Sitzung noch konnte sie sie beenden. Niemand konnte den Zustand
+        auflösen. Eine Reservierung ist ein Hinweis unter Kollegen und kein
+        Windows-Recht -- sie wird jetzt vor dem Verbinden als Warnung gezeigt
+        und von der Person entschieden. Siehe
+        :func:`portal_app.ui.machine_actions.connection_warning`.
+        """
+        if not self.enabled:
             return False
         return not self.is_blocked() and (
             not self.has_active_session()
             or bool(self.matching_sessions(default_username))
-            or bool(self.owned_sessions(identity))
+            or bool(self.owned_sessions(identity, user_upn))
         )
 
     def has_active_session(self) -> bool:

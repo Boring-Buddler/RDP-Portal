@@ -285,6 +285,7 @@ class LocalAgentStatusService:
                 ws.current_windows_session_id = snapshot.current_windows_session_id
                 ws.agent_sessions = snapshot.rdp_sessions
                 ws.agent_reservations = snapshot.reservations
+                ws.agent_session_claims = snapshot.session_claims
                 ws.agent_session_history = snapshot.session_history
                 ws.last_session_event_utc = snapshot.observed_at_utc
                 ws.agent_status_source = "file"
@@ -336,6 +337,7 @@ class LocalAgentStatusService:
                     ws.current_windows_session_id = snapshot.current_windows_session_id
                     ws.agent_sessions = snapshot.rdp_sessions
                     ws.agent_reservations = snapshot.reservations
+                    ws.agent_session_claims = snapshot.session_claims
                     ws.agent_status_source = "live"
                     if failure and failure[0] > received:
                         # The last known live payload stays newer than the file,

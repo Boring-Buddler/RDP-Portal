@@ -15,6 +15,7 @@ from portal_app.rdp.generator import RDPFileGenerator
 from portal_app.services.local_store import LocalStore
 from portal_app.ui.main_window import MainWindow
 from portal_app.ui.widgets.login_account_selector import LoginAccountSelector
+from shared.enums import SessionState
 from shared.login_accounts import validate_login_account
 
 
@@ -42,6 +43,45 @@ def test_selected_account_reaches_rdp_file_and_survives_restart(account_window, 
     shared_data = json.loads(window.store.path.read_text(encoding="utf-8"))
     assert "selected_login_account" not in shared_data["workstations"][0]
     assert shared_data["workstations"][0]["username_hint"] == "TARGET\\old"
+
+
+def test_a_session_account_choice_survives_a_reload(account_window):
+    """Der stille Rücksprung auf "Standard", der niemandem erklärbar war.
+
+    Wählt man das Konto einer gemeldeten Sitzung, steht es in ``session_accounts``
+    -- nicht in ``login_accounts`` und nicht im ``username_hint``. Genau dagegen
+    prüfte der Store beim Laden, und die Wahl fiel weg. Neu geladen wird alle
+    paar Sekunden, sobald ein anderes Portal den gemeinsamen Stand schreibt, und
+    dann sprang die Auswahl ohne erkennbaren Anlass zurück.
+    """
+    window = account_window
+    ws = window.workstations[0]
+    ws.agent_sessions = [{
+        "session_id": 5,
+        "full_username": "TARGET\\bob",
+        "session_state": "connected",
+        "login_time": "2026-09-16T08:00:00+00:00",
+    }]
+    ws.current_session_state = SessionState.CONNECTED
+    ws.current_session_user = "TARGET\\bob"
+    assert "TARGET\\bob" in ws.session_accounts()
+
+    window._select_login_account(ws, "TARGET\\bob")
+    restored, _, _ = LocalStore(window.store.path).load([], MockUser.create_user())
+
+    assert restored[0].selected_login_account == "TARGET\\bob"
+
+
+def test_the_choice_stays_personal_and_is_not_shared(account_window):
+    """Sie gehört dem Benutzer, nicht der Maschine -- sonst wählt einer für alle."""
+    window = account_window
+    window._select_login_account(window.workstations[0], "TARGET\\alice")
+
+    shared = json.loads(window.store.path.read_text(encoding="utf-8"))
+    personal = json.loads(window.store.preferences_path.read_text(encoding="utf-8"))
+
+    assert "selected_login_account" not in shared["workstations"][0]
+    assert personal["selected_login_accounts"]["PILOT-01"] == "TARGET\\alice"
 
 
 def test_plus_entry_requests_add_without_changing_selection(qtbot):

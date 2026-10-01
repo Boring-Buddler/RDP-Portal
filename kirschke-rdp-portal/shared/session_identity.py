@@ -56,20 +56,38 @@ def is_active_session(session: Mapping[str, Any]) -> bool:
 
 
 def is_console_session(session: Mapping[str, Any]) -> bool:
-    """Whether a reported session is the local console rather than an RDP session.
+    r"""Whether a reported session is the local console rather than an RDP session.
 
     This decides which sessions the owner logoff path can handle at all: a console
     session has no RDP client, so Windows can prove nothing about who is asking.
-    An agent too old to report the field looks like an RDP session here and is
-    then refused by the agent itself, which is the safe direction.
 
-    Prefer the queried protocol over a derived console flag: older agents could
-    report both RDP protocol and a console flag during a session transition.
+    **Der Stationsname entscheidet, nicht das Protokoll.** Vorher stand es
+    umgekehrt, und das war falsch: ``WTSClientProtocolType`` beschreibt den
+    *gerade angehängten* Client, nicht die Art der Sitzung. Sobald eine
+    RDP-Sitzung getrennt wird, hängt kein Client mehr daran und Windows meldet
+    0 -- denselben Wert wie für die Konsole. Damit galt **jede getrennte
+    RDP-Sitzung als Konsolensitzung**, also ausgerechnet der häufigste Fall:
+    Wer sein Fenster schließt statt sich abzumelden, landet genau dort.
+
+    Sichtbar war das als "Konsole am Gerät" bei einer Person, die von einem
+    anderen Standort verbunden war, und als Abmeldung, die mit der Begründung
+    "lokale Konsolensitzung" verweigert wurde, obwohl gar keine vorlag.
+
+    Nachgemessen an den WinStation-Namen dieses Rechners: Die RDP-Station
+    ``RDP-Tcp`` meldet ``protocol_type`` 0, sobald kein Client daran hängt,
+    während ``RDP-Tcp#1`` mit Client 2 meldet. Der Name bleibt in beiden Fällen
+    gleich -- er gehört zur Sitzung, das Protokoll zur Verbindung.
+
+    Im Zweifel *keine* Konsole: Der Agent prüft die Berechtigung ohnehin selbst
+    und weist eine echte Konsolensitzung dann mit eigener Begründung ab. Eine
+    falsche Vermutung kostet hier einen abgelehnten Versuch, kein Recht.
     """
-    protocol = session.get("protocol_type")
-    if protocol in (0, 2):
-        return protocol == 0
-    if str(session.get("display_name") or "").upper().startswith("RDP-"):
+    station = str(session.get("display_name") or "").strip().upper()
+    if station.startswith("RDP-"):
+        return False
+    if station == "CONSOLE":
+        return True
+    if session.get("protocol_type") == 2:
         return False
     return bool(session.get("is_console_session"))
 

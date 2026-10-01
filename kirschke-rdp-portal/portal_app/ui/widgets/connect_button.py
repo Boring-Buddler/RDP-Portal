@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QPushButton
 
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
-from portal_app.ui.design import Colors, DesignSystem
+from portal_app.ui.design import Colors, DesignSystem, scaled
 from shared.enums import ManualFlagType
 
 
@@ -29,7 +29,8 @@ class ConnectButton(QPushButton):
 
         # Set button properties
         self.setText("Verbinden")
-        self.setFixedSize(130, 30)
+        self.setMinimumWidth(scaled(130))
+        self.setMinimumHeight(scaled(30))
 
         # Update appearance based on status
         self._update_appearance()
@@ -38,48 +39,62 @@ class ConnectButton(QPushButton):
         self.clicked.connect(self._on_clicked)
 
     def _update_appearance(self) -> None:
-        """Update button appearance based on workstation status."""
-        if not self.workstation.enabled:
-            self.setText("Deaktiviert")
-            self.setStyleSheet(self._get_disabled_style())
-            self.setEnabled(False)
-            return
+        """Beschriftung, Farbe und Klickbarkeit aus dem einen Maschinenzustand.
 
-        if self.workstation.is_blocked():
-            if self.workstation.manual_flag_type == ManualFlagType.BLOCKED:
-                self.setText("Gesperrt")
-                self.setStyleSheet(self._get_blocked_style())
-            elif self.workstation.manual_flag_type == ManualFlagType.MAINTENANCE:
-                self.setText("Wartung")
-                self.setStyleSheet(self._get_maintenance_style())
-            else:  # CALCULATION_RUNNING
-                self.setText("Berechnung")
-                self.setStyleSheet(self._get_calculation_style())
-            self.setEnabled(False)
-            return
+        Diese Entscheidung stand hier früher ein zweites Mal, mit eigenen
+        Bedingungen -- genau die Doppelung, die machine_actions abschaffen
+        sollte. Sie war schon auseinandergelaufen: Karte und Detailseite boten
+        "Trotzdem verbinden" an, während die Tabelle weiter "Belegt" ausgraute.
+        """
+        from portal_app.ui.machine_actions import describe_actions
 
-        if not self.workstation.can_connect(
-            self.user.get_rdp_username(),
-            self.user.windows_accounts(),
+        actions = describe_actions(self.workstation, self.user)
+        self.setText(actions.primary_text)
+        self.setToolTip(actions.primary_tooltip)
+        self.setEnabled(actions.primary_enabled)
+        self.setStyleSheet(self._style_for(actions.state))
+
+    def _style_for(self, state) -> str:
+        """Die Farbe zum Zustand, damit die Tabelle dasselbe zeigt wie die Karte."""
+        from portal_app.ui.machine_actions import MachineState
+
+        if state is MachineState.BLOCKED:
+            flag = self.workstation.manual_flag_type
+            if flag == ManualFlagType.BLOCKED:
+                return self._get_blocked_style()
+            return (
+                self._get_maintenance_style()
+                if flag == ManualFlagType.MAINTENANCE
+                else self._get_calculation_style()
+            )
+        if state in (MachineState.OWN_IDLE, MachineState.OCCUPIED_SELF):
+            return self._get_connected_style()
+        if state in (MachineState.DISABLED, MachineState.UNKNOWN):
+            return self._get_disabled_style()
+        if state in (
+            MachineState.OCCUPIED_OTHER,
+            MachineState.OCCUPIED_OTHER_IDLE,
+            MachineState.RESERVED,
         ):
-            self.setText("Belegt")
-            self.setStyleSheet(self._get_disabled_style())
-            self.setEnabled(False)
-            if self.workstation.can_choose_session():
-                self.setText("Sitzung öffnen …")
-                self.setStyleSheet(self._get_normal_style())
-                self.setEnabled(True)
-        elif (
-            self.workstation.matching_sessions(self.user.get_rdp_username())
-            or self.workstation.owned_sessions(self.user.windows_accounts())
-        ):
-            self.setText("Wiederverbinden")
-            self.setStyleSheet(self._get_connected_style())
-            self.setEnabled(True)
-        else:
-            self.setText("Verbinden")
-            self.setStyleSheet(self._get_normal_style())
-            self.setEnabled(True)
+            # Klickbar, aber sichtbar nicht der normale Weg: Die Warnung
+            # kommt erst nach dem Klick, die Farbe schon davor.
+            return self._get_taken_style()
+        return self._get_normal_style()
+
+    def _get_taken_style(self) -> str:
+        """Style für eine belegte Maschine, die man trotzdem anfassen darf."""
+        return f"""
+            QPushButton {{
+                background-color: {Colors.surface.name()};
+                color: {Colors.taken.name()};
+                border: 1px solid {Colors.taken.name()};
+                border-radius: 4px;
+                padding: 4px 8px;
+            }}
+            QPushButton:hover {{
+                background-color: {Colors.surface_alt.name()};
+            }}
+        """
 
     def _get_normal_style(self) -> str:
         """Get style sheet for normal connect button."""

@@ -96,7 +96,8 @@ def test_card_primary_actions_distinguish_connected_disconnected_and_foreign(qtb
     assert not card.logoff_btn.isHidden()
     assert card.connect_btn.text() == "Sitzung öffnen"
 
-    # Fremde Sitzung: besetzt, und kein Abmeldeweg.
+    # Fremde Sitzung: besetzt, und kein Abmeldeweg. Verbinden ist möglich,
+    # aber erst nach der Warnung, die der Knopf ankündigt.
     user.windows_identity = "AzureAD\\other"
     user.rdp_username = None
     user.rdp_domain = None
@@ -104,16 +105,20 @@ def test_card_primary_actions_distinguish_connected_disconnected_and_foreign(qtb
     disconnected.username_hint = None
     card.set_workstation(disconnected, user)
     assert card.logoff_btn.isHidden()
-    assert card.connect_btn.text() == "Maschine besetzt"
-    assert not card.connect_btn.isEnabled()
+    assert card.connect_btn.text() == "Trotzdem verbinden"
+    assert card.connect_btn.isEnabled()
 
+    # Dieselbe Sitzung gehört jetzt dem Benutzer, die Maschine ist aber für
+    # jemand anderen gebucht. Der Abmeldeweg bleibt: Die eigene Sitzung wird
+    # durch eine fremde Buchung nicht unbeendbar.
     disconnected.selected_login_account = "AzureAD\\tester"
+    user.windows_identity = "AzureAD\\tester"
     disconnected.reservation_block_reason = "Fremd reserviert"
     disconnected.reservation_message = "Reserviert für eine andere Person"
     card.set_workstation(disconnected, user)
-    assert card.logoff_btn.isHidden()
-    assert card.connect_btn.text() == "Maschine besetzt"
-    assert not card.connect_btn.isEnabled()
+    assert not card.logoff_btn.isHidden()
+    assert card.connect_btn.text() == "Sitzung öffnen"
+    assert card.connect_btn.isEnabled()
 
 
 def test_disconnected_own_session_uses_process_identity_not_empty_rdp_default(qtbot):
@@ -324,8 +329,26 @@ def test_rdp_protocol_overrides_a_conflicting_console_flag(native):
     native.agent_logoff.assert_called_once()
 
 
-def test_console_protocol_is_refused_even_without_the_flag(native):
-    native.session.update(protocol_type=0, is_console_session=False)
+def test_a_disconnected_rdp_session_is_not_treated_as_the_console(native):
+    """Protokoll 0 heisst "kein Client angehaengt", nicht "Konsole".
+
+    Vorher wurde hier abgewiesen -- mit der Begruendung, es sei eine lokale
+    Sitzung. Getroffen hat das jede getrennte RDP-Sitzung, also genau den Fall,
+    fuer den man die Abmeldung am dringendsten braucht.
+    """
+    native.session.update(
+        protocol_type=0, is_console_session=False, display_name="RDP-Tcp#5"
+    )
+
+    call_logoff()
+
+    native.agent_logoff.assert_called_once()
+
+
+def test_a_real_console_session_is_still_refused(native):
+    native.session.update(
+        protocol_type=0, is_console_session=True, display_name="Console"
+    )
     with pytest.raises(ValueError, match="Konsolensitzung"):
         call_logoff()
     native.agent_logoff.assert_not_called()
@@ -596,6 +619,16 @@ def test_admin_logoff_dialog_requires_target_credentials(qtbot):
     assert dialog.admin_password.echoMode() == QLineEdit.Password
 
 
+def select_login_account(workstation, account):
+    """Was _select_login_account im echten Fenster tut, so weit es hier zaehlt.
+
+    Die Wahl wird nicht nur ins Modell geschrieben, sondern auch in der
+    Benutzerdatei abgelegt -- sonst ueberlebte sie den naechsten Abgleich des
+    gemeinsamen Stands nicht. Fuer diesen Test zaehlt nur die erste Haelfte.
+    """
+    workstation.selected_login_account = account or None
+
+
 def test_main_window_reconnect_reaches_launcher_with_session_account(monkeypatch):
     import portal_app.rdp as rdp
     import portal_app.ui.main_window as module
@@ -604,7 +637,10 @@ def test_main_window_reconnect_reaches_launcher_with_session_account(monkeypatch
     # Ein erfolgreicher Start merkt sich jetzt das benutzte Konto, deshalb braucht
     # der Stub die Speicher- und Auffrischwege.
     window = SimpleNamespace(current_user=MockUser.create_user(), _record_event=Mock(), _poll_rdp_sessions=Mock(),
-                             _check_reservation_access=Mock(return_value=True),
+                             _confirm_connection=Mock(return_value=(True, "")),
+                             _report_session_claim=Mock(),
+                             _fresh_reservation_block_reason=Mock(return_value=""),
+                             _select_login_account=select_login_account,
                              _persist=Mock(), _refresh_workstation_views=Mock(), _saved_user=None)
     launcher = Mock(return_value=(True, "started"))
     monkeypatch.setattr(rdp, "has_active_rdp_session", Mock(return_value=False))
@@ -644,7 +680,10 @@ def test_a_claimed_account_stops_the_portal_from_overriding_the_choice(monkeypat
     ws.selected_login_account = "OTHER\\tester"
     window = SimpleNamespace(current_user=MockUser.create_user(), _record_event=Mock(),
                              _poll_rdp_sessions=Mock(), _refresh_login_views=Mock(),
-                             _check_reservation_access=Mock(return_value=True),
+                             _confirm_connection=Mock(return_value=(True, "")),
+                             _report_session_claim=Mock(),
+                             _fresh_reservation_block_reason=Mock(return_value=""),
+                             _select_login_account=select_login_account,
                              _persist=Mock(), _refresh_workstation_views=Mock(), _saved_user=None)
     window.current_user.own_accounts = ["AzureAD\\tester"]
     launcher = Mock(return_value=(True, "started"))
@@ -669,7 +708,10 @@ def test_main_window_reconnect_asks_only_when_multiple_sessions(monkeypatch):
                                   full_username="AzureAD\\other"))
     window = SimpleNamespace(current_user=MockUser.create_user(), _record_event=Mock(),
                              _poll_rdp_sessions=Mock(), _refresh_login_views=Mock(),
-                             _check_reservation_access=Mock(return_value=True),
+                             _confirm_connection=Mock(return_value=(True, "")),
+                             _report_session_claim=Mock(),
+                             _fresh_reservation_block_reason=Mock(return_value=""),
+                             _select_login_account=select_login_account,
                              _persist=Mock(), _refresh_workstation_views=Mock(), _saved_user=None)
     launcher = Mock(return_value=(True, "started"))
     chooser = Mock(return_value=("AzureAD\\tester", True))

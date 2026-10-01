@@ -37,6 +37,14 @@ SETUP_EXE = "Kirschke-RDP-Agent-Setup.exe"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\KirschkeRDPAgent"
 READER_NAME = "PortalLeser"
 SHARE_NAME = "RDP-Status"
+#: Freigabe fuer das gemeinsame Ereignisprotokoll. Eine pro Testbetrieb genuegt;
+#: sie liegt auf irgendeiner erreichbaren Maschine, nicht auf jeder.
+LOG_SHARE_NAME = "RDP-Protokoll"
+#: Wie lange auf die erste Statusmeldung des frisch gestarteten Agenten gewartet
+#: wird. Er veroeffentlicht direkt beim Start, noch vor seiner ersten
+#: Warteschleife -- ueblich ist also eine Sekunde, nicht zwanzig. Die Frist ist
+#: der Puffer fuer einen langsamen Rechner, nicht der Regelfall.
+SNAPSHOT_TIMEOUT_SECONDS = 20
 
 
 @dataclass(frozen=True)
@@ -44,6 +52,54 @@ class SetupPaths:
     install: Path
     data: Path
     config: Path
+
+
+#: Schritte, die jede Einrichtung durchläuft. Die Freigaben kommen als
+#: Einzelne dazu, je nachdem, was angekreuzt ist.
+BASE_INSTALL_STEPS = 6
+
+
+def install_step_count(*, configure_share: bool, launch_now: bool = True) -> int:
+    """Wie viele Schritte diese Einrichtung hat, für die Anzeige ``x/y``."""
+    return BASE_INSTALL_STEPS + int(configure_share) + int(launch_now)
+
+
+class SetupProgress:
+    """Zählt die Schritte einer laufenden Einrichtung mit und meldet sie weiter.
+
+    Warum es das gibt: Das Setup stand am Ende bis zu zwanzig Sekunden auf einer
+    einzigen Zeile -- "wird eingerichtet und anschließend als SYSTEM geprüft" --
+    und war von einem Absturz nicht zu unterscheiden. Es tat in Wahrheit genau
+    das Richtige, nämlich abwarten, ob der Agent wirklich anläuft.
+
+    ``sink`` wird aus dem Arbeitsthread gerufen und darf deshalb nichts an der
+    Oberfläche anfassen; das Fenster holt sich die Meldungen über eine Queue ab.
+    """
+
+    def __init__(self, total: int, sink: object = None) -> None:
+        self.total = max(1, total)
+        self._sink = sink
+        self._step = 0
+        self._text = ""
+
+    def step(self, text: str) -> str:
+        """Den nächsten Schritt beginnen."""
+        self._step = min(self._step + 1, self.total)
+        return self._announce(text)
+
+    def detail(self, text: str) -> str:
+        """Denselben Schritt mit neuem Text melden, etwa einem Countdown."""
+        return self._announce(text)
+
+    def line(self) -> str:
+        return f"Schritt {self._step}/{self.total}: {self._text}"
+
+    def _announce(self, text: str) -> str:
+        self._text = text
+        message = self.line()
+        if self._sink is not None:
+            self._sink(message)
+        return message
 
 
 def bundle_payload(root: Path | None = None) -> Path:
@@ -209,7 +265,20 @@ def _deny_interactive_logon(reader_sid: pywintypes.SIDType, reader_name: str) ->
         win32security.LsaClose(policy)
 
 
-def _status_directory_acl(path: Path, reader_sid: pywintypes.SIDType) -> None:
+def _share_directory_acl(
+    path: Path, reader_sid: pywintypes.SIDType, *, writable: bool = False
+) -> None:
+    """Set the folder ACL for a share the portal reaches through ``reader_name``.
+
+    ``writable`` unterscheidet die beiden Zwecke. Der Statusordner bleibt
+    lesend: Dort schreibt der Agent, das Portal schaut nur zu. Der gemeinsame
+    Protokollordner muss beschreibbar sein, weil dort jedes Portal seine
+    Ereignisse anhängt -- und ``DELETE`` gehört dazu, sonst scheitert die
+    Rotation, die die gekürzte Datei über die alte schiebt.
+
+    Die Schreibrechte gelten nur für den Ordner, der sie braucht. Der
+    Statusordner derselben Maschine bleibt davon unberührt.
+    """
     acl = win32security.ACL()
     inheritance = win32security.CONTAINER_INHERIT_ACE | win32security.OBJECT_INHERIT_ACE
     system_sid = win32security.ConvertStringSidToSid("S-1-5-18")
@@ -226,10 +295,13 @@ def _status_directory_acl(path: Path, reader_sid: pywintypes.SIDType) -> None:
         ntsecuritycon.FILE_ALL_ACCESS,
         administrators_sid,
     )
+    reader_access = ntsecuritycon.FILE_GENERIC_READ | ntsecuritycon.FILE_GENERIC_EXECUTE
+    if writable:
+        reader_access |= ntsecuritycon.FILE_GENERIC_WRITE | ntsecuritycon.DELETE
     acl.AddAccessAllowedAceEx(
         win32security.ACL_REVISION_DS,
         inheritance,
-        ntsecuritycon.FILE_GENERIC_READ | ntsecuritycon.FILE_GENERIC_EXECUTE,
+        reader_access,
         reader_sid,
     )
     win32security.SetNamedSecurityInfo(
@@ -244,7 +316,7 @@ def _status_directory_acl(path: Path, reader_sid: pywintypes.SIDType) -> None:
 
 
 def _share_security_descriptor(
-    reader_sid: pywintypes.SIDType,
+    reader_sid: pywintypes.SIDType, *, writable: bool = False
 ) -> pywintypes.SECURITY_DESCRIPTORType:
     acl = win32security.ACL()
     system_sid = win32security.ConvertStringSidToSid("S-1-5-18")
@@ -253,7 +325,10 @@ def _share_security_descriptor(
     acl.AddAccessAllowedAce(
         win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, administrators_sid
     )
-    acl.AddAccessAllowedAce(win32security.ACL_REVISION, ntsecuritycon.FILE_GENERIC_READ, reader_sid)
+    reader_access = ntsecuritycon.FILE_GENERIC_READ
+    if writable:
+        reader_access |= ntsecuritycon.FILE_GENERIC_WRITE | ntsecuritycon.DELETE
+    acl.AddAccessAllowedAce(win32security.ACL_REVISION, reader_access, reader_sid)
     descriptor = win32security.SECURITY_DESCRIPTOR()
     descriptor.SetSecurityDescriptorDacl(True, acl, False)
     return descriptor
@@ -337,7 +412,7 @@ def ensure_status_share(
         user_created = True
         reader_sid, _, _ = win32security.LookupAccountName(None, reader_name)
         _deny_interactive_logon(reader_sid, reader_name)
-        _status_directory_acl(status_directory, reader_sid)
+        _share_directory_acl(status_directory, reader_sid)
         acl_changed = True
         win32net.NetShareAdd(
             None,
@@ -379,6 +454,135 @@ def ensure_status_share(
             f"Lesekonto oder Statusfreigabe konnte nicht erstellt werden ({code_text}).{suffix}"
         ) from exc
     return f"{os.environ.get('COMPUTERNAME', '')}\\{reader_name}", True
+
+
+def ensure_log_share(
+    log_directory: Path,
+    password: str,
+    password_confirmation: str,
+    *,
+    reader_name: str = READER_NAME,
+    share_name: str = LOG_SHARE_NAME,
+) -> tuple[str, str, bool]:
+    """Create or safely reuse the writable folder for the shared event log.
+
+    Wozu das gebraucht wird: Installiert jeder das Portal über sein Setup, liegt
+    der gemeinsame Stand in seinem eigenen Profil, und jeder führt sein eigenes
+    Inventar. Das Ereignisprotokoll ist der Teil, den man trotzdem zusammen
+    sehen will -- dafür braucht es genau einen Ordner, in den alle Portale
+    schreiben dürfen.
+
+    Bewusst dasselbe Konto wie für den Statusordner. Ein zweites brächte ein
+    zweites Kennwort in Umlauf, und das Portal müsste lernen, welches wohin
+    gehört; es probiert heute für jeden Server dasselbe. Geschrieben werden darf
+    deshalb nur hier: Der Statusordner behält seine Leserechte.
+
+    Anders als beim Statusordner ist ein bereits vorhandenes Konto hier der
+    Normalfall -- die Maschine, die das Protokoll beherbergt, ist meist selbst
+    eine Zielmaschine mit Agent. Vorhanden heißt dann wiederverwenden, nicht
+    abbrechen.
+
+    Gibt Konto, UNC-Pfad und zurück, ob die Freigabe neu angelegt wurde.
+    """
+    _assert_local_share_path(log_directory)
+    computer = os.environ.get("COMPUTERNAME", "")
+    account = f"{computer}\\{reader_name}"
+    unc = f"\\\\{computer}\\{share_name}"
+    existing_share = _share_info(share_name)
+    if existing_share is not None:
+        existing_path = str(existing_share.get("path", ""))
+        if not _same_windows_path(existing_path, log_directory):
+            raise RuntimeError(
+                f"Die vorhandene Freigabe {share_name} zeigt auf {existing_path}, "
+                f"nicht auf {log_directory}. Es wurde nichts verändert."
+            )
+        return account, unc, False
+
+    user_exists = _local_user_exists(reader_name)
+    if not user_exists:
+        if not password:
+            raise ValueError(
+                f"{reader_name} besteht auf diesem Rechner noch nicht. "
+                "Bitte ein Kennwort für das neue Konto vergeben."
+            )
+        if password != password_confirmation:
+            raise ValueError("Die beiden Kennworteingaben stimmen nicht überein.")
+
+    log_directory.mkdir(parents=True, exist_ok=True)
+    old_security = win32security.GetNamedSecurityInfo(
+        str(log_directory),
+        win32security.SE_FILE_OBJECT,
+        win32security.DACL_SECURITY_INFORMATION,
+    )
+    user_created = False
+    acl_changed = False
+    try:
+        if not user_exists:
+            win32net.NetUserAdd(
+                None,
+                1,
+                {
+                    "name": reader_name,
+                    "password": password,
+                    "priv": win32netcon.USER_PRIV_USER,
+                    "home_dir": None,
+                    "comment": "Lesekonto für RDP-Agent-Status",
+                    "flags": (
+                        win32netcon.UF_SCRIPT
+                        | win32netcon.UF_NORMAL_ACCOUNT
+                        | win32netcon.UF_DONT_EXPIRE_PASSWD
+                    ),
+                    "script_path": None,
+                },
+            )
+            user_created = True
+        reader_sid, _, _ = win32security.LookupAccountName(None, reader_name)
+        if user_created:
+            _deny_interactive_logon(reader_sid, reader_name)
+        _share_directory_acl(log_directory, reader_sid, writable=True)
+        acl_changed = True
+        win32net.NetShareAdd(
+            None,
+            502,
+            {
+                "netname": share_name,
+                "type": win32netcon.STYPE_DISKTREE,
+                "remark": "Kirschke RDP-Portal: gemeinsames Ereignisprotokoll",
+                "permissions": 0,
+                "max_uses": -1,
+                "current_uses": 0,
+                "path": str(log_directory),
+                "passwd": None,
+                "reserved": 0,
+                "security_descriptor": _share_security_descriptor(reader_sid, writable=True),
+            },
+        )
+    except Exception as exc:
+        rollback_failed = False
+        if acl_changed:
+            try:
+                _restore_directory_security(log_directory, old_security)
+            except pywintypes.error:
+                rollback_failed = True
+        # Ein Konto, das es vorher schon gab, wird nie entfernt: Daran hängt der
+        # Statuszugang dieser Maschine.
+        if user_created:
+            try:
+                win32net.NetUserDel(None, reader_name)
+            except pywintypes.error:
+                rollback_failed = True
+        code = getattr(exc, "winerror", None)
+        if code == 2245:
+            raise ValueError(
+                "Das Kennwort erfüllt die Kennwortrichtlinie dieses Rechners nicht. "
+                "Bitte ein längeres, komplexes Kennwort verwenden."
+            ) from exc
+        suffix = " Die automatische Rücknahme war unvollständig." if rollback_failed else ""
+        code_text = str(code) if code is not None else type(exc).__name__
+        raise RuntimeError(
+            f"Die Protokollfreigabe konnte nicht erstellt werden ({code_text}).{suffix}"
+        ) from exc
+    return account, unc, True
 
 
 def _same_or_below(candidate: Path, root: Path) -> bool:
@@ -514,10 +718,28 @@ def _copy_setup_executable(destination: Path) -> None:
         shutil.copy2(source, target)
 
 
-def _confirm_snapshot(status_directory: Path, workstation_id: str, started_at: datetime) -> None:
+def _confirm_snapshot(
+    status_directory: Path,
+    workstation_id: str,
+    started_at: datetime,
+    progress: SetupProgress | None = None,
+) -> None:
+    """Warten, bis der Agent als SYSTEM seinen ersten Status geschrieben hat.
+
+    Der ehrliche Nachweis, dass die Einrichtung nicht nur Dateien kopiert hat.
+    Normalerweise ist das nach ein bis zwei Sekunden vorbei -- der Agent
+    veröffentlicht direkt beim Start, noch vor seiner ersten Warteschleife --,
+    aber es kann dauern, und dann muss man sehen, dass gewartet wird und nicht
+    gehangen.
+    """
     snapshot_path = status_directory / f"{workstation_id}.json"
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + SNAPSHOT_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
+        if progress is not None:
+            remaining = max(1, int(deadline - time.monotonic()) + 1)
+            progress.detail(
+                f"Auf die erste Statusmeldung des Agenten warten … (noch {remaining} s)"
+            )
         time.sleep(0.5)
         try:
             snapshot = json.loads(snapshot_path.read_text(encoding="utf-8-sig"))
@@ -551,7 +773,12 @@ def install_agent(
     reader_password: str = "",
     reader_password_confirmation: str = "",
     launch_now: bool = True,
+    progress: SetupProgress | None = None,
 ) -> SetupPaths:
+    steps = progress or SetupProgress(
+        install_step_count(configure_share=configure_share, launch_now=launch_now)
+    )
+    steps.step("Eingaben und Administratorrechte prüfen …")
     if not is_administrator():
         raise PermissionError(
             "Die rechnerweite Agent-Installation muss als Administrator gestartet werden."
@@ -571,11 +798,13 @@ def install_agent(
                 f"Agent-Installation liegen: {paths.install}"
             )
     if configure_share:
+        steps.step(f"Freigabe {SHARE_NAME} und Lesekonto {READER_NAME} einrichten …")
         ensure_status_share(
             status,
             reader_password,
             reader_password_confirmation,
         )
+    steps.step("Statusordner anlegen und Schreibzugriff prüfen …")
     status.mkdir(parents=True, exist_ok=True)
     status = status.resolve(strict=True)
     probe = status / f".kirschke-agent-write-test-{uuid.uuid4().hex}.tmp"
@@ -588,13 +817,16 @@ def install_agent(
     finally:
         probe.unlink(missing_ok=True)
 
+    steps.step("Laufenden Agenten beenden und alte Dateien entfernen …")
     _delete_task()
     if paths.install.exists():
         _remove_agent_directory(paths.install)
+    steps.step("Programmdateien kopieren …")
     paths.install.mkdir(parents=True)
     shutil.copytree(source, paths.install, dirs_exist_ok=True)
     _copy_setup_executable(paths.install)
     _secure_data_directory(paths.data)
+    steps.step("Konfiguration schreiben …")
     config = {
         "workstation_id": workstation_id,
         "poll_interval": poll_interval,
@@ -606,12 +838,14 @@ def install_agent(
         "agent_version": AGENT_VERSION,
     }
     paths.config.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    steps.step("Aufgabenplanung einrichten …")
     _register_task(paths.install / AGENT_EXE, paths.config, workstation_id)
     _write_uninstall_registration(paths)
     if launch_now:
+        steps.step("Agent starten …")
         started_at = datetime.now(UTC)
         _run(["schtasks.exe", "/Run", "/TN", TASK_NAME])
-        _confirm_snapshot(status, workstation_id, started_at)
+        _confirm_snapshot(status, workstation_id, started_at, steps)
     return paths
 
 
@@ -662,8 +896,10 @@ class InstallerWindow:
         self.payload = payload
         self.root = Tk()
         self.root.title(f"Kirschke RDP-Agent {AGENT_VERSION} installieren")
-        self.root.geometry("680x635")
-        self.root.resizable(False, False)
+        # Keine feste Größe mehr: Das Fenster misst seinen Inhalt. Ein festes
+        # Maß hält nur, solange nichts dazukommt und niemand eine größere
+        # Windows-Schrift eingestellt hat -- beides ist eingetreten.
+        self.root.resizable(True, True)
         # An update must not silently rewrite what the previous run configured.
         # Defaulting the machine ID to COMPUTERNAME cost an afternoon once: a
         # machine registered as WS-005 in the portal had its agent reset to the
@@ -679,11 +915,49 @@ class InstallerWindow:
         self.interval = StringVar(value=self._interval_label(existing.get("poll_interval")))
         self.is_update = bool(existing)
         self.configure_share = BooleanVar(value=True)
+        # Die Protokollfreigabe ist eine Sache fuer genau eine Maschine im
+        # Testbetrieb, nicht fuer jede -- deshalb standardmaessig aus.
+        self.configure_log_share = BooleanVar(value=False)
+        self.log_directory = StringVar(
+            value=str(Path(os.environ.get("ProgramData", r"C:\ProgramData"))
+                      / "KirschkeRDPPortal" / LOG_SHARE_NAME)
+        )
         self.reader_password = StringVar(value="")
         self.reader_password_confirmation = StringVar(value="")
         self.message = StringVar(value="")
+        #: Ergebnis der optionalen Protokollfreigabe, für die Schlussmeldung.
+        #: Muss hier stehen und nicht erst im Arbeitsthread gesetzt werden: Ohne
+        #: angekreuzte Protokollfreigabe wurde es nie zugewiesen, und die
+        #: Erfolgsmeldung lief in einen AttributeError -- mitten im Tk-Callback,
+        #: also ohne Dialog und ohne Fehler. Das Fenster blieb mit gesperrten
+        #: Knöpfen stehen und sah aus, als hinge die Installation.
+        self.log_share_note = ""
+        #: Zwischenstände aus dem Arbeitsthread. Über eine Queue, weil an der
+        #: Oberfläche nur der Tk-Thread etwas ändern darf.
+        self.progress_messages: queue.Queue[str] = queue.Queue()
         self.results: queue.Queue[tuple[bool, str, str]] = queue.Queue()
         self._build()
+        self._fit_to_content()
+
+    def _fit_to_content(self) -> None:
+        """Das Fenster auf seinen Inhalt ziehen, aber nie über den Bildschirm hinaus.
+
+        Zwei Grenzen, beide notwendig: Nach unten muss das Fenster gross genug
+        sein, damit nichts abgeschnitten wird -- nach oben darf es den
+        Bildschirm nicht überschreiten, sonst liegt der untere Rand samt
+        Knopfzeile ausserhalb und man kommt erst recht nicht heran.
+
+        ``minsize`` hält die Breite: Schmaler gezogen bräche der Text um und das
+        Fenster würde wieder höher, statt kleiner zu werden.
+        """
+        self.root.update_idletasks()
+        width = self.root.winfo_reqwidth()
+        height = self.root.winfo_reqheight()
+        limit_width = int(self.root.winfo_screenwidth() * 0.95)
+        limit_height = int(self.root.winfo_screenheight() * 0.90)
+        width, height = min(width, limit_width), min(height, limit_height)
+        self.root.geometry(f"{width}x{height}")
+        self.root.minsize(width, min(height, 420))
 
     @staticmethod
     def _existing_configuration() -> dict:
@@ -705,6 +979,24 @@ class InstallerWindow:
         return labels.get(seconds if type(seconds) is int else 0, labels[30])
 
     def _build(self) -> None:
+        # Die Knopfzeile hängt am Fenster und nicht im Inhaltsraster, und sie
+        # wird zuerst gepackt: So bekommt sie ihren Platz vor allem anderen und
+        # bleibt erreichbar, egal wie hoch der Inhalt wird. Genau daran ist es
+        # schon gescheitert -- ein zusätzlicher Kasten schob "Jetzt
+        # installieren" unter den unteren Rand, und weil das Fenster nicht
+        # veränderbar war, kam man auch durch Aufziehen nicht daran.
+        buttons = ttk.Frame(self.root, padding=(24, 0, 24, 16))
+        buttons.pack(side="bottom", fill="x")
+        self.install_button = ttk.Button(
+            buttons, text="Jetzt installieren", command=self._start_install
+        )
+        ttk.Button(buttons, text="Abbrechen", command=self.root.destroy).pack(
+            side="right"
+        )
+        self.install_button.pack(side="right", padx=(0, 10))
+        ttk.Label(
+            buttons, textvariable=self.message, foreground="#155a8a", wraplength=420
+        ).pack(side="left", fill="x", expand=True)
         frame = ttk.Frame(self.root, padding=24)
         frame.pack(fill="both", expand=True)
         ttk.Label(
@@ -785,16 +1077,33 @@ class InstallerWindow:
             state="readonly",
             width=28,
         ).grid(row=14, column=1, sticky="w")
-        ttk.Label(frame, textvariable=self.message, foreground="#155a8a", wraplength=620).grid(
-            row=15, column=0, columnspan=3, sticky="w", pady=(20, 10)
-        )
-        self.install_button = ttk.Button(
-            frame, text="Jetzt installieren", command=self._start_install
-        )
-        self.install_button.grid(row=16, column=1, sticky="e", padx=(0, 10))
-        ttk.Button(frame, text="Abbrechen", command=self.root.destroy).grid(
-            row=16, column=2, sticky="e"
-        )
+        # Eigener Kasten in einer einzigen Rasterzeile: Die Protokollfreigabe
+        # gehoert nicht zur Agent-Installation, sondern wird bei der Gelegenheit
+        # miterledigt -- und zwar auf genau einer Maschine im Testbetrieb.
+        log_box = ttk.LabelFrame(frame, text="Gemeinsames Protokoll (optional, einmal pro Testbetrieb)")
+        log_box.grid(row=15, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        log_box.columnconfigure(0, weight=1)
+        ttk.Checkbutton(
+            log_box,
+            text=f"Beschreibbare Freigabe {LOG_SHARE_NAME} auf diesem Rechner anlegen",
+            variable=self.configure_log_share,
+            command=self._toggle_log_fields,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(6, 2))
+        ttk.Label(
+            log_box,
+            text=(
+                "Nur auf einem Rechner nötig. Dort sammeln alle Portale ihre Ereignisse, "
+                f"damit im Reiter Logs steht, wer wann welche Maschine benutzt hat. "
+                f"{READER_NAME} bekommt hier — und nur hier — Schreibrecht; der Statusordner "
+                "bleibt lesend."
+            ),
+            wraplength=580,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))
+        self.log_directory_entry = ttk.Entry(log_box, textvariable=self.log_directory)
+        self.log_directory_entry.grid(row=2, column=0, sticky="ew", padx=(8, 4), pady=(0, 8))
+        self.log_browse_button = ttk.Button(log_box, text="Ordner wählen", command=self._browse_log)
+        self.log_browse_button.grid(row=2, column=1, sticky="e", padx=(0, 8), pady=(0, 8))
+        self._toggle_log_fields()
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
 
@@ -803,6 +1112,16 @@ class InstallerWindow:
         if selected:
             self.status_directory.set(selected)
 
+    def _browse_log(self) -> None:
+        selected = filedialog.askdirectory(initialdir=self.log_directory.get())
+        if selected:
+            self.log_directory.set(selected)
+
+    def _toggle_log_fields(self) -> None:
+        state = "normal" if self.configure_log_share.get() else "disabled"
+        self.log_directory_entry.configure(state=state)
+        self.log_browse_button.configure(state=state)
+
     def _toggle_share_fields(self) -> None:
         state = "normal" if self.configure_share.get() else "disabled"
         self.password_entry.configure(state=state)
@@ -810,7 +1129,7 @@ class InstallerWindow:
 
     def _start_install(self) -> None:
         self.install_button.configure(state="disabled")
-        self.message.set("Agent wird eingerichtet und anschließend als SYSTEM geprüft …")
+        self.message.set("Einrichtung wird gestartet …")
         intervals = {"30 Sekunden (empfohlen)": 30, "60 Sekunden": 60, "15 Sekunden": 15}
         arguments = (
             self.workstation_id.get(),
@@ -819,6 +1138,8 @@ class InstallerWindow:
             self.configure_share.get(),
             self.reader_password.get(),
             self.reader_password_confirmation.get(),
+            self.configure_log_share.get(),
+            self.log_directory.get(),
         )
         threading.Thread(target=self._install, args=arguments, daemon=True).start()
         self.root.after(100, self._poll_result)
@@ -831,7 +1152,13 @@ class InstallerWindow:
         configure_share: bool,
         reader_password: str,
         reader_password_confirmation: str,
+        configure_log_share: bool,
+        log_directory: str,
     ) -> None:
+        steps = SetupProgress(
+            install_step_count(configure_share=configure_share) + int(configure_log_share),
+            self.progress_messages.put,
+        )
         try:
             paths = install_agent(
                 self.payload,
@@ -841,13 +1168,42 @@ class InstallerWindow:
                 configure_share=configure_share,
                 reader_password=reader_password,
                 reader_password_confirmation=reader_password_confirmation,
+                progress=steps,
             )
         except Exception as exc:  # noqa: BLE001 - shown to the local administrator
             self.results.put((False, str(exc), ""))
             return
+        # Erst nach dem Agenten: Die Protokollfreigabe ist eine Zugabe, und ein
+        # Fehler dabei darf eine gelungene Agent-Installation nicht als
+        # gescheitert erscheinen lassen.
+        if configure_log_share:
+            steps.step(f"Protokollfreigabe {LOG_SHARE_NAME} anlegen …")
+            try:
+                _, unc, created = ensure_log_share(
+                    normalize_status_directory(log_directory),
+                    reader_password,
+                    reader_password_confirmation,
+                )
+            except Exception as exc:  # noqa: BLE001 - shown to the local administrator
+                self.log_share_note = (
+                    f"Der Agent ist eingerichtet. Die Protokollfreigabe nicht: {exc}"
+                )
+            else:
+                verb = "eingerichtet" if created else "war bereits vorhanden"
+                self.log_share_note = (
+                    f"Protokollfreigabe {verb}: {unc}\n"
+                    "Diesen Pfad im Portal unter Admin → Gemeinsames Protokoll eintragen."
+                )
         self.results.put((True, workstation_id.strip(), str(paths.config)))
 
     def _poll_result(self) -> None:
+        # Erst die Zwischenstände leeren: Sonst bliebe die letzte Meldung
+        # stehen, während der Arbeitsthread längst weiter ist.
+        while True:
+            try:
+                self.message.set(self.progress_messages.get_nowait())
+            except queue.Empty:
+                break
         try:
             succeeded, first, second = self.results.get_nowait()
         except queue.Empty:
@@ -855,10 +1211,25 @@ class InstallerWindow:
             return
         self.reader_password.set("")
         self.reader_password_confirmation.set("")
-        if succeeded:
-            self._succeeded(first, second)
-        else:
-            self._failed(first)
+        # Auch ein Fehler beim *Anzeigen* darf das Fenster nicht in der Schwebe
+        # lassen. Genau das ist passiert: Eine fehlende Zuweisung liess die
+        # Erfolgsmeldung scheitern, und zurueck blieb ein Fenster mit
+        # gesperrten Knoepfen, dem niemand ansah, dass die Arbeit getan war.
+        try:
+            if succeeded:
+                self._succeeded(first, second)
+            else:
+                self._failed(first)
+        except Exception as exc:  # noqa: BLE001 - letzte Rettung fuer die Anzeige
+            self.install_button.configure(state="normal")
+            self.message.set("")
+            messagebox.showwarning(
+                "Ergebnis konnte nicht angezeigt werden",
+                "Die Einrichtung ist beendet, die Rückmeldung dazu ist "
+                f"fehlgeschlagen:\n{exc}\n\nBitte im Portal prüfen, ob die "
+                "Maschine als Online gemeldet wird.",
+                parent=self.root,
+            )
 
     def _failed(self, detail: str) -> None:
         self.install_button.configure(state="normal")
@@ -875,7 +1246,8 @@ class InstallerWindow:
         messagebox.showinfo(
             "Installation abgeschlossen",
             "Der Agent wurde eingerichtet und als SYSTEM gestartet.\n\n"
-            f"Maschinen-ID: {workstation_id}\nKonfiguration: {config_path}{share_result}",
+            f"Maschinen-ID: {workstation_id}\nKonfiguration: {config_path}{share_result}"
+            + (f"\n\n{self.log_share_note}" if self.log_share_note else ""),
             parent=self.root,
         )
         self.root.destroy()

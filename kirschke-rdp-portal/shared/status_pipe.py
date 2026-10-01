@@ -178,6 +178,35 @@ def push_agent_reservations(target, reservations, pipe_name=PIPE_NAME, credentia
     return int(data.get("count", 0))
 
 
+def push_session_claim(target, claim, pipe_name=PIPE_NAME, credentials=None):
+    """Dem Agenten melden, wer sich gerade unter welchem Konto aufgeschaltet hat.
+
+    Der Agent verwahrt die Meldung und gibt sie mit jedem Status-Snapshot zurück,
+    damit auf einer Maschine mit einem einzigen gemeinsamen Windows-Konto nicht
+    jedes Portal die Sitzung für die eigene hält.
+
+    Kein Autorisierungsschritt -- siehe :mod:`workstation_agent.claim_store` für
+    die Begründung und für die Regel, die daraus folgt.
+    """
+    request = {
+        "protocol": "CLAIM/1",
+        "request_id": str(uuid.uuid4()),
+        "requested_at_utc": datetime.now(UTC).isoformat(),
+        "claim": dict(claim),
+    }
+    data = _exchange(
+        target,
+        (b"CLAIM/1 " + json.dumps(request, separators=(",", ":")).encode("utf-8")),
+        pipe_name,
+        credentials,
+    )
+    if not data.get("ok"):
+        raise PermissionError(
+            data.get("message") or "Der Agent hat die Aufschaltmeldung abgelehnt."
+        )
+    return str(data.get("account") or "")
+
+
 def request_agent_logoff(
     target,
     session_id,

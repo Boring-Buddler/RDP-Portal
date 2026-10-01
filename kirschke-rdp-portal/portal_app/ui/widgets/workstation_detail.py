@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from portal_app.models.session import SessionEvent
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
+from portal_app.ui.design import scaled
 from portal_app.ui.machine_actions import CONSOLE_LOGOFF_HINT, describe_actions
 from portal_app.ui.widgets.flag_dialog import FlagDialog
 from portal_app.ui.widgets.login_account_selector import LoginAccountSelector
@@ -132,7 +133,7 @@ class WorkstationDetailWidget(QWidget):
         warning_layout.setSpacing(12)
         warning_icon = QLabel("!")
         warning_icon.setObjectName("sessionWarningIcon")
-        warning_icon.setFixedSize(28, 28)
+        warning_icon.setFixedSize(scaled(28), scaled(28))
         warning_icon.setAlignment(Qt.AlignCenter)
         warning_layout.addWidget(warning_icon)
         warning_copy = QVBoxLayout()

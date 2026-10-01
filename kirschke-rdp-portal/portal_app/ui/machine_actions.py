@@ -43,7 +43,7 @@ from portal_app.models.workstation import Workstation
 from portal_app.ui.design import Colors
 from shared.enums import AgentStatus, ManualFlagType
 from shared.identity import IdentityMatch
-from shared.session_identity import is_console_session
+from shared.session_identity import is_console_session, session_username
 
 #: Why a session the agent reports as local needs a detour before it can be ended.
 CONSOLE_LOGOFF_HINT = (
@@ -98,21 +98,39 @@ STATE_BUTTONS: dict[MachineState, str | None] = {
     MachineState.UNKNOWN: "Verbinden (Status ungeprüft)",
     MachineState.OWN_IDLE: "Sitzung öffnen",
     MachineState.OCCUPIED_SELF: "Sitzung öffnen …",
-    MachineState.OCCUPIED_OTHER: "Maschine besetzt",
-    MachineState.OCCUPIED_OTHER_IDLE: "Maschine besetzt",
-    MachineState.RESERVED: "Maschine besetzt",
+    MachineState.OCCUPIED_OTHER: "Trotzdem verbinden",
+    MachineState.OCCUPIED_OTHER_IDLE: "Trotzdem verbinden",
+    MachineState.RESERVED: "Trotzdem verbinden",
     MachineState.AVAILABLE: "Verbinden",
 }
 
 #: States whose primary button actually starts something.  Everything else only
 #: explains why the machine cannot be used right now.
+#:
+#: Die drei Belegt-Zustaende stehen hier, seit ein toter Knopf niemandem
+#: geholfen hat: wer eine belegte Maschine wirklich braucht, soll das
+#: entscheiden duerfen -- nach einer Warnung, die sagt, was dabei passiert.
+#: Die Karte behaelt ihre Farbe und ihre zurueckhaltende Randstaerke, damit man
+#: weiterhin auf einen Blick sieht, dass hier jemand anderes sitzt.
+#: Siehe :func:`connection_warning`.
 ACTIONABLE_STATES = frozenset(
     {
         MachineState.UNKNOWN,
         MachineState.AVAILABLE,
         MachineState.OWN_IDLE,
         MachineState.OCCUPIED_SELF,
+        MachineState.OCCUPIED_OTHER,
+        MachineState.OCCUPIED_OTHER_IDLE,
+        MachineState.RESERVED,
     }
+)
+
+#: Was Windows tut, wenn man sich auf eine bereits angemeldete Maschine
+#: verbindet. Steht einmal hier, weil jede Warnung damit endet.
+SINGLE_SESSION_CONSEQUENCE = (
+    "Windows 10/11 Pro lässt nur eine angemeldete Sitzung zu: Wenn du die "
+    "Verbindung jetzt aufbaust, wird die bestehende Sitzung getrennt oder "
+    "übernommen. Nicht gespeicherte Arbeit kann dabei verloren gehen."
 )
 
 
@@ -163,14 +181,16 @@ STATE_TOOLTIPS: dict[MachineState, str] = {
         "Deine Sitzung läuft und ein vom Portal gestartetes RDP-Fenster ist offen."
     ),
     MachineState.OCCUPIED_OTHER: (
-        "Eine andere Person ist an dieser Maschine angemeldet. Gehört dir das "
-        "gemeldete Konto selbst, trage es unter Einstellungen → Weitere eigene "
-        "Windows-Konten ein; die Sitzung gilt dann als deine."
+        "Eine andere Person ist an dieser Maschine angemeldet. Verbinden ist "
+        "möglich, das Portal fragt vorher nach. Gehört dir das gemeldete Konto "
+        "selbst, trage es unter Einstellungen → Weitere eigene Windows-Konten "
+        "ein; die Sitzung gilt dann als deine."
     ),
     MachineState.OCCUPIED_OTHER_IDLE: (
         "Eine andere Person hält diese Maschine, ist aber nicht verbunden — das "
         "RDP-Fenster ist geschlossen, die Windows-Sitzung läuft weiter. "
-        "Nachfragen lohnt sich hier eher als bei einer aktiven Sitzung."
+        "Nachfragen lohnt sich hier eher als bei einer aktiven Sitzung. "
+        "Verbinden ist möglich, das Portal fragt vorher nach."
     ),
 }
 
@@ -282,7 +302,7 @@ def machine_state(
         return MachineState.OCCUPIED_OTHER
     if workstation.agent_status != AgentStatus.ONLINE or workstation.agent_status_source == "none":
         return MachineState.UNKNOWN
-    own = workstation.owned_sessions(user.windows_accounts())
+    own = workstation.owned_sessions(user.windows_accounts(), user.upn)
     if own:
         # A console session never has a portal window, and it is the case where
         # you are holding the machine most visibly -- so it is always OWN_IDLE.
@@ -292,7 +312,7 @@ def machine_state(
     if workstation.has_active_session():
         # Getrennt heisst: das Konto haelt die Maschine, aber niemand ist
         # verbunden -- dasselbe wie OWN_IDLE, nur fuer eine fremde Person.
-        if workstation.foreign_session_is_idle(user.windows_accounts()):
+        if workstation.foreign_session_is_idle(user.windows_accounts(), user.upn):
             return MachineState.OCCUPIED_OTHER_IDLE
         return MachineState.OCCUPIED_OTHER
     if workstation.reservation_block_reason:
@@ -300,6 +320,75 @@ def machine_state(
         # not a blocker, and the machine is free for you to use.
         return MachineState.RESERVED
     return MachineState.AVAILABLE
+
+
+def occupant_names(workstation: Workstation, user: User) -> list[str]:
+    """Wer diese Maschine gerade hält, so gut das Portal es sagen kann.
+
+    Bevorzugt den Namen der Person, die ihre Aufschaltung gemeldet hat: auf
+    einer Maschine mit einem einzigen gemeinsamen Windows-Konto sagt der
+    Kontoname sonst nichts darüber aus, wer davor sitzt. Ist nichts gemeldet,
+    bleibt der Windows-Kontoname als das, was tatsächlich bekannt ist.
+    """
+    names: dict[str, str] = {}
+    for item in workstation.foreign_sessions(user.windows_accounts(), user.upn):
+        name = workstation.session_owner_display(item) or session_username(item).strip()
+        if name:
+            names.setdefault(name.casefold(), name)
+    return sorted(names.values(), key=str.casefold)
+
+
+def connection_warning(
+    workstation: Workstation,
+    user: User,
+    *,
+    reservation_block_reason: str | None = None,
+) -> str | None:
+    """Was vor dem Verbinden gesagt werden muss, oder ``None``.
+
+    Ersetzt den frueheren toten "Maschine besetzt"-Knopf. Der Zustand bleibt
+    sichtbar wie bisher -- Farbe, Randstaerke, Beschriftung --, nur wird er
+    nicht mehr fuer die Person entschieden. Sie bekommt zu sehen, wer die
+    Maschine haelt und was ein Verbindungsaufbau damit macht.
+
+    ``reservation_block_reason`` erlaubt dem Aufrufer, einen frisch gelesenen
+    Reservierungsstand einzusetzen, statt dem Stand aus dem letzten Abgleich zu
+    vertrauen; ohne Angabe gilt der der Maschine.
+    """
+    reason = (
+        workstation.reservation_block_reason
+        if reservation_block_reason is None
+        else reservation_block_reason
+    )
+    accounts = user.windows_accounts()
+    occupants = occupant_names(workstation, user)
+    parts: list[str] = []
+    if occupants:
+        who = " und ".join(occupants)
+        if workstation.foreign_session_is_idle(accounts, user.upn):
+            parts.append(
+                f"{who} hält {workstation.display_name}, ist aber nicht verbunden: "
+                "Das RDP-Fenster ist zu, die Windows-Sitzung läuft weiter."
+            )
+        else:
+            parts.append(
+                f"{who} ist gerade an {workstation.display_name} angemeldet und "
+                "arbeitet vermutlich daran."
+            )
+    if reason:
+        parts.append(reason + ".")
+    if not parts:
+        return None
+    if occupants:
+        parts.append(SINGLE_SESSION_CONSEQUENCE)
+    else:
+        # Niemand angemeldet, nur gebucht. Hier geht nichts verloren; es ist
+        # eine Absprache, und deshalb steht hier auch keine Drohung.
+        parts.append(
+            "Angemeldet ist gerade niemand. Verbinden ist technisch möglich — "
+            "sprich dich mit der buchenden Person ab."
+        )
+    return "\n\n".join(parts)
 
 
 def state_color(state: MachineState) -> QColor:
@@ -357,15 +446,19 @@ def describe_actions(
     quietly holding it".
     """
     accounts = user.windows_accounts()
-    own = workstation.owned_sessions(accounts)
-    ownership = workstation.owned_session_match(accounts)
+    own = workstation.owned_sessions(accounts, user.upn)
+    ownership = workstation.owned_session_match(accounts, user.upn)
     state = machine_state(workstation, user, window_open=window_open)
 
     # Logoff follows ownership alone.  A manual flag says the machine is busy, not
     # that the session stopped being yours; a foreign reservation does.
     candidates = logoff_candidates(own)
     console_only = bool(own) and all(is_console_session(item) for item in own)
-    logoff_visible = bool(own) and not workstation.reservation_block_reason
+    # Haengt allein an der Eigentuemerschaft. Eine fremde Reservierung stand
+    # hier frueher mit und hat die eigene laufende Sitzung unbeendbar gemacht:
+    # zusammen mit der gesperrten Verbindung war das der Zustand, aus dem
+    # niemand mehr herauskam.
+    logoff_visible = bool(own)
     # A console session stays clickable: the agent still refuses it directly, but
     # the portal can offer the takeover that removes the obstacle, and the
     # administrative route. A disabled button could offer neither.
@@ -415,14 +508,17 @@ __all__ = [
     "css_color",
     "state_border_width",
     "CONSOLE_LOGOFF_HINT",
+    "SINGLE_SESSION_CONSEQUENCE",
     "SORT_ORDER",
     "STATE_BUTTONS",
     "STATE_COLORS",
     "UNVERIFIED_OWNER_HINT",
     "MachineActions",
     "MachineState",
+    "connection_warning",
     "describe_actions",
     "logoff_candidates",
     "machine_state",
+    "occupant_names",
     "state_color",
 ]

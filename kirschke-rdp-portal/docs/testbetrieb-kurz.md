@@ -9,7 +9,7 @@ Python ist auf den Arbeitsplatz-PCs nicht erforderlich.
 
 Vor einem Update die Portale schließen. Programmdateien aktualisieren und den
 vorhandenen Ordner **state** beibehalten. Dort liegen die gemeinsamen Daten.
-Im geöffneten Portal muss die Version **0.7.0** stehen.
+Im geöffneten Portal muss die Version **0.8.2** stehen.
 
 Im Admin-Fenster übernimmt **Speichern** alle angezeigten Maschineneinstellungen
 nach `state\portal-state.json` direkt neben der EXE. Der Ordner wird automatisch
@@ -29,6 +29,76 @@ Aus dem Quellcode: im Projektordner `python3.13 -m portal_app.app` ausführen.
 
 Die folgenden Update-Abschnitte dokumentieren ältere Versionen; für den aktuellen
 Speicherort gilt die Anleitung oben.
+
+## Update 0.8.0: Belegte Maschinen, Aufschaltmeldung und eigene Anordnung
+
+**Der Agent muss auf jeder Zielmaschine mit aktualisiert werden** (Version 1.6.0).
+Ohne ihn bleibt die Aufschaltmeldung aus, und die Karten sagen nicht, wer eine
+Maschine hält.
+
+**Eine Reservierung sperrt nichts mehr.** Bisher konnte eine fremde Buchung zwei
+Leute gleichzeitig aussperren: Wer reserviert hatte, kam wegen der laufenden
+fremden Sitzung nicht auf die Maschine, und wer angemeldet war, kam wegen der
+Buchung weder zurück auf seine eigene Sitzung noch konnte er sie beenden. Die
+Buchung wird jetzt vor dem Verbinden als Warnung gezeigt und von der Person
+entschieden.
+
+**Aus „Maschine besetzt" wird „Trotzdem verbinden".** Der Knopf ist nicht mehr
+tot: Er öffnet eine Warnung, die sagt, wer die Maschine hält und dass Windows die
+bestehende Sitzung dabei trennt. Vorgabe im Dialog ist Abbrechen. Farbe und
+Randstärke der Karte bleiben unverändert — man sieht weiterhin auf einen Blick,
+dass dort jemand anderes sitzt.
+
+**Die Karte nennt den Menschen, nicht das Konto.** Auf einer Workstation mit einem
+gemeinsamen Windows-Konto meldet das Portal dem Agenten, wer sich aufgeschaltet
+hat. Vorher erkannte jedes Portal den gemeinsamen Kontonamen als den eigenen
+wieder und zeigte die Maschine allen als „von dir belegt".
+
+Weil das Portal **jede** von ihm gestartete Verbindung meldet, steht auf der
+Karte zusätzlich, woher eine Sitzung kommt:
+
+| Angabe | Bedeutung |
+|---|---|
+| `· über Portal` | Über das Portal gestartet, Person namentlich bekannt |
+| `· direkt verbunden` | Keine Meldung — vermutlich direkt über `mstsc` oder am Gerät |
+| *(nichts)* | Agent älter als 1.6.0; die Frage ist offen |
+
+**Karten lassen sich selbst anordnen.** Unter dem Verbinden-Knopf sitzen drei
+Punkte — dort greifen (der Zeiger wird zur Hand) und die Karte an ihren neuen
+Platz ziehen. Nur an diesem Griff; ein Klick auf die Karte selbst öffnet weiter
+die Maschinenseite. Die Reihenfolge gilt nur für dich und übersteht einen
+Neustart. Wer nichts verschiebt, bekommt die Maschinen nach Namen.
+„Reihenfolge zurücksetzen" in der Werkzeugleiste stellt das wieder her.
+
+**Die Karten bleiben liegen, wo sie liegen.** Der Zustand sortiert nicht mehr
+mit: Eine Maschine wandert nicht mehr durchs Raster, nur weil sich jemand
+verbindet oder abmeldet. Wie es um sie steht, sagt weiterhin die Farbe.
+
+**Das Protokoll lässt sich gemeinsam führen.** Die Freigabe dafür legt das
+**Agent-Setup** an: Beim Einrichten eines Rechners gibt es unten den Kasten
+„Gemeinsames Protokoll" — einmal ankreuzen, auf genau einer Maschine. Das Setup
+meldet danach den Pfad, etwa `\NB05\RDP-Protokoll`.
+
+**Das Protokoll lässt sich gemeinsam führen.** Wer über das Setup installiert, hat
+sein Maschineninventar für sich — das ist so gewollt. Damit im Reiter *Logs*
+trotzdem steht, wer wann welche Maschine benutzt hat, gibt es unter
+**Admin → Gemeinsames Protokoll** ein Feld für diesen Pfad. Jeder trägt ihn einmal
+bei sich ein; das Portal prüft dabei durch einen echten Schreibversuch, ob es dort
+wirklich schreiben darf.
+
+Der Adminbereich sagt jetzt außerdem ehrlich, wie weit der eigene Speicherort
+reicht. Bei einer lokalen Installation stand dort bisher „Verteilung nach
+SharePoint-Synchronisierung" — eine Zusage, die dort niemand einlösen konnte.
+
+**Die Oberfläche folgt der Windows-Schriftgröße.** Wer in Windows unter
+*Einstellungen → Barrierefreiheit → Textgröße* eine größere Schrift eingestellt
+hat, bekommt sie jetzt auch im Portal, samt mitwachsender Karten und Knöpfe.
+
+Behoben: Der Verbindungsassistent kürzte eine IP-Adresse wie einen DNS-Namen und
+baute daraus `\\192\RDP-Status` — Windows antwortete mit Fehler 67 und die
+Maschine galt als „nicht eingerichtet". Der Fallback-Dialog schlug außerdem ein
+Lesekonto vor, das nicht zum Server im Pfad gehörte. Und eine Kontowahl, die aus
+einer gemeldeten Sitzung stammte, sprang alle paar Sekunden auf „Standard" zurück.
 
 ## Update 0.7.0: Verbindungsassistent, Standort und automatischer Datei-Fallback
 

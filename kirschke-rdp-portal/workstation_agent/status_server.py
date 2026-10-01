@@ -81,6 +81,7 @@ class StatusServer(threading.Thread):
         pipe_name=PIPE_NAME,
         logoff_handler=None,
         reservation_handler=None,
+        claim_handler=None,
     ):
         super().__init__(name="agent-live-status", daemon=True)
         self.snapshot_factory = snapshot_factory
@@ -88,6 +89,7 @@ class StatusServer(threading.Thread):
         self.pipe_name = pipe_name
         self.logoff_handler = logoff_handler
         self.reservation_handler = reservation_handler
+        self.claim_handler = claim_handler
         self.stopping = threading.Event()
         self.ready = threading.Event()
         self.error = None
@@ -158,6 +160,20 @@ class StatusServer(threading.Thread):
                             )
                         except Exception as exc:
                             logger.warning("Reservierungen abgelehnt: %s", exc)
+                            data = {"ok": False, "message": str(exc)}
+                    elif request.startswith(b"CLAIM/1 ") and self.claim_handler is not None:
+                        # Wie bei den Reservierungen genuegt, dass der Aufrufer
+                        # die Pipe erreicht: Der Agent kann ohnehin nicht
+                        # pruefen, wer hinter einer Meldung steht. Was daraus
+                        # folgen darf, entscheidet das Portal -- eine Meldung
+                        # nimmt eine Zuordnung weg, sie gibt nie eine.
+                        try:
+                            command = json.loads(request[len(b"CLAIM/1 "):])
+                            data = self.claim_handler(
+                                command, client_computer_name(handle)
+                            )
+                        except Exception as exc:
+                            logger.warning("Aufschaltmeldung abgelehnt: %s", exc)
                             data = {"ok": False, "message": str(exc)}
                     else:
                         data = {"ok": False, "message": "Unbekannte oder nicht freigegebene Agent-Anfrage."}

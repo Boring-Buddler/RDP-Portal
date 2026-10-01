@@ -92,9 +92,19 @@ def version_report(project: Path, entries: list[tuple[Path, str]]) -> str:
         "   Beim Update den vorhandenen state-Ordner unbedingt beibehalten.",
         "   Das Portal-Setup installiert alternativ eine separate lokale Kopie.",
         "",
+        "",
+        "Gemeinsames Protokoll (optional, einmal fuer den ganzen Testbetrieb)",
+        "--------------------------------------------",
+        "Das Agent-Setup kann zusaetzlich die beschreibbare Freigabe",
+        "RDP-Protokoll anlegen. Dort sammeln alle Portale ihre Ereignisse,",
+        "damit im Reiter Logs steht, wer wann welche Maschine benutzt hat.",
+        "Nur auf einem Rechner noetig; den gemeldeten Pfad danach in jedem",
+        "Portal unter Admin > Gemeinsames Protokoll eintragen.",
+        "",
         "Falls eine Anwendungssteuerungsrichtlinie das Setup blockiert, lassen",
         "sich die Ordner Client\\ und Agent\\ direkt verwenden; im Ordner Agent\\",
-        "startet Install-Agent.cmd die Einrichtung ohne Setup-EXE.",
+        "startet Install-Agent.cmd die Einrichtung ohne Setup-EXE, und",
+        "Statusfreigabe-einrichten.ps1 legt die Statusfreigabe von Hand an.",
         "",
         "Dokumentation\\ enthaelt die ausfuehrlichen Anleitungen.",
         "",
@@ -169,7 +179,11 @@ def main() -> None:
             "Anleitung.txt",
             (project / "docs/testbetrieb-kurz.md").read_text(encoding="utf-8").encode("utf-8-sig"),
         )
-        archive.writestr("Statusfreigabe-einrichten.ps1", share_setup)
+        # Zum Agenten gelegt statt in die Paketwurzel: Beide Freigaben legt das
+        # Agent-Setup inzwischen selbst an, das Skript ist nur noch der Ausweg
+        # fuer Rechner, auf denen eine Richtlinie die Setup-EXE blockiert --
+        # genau wie Install-Agent.cmd daneben.
+        archive.writestr("Agent/Statusfreigabe-einrichten.ps1", share_setup)
         archive.write(project / "docs/code-review-testbetrieb.md", "Pruefbericht.md")
     (project / "dist/Statusfreigabe-einrichten.ps1").write_bytes(share_setup)
 

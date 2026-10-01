@@ -871,10 +871,10 @@ def test_detail_warns_for_disconnected_session(qtbot):
 
     detail.set_workstation(workstation)
 
-    # Fremde Sitzung: besetzt statt waehlbar - eine fremde Anmeldung uebernimmt
-    # man nicht mehr ueber die Kontoauswahl.
-    assert not detail.connect_btn.isEnabled()
-    assert detail.connect_btn.text() == "Maschine besetzt"
+    # Fremde Sitzung: Der Knopf sagt, dass hier etwas dagegenspricht, und
+    # fuehrt zur Warnung statt zur stillen Uebernahme ueber die Kontoauswahl.
+    assert detail.connect_btn.isEnabled()
+    assert detail.connect_btn.text() == "Trotzdem verbinden"
     assert not detail.session_warning.isHidden()
     assert "Getrennt" in detail.session_warning_text.text()
 

@@ -156,14 +156,25 @@ def test_your_session_stays_apart_from_somebody_elses() -> None:
 # --- Betonung ----------------------------------------------------------------
 
 
-def test_what_you_can_act_on_is_drawn_at_full_strength() -> None:
-    """Gewicht folgt der Handlungsfaehigkeit, nicht der Wichtigkeit des Zustands."""
-    for state in ACTIONABLE_STATES - {MachineState.UNKNOWN}:
+def test_what_is_yours_or_free_is_drawn_at_full_strength() -> None:
+    """Gewicht folgt der Verfuegbarkeit, nicht mehr der Klickbarkeit.
+
+    Seit eine belegte Maschine einen Verbinden-Knopf hat, faellt beides
+    auseinander: Man *kann* dort etwas tun, es ist aber weiterhin nicht der
+    normale Weg. Die Karte bleibt deshalb zurueckgenommen -- das Design sagt
+    unveraendert "hier sitzt jemand anderes", und erst der Klick oeffnet die
+    Warnung.
+    """
+    for state in (
+        MachineState.AVAILABLE,
+        MachineState.OWN_IDLE,
+        MachineState.OCCUPIED_SELF,
+    ):
         assert STATE_EMPHASIS[state].width == 4, state
         assert STATE_EMPHASIS[state].alpha == 1.0, state
 
 
-def test_what_you_cannot_use_steps_back() -> None:
+def test_what_somebody_else_holds_steps_back() -> None:
     for state in (
         MachineState.OCCUPIED_OTHER,
         MachineState.RESERVED,
@@ -333,8 +344,9 @@ def test_a_session_beats_a_foreign_reservation() -> None:
         (MachineState.AVAILABLE, "Verbinden", True),
         (MachineState.OCCUPIED_SELF, "Sitzung öffnen …", True),
         (MachineState.OWN_IDLE, "Sitzung öffnen", True),
-        (MachineState.OCCUPIED_OTHER, "Maschine besetzt", False),
-        (MachineState.RESERVED, "Maschine besetzt", False),
+        (MachineState.OCCUPIED_OTHER, "Trotzdem verbinden", True),
+        (MachineState.OCCUPIED_OTHER_IDLE, "Trotzdem verbinden", True),
+        (MachineState.RESERVED, "Trotzdem verbinden", True),
         (MachineState.DISABLED, "Deaktiviert", False),
     ],
 )
@@ -407,11 +419,22 @@ def test_logoff_is_hidden_for_a_foreign_session() -> None:
     assert not actions(machine(sessions=[session(name=OTHER_NAME, sid=None)])).logoff_visible
 
 
-def test_a_foreign_reservation_withdraws_the_logoff() -> None:
+def test_a_foreign_reservation_leaves_your_own_session_yours() -> None:
+    """Der Softlock: Eine fremde Buchung machte die eigene Sitzung unbeendbar.
+
+    Wer angemeldet war, kam wegen der Reservierung weder zurueck auf seine
+    Sitzung noch konnte er sie beenden -- und wer reserviert hatte, kam wegen
+    genau dieser Sitzung nicht auf die Maschine. Niemand konnte den Zustand
+    aufloesen. Eine Buchung ist eine Absprache und nimmt niemandem die eigene
+    Sitzung weg.
+    """
     workstation = machine(sessions=[session()])
     workstation.reservation_block_reason = "Fremd reserviert"
 
-    assert not actions(workstation).logoff_visible
+    result = actions(workstation)
+
+    assert result.logoff_visible
+    assert result.logoff_enabled
 
 
 def test_a_manual_flag_does_not_take_away_your_own_session() -> None:
@@ -480,7 +503,9 @@ def test_a_foreign_looking_session_becomes_yours_once_the_account_is_claimed() -
 
     locked_out = describe_actions(workstation, user())
     assert locked_out.state is MachineState.OCCUPIED_OTHER
-    assert not locked_out.primary_enabled
+    # Verbinden ginge auch so -- nach einer Warnung. Was fehlt, ist die
+    # Zuordnung: Es bleibt eine fremde Sitzung, die man nicht abmelden darf.
+    assert not locked_out.logoff_visible
 
     claimed = describe_actions(workstation, claiming_user(local_account))
     assert claimed.state is MachineState.OWN_IDLE
@@ -544,7 +569,6 @@ def test_an_old_stored_calculation_flag_is_shown_as_taken() -> None:
 
     assert result.state is MachineState.OCCUPIED_OTHER
     assert same_hue(result.color, Colors.taken)
-    assert not result.primary_enabled
 
 
 def test_flagging_is_administrative_only() -> None:
@@ -562,7 +586,7 @@ def test_taken_covers_both_a_foreign_session_and_a_foreign_reservation() -> None
 
     assert same_hue(occupied.color, Colors.taken)
     assert same_hue(reserved.color, Colors.taken)
-    assert occupied.primary_text == reserved.primary_text == "Maschine besetzt"
+    assert occupied.primary_text == reserved.primary_text == "Trotzdem verbinden"
 
 
 def test_your_own_session_is_blue_and_a_foreign_one_is_violet() -> None:

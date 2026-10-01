@@ -49,7 +49,6 @@ class LocalStore:
         if path is None:
             path = self._configured_directory() / "portal-state.json"
         self.path = path
-        self.events_path = self.path.parent / "portal-events.jsonl"
         self.directory_users_path = self.path.parent / "portal-directory-users.json"
         self.preferences_path = (
             self.config_path.parent / "portal-preferences.json"
@@ -59,6 +58,12 @@ class LocalStore:
         self.theme_mode = "system"
         self.status_refresh_interval = 5
         self.selected_login_accounts: dict[str, str] = {}
+        self.preferred_login_accounts: dict[str, str] = {}
+        self.favorite_workstations: list[str] = []
+        self.machine_view = "cards"
+        # Die selbst gelegte Reihenfolge der Karten. Leer heisst "nach Zustand
+        # sortieren" -- siehe save_machine_order.
+        self.machine_order: list[str] = []
         self._state_signature: tuple[int, int] | None = None
         self._events_signature: tuple[int, int] | None = None
         self._directory_users_signature: tuple[int, int] | None = None
@@ -93,7 +98,6 @@ class LocalStore:
         directory = self.local_directory()
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / "portal-state.json"
-        self.events_path = self.path.parent / "portal-events.jsonl"
         self.directory_users_path = self.path.parent / "portal-directory-users.json"
         self._state_signature = None
         self._events_signature = None
@@ -154,6 +158,49 @@ class LocalStore:
             return data if isinstance(data, dict) else {}
         except FileNotFoundError:
             return {}
+
+    @property
+    def event_log_directory(self) -> Path | None:
+        """Der eingetragene gemeinsame Protokollordner, oder ``None``.
+
+        Wie die Agentenordner eine Einstellung dieses PCs: Der Pfad selbst ist
+        gemeinsam, aber jedes Portal muss ihn für sich kennen und erreichen.
+        """
+        configured = self._read_directory_config().get("event_log_directory")
+        return expand_directory(configured) if isinstance(configured, str) and configured.strip() else None
+
+    @property
+    def events_path(self) -> Path:
+        """Wo das Ereignisprotokoll liegt.
+
+        Ohne Eintrag neben dem gemeinsamen Stand. Das genügt, solange alle
+        dieselbe EXE aus einem synchronisierten Ordner starten -- installiert
+        aber jeder lokal, liegt der Stand in seinem eigenen Profil und das
+        Protokoll damit auch. Ein eingetragener Ordner ist der Weg zu einem
+        gemeinsamen Protokoll, ohne den übrigen Stand zu teilen.
+        """
+        directory = self.event_log_directory
+        return (directory or self.path.parent) / "portal-events.jsonl"
+
+    def set_event_log_directory(self, directory: str | Path | None) -> Path | None:
+        """Den gemeinsamen Protokollordner eintragen oder mit ``None`` entfernen."""
+        if directory is None or not str(directory).strip():
+            config = self._read_directory_config()
+            config.pop("event_log_directory", None)
+            write_json_atomic(self.agent_config_path, config)
+            self._events_signature = None
+            return None
+        target = expand_directory(directory)
+        if not target.is_absolute() or re.search(r"%[^%]+%", str(target)):
+            raise ValueError("Bitte einen vollständigen lokalen oder Netzwerkpfad angeben.")
+        config = self._read_directory_config()
+        config["event_log_directory"] = portable_directory(target)
+        write_json_atomic(self.agent_config_path, config)
+        # Der alte Stand gilt nicht mehr: Die naechste Pruefung soll das
+        # Protokoll am neuen Ort frisch einlesen, nicht mit der Groesse des
+        # alten vergleichen.
+        self._events_signature = None
+        return target
 
     @property
     def agent_status_directory(self) -> Path:
@@ -305,11 +352,27 @@ class LocalStore:
             if type(stored_interval) is int
             else 5
         )
+        order = data.get("machine_order", [])
+        self.machine_order = (
+            [value.strip() for value in order if isinstance(value, str) and value.strip()]
+            if isinstance(order, list)
+            else []
+        )
         choices = data.get("selected_login_accounts", {})
         self.selected_login_accounts = {
             key: value for key, value in choices.items()
             if isinstance(key, str) and isinstance(value, str)
         } if isinstance(choices, dict) else {}
+        preferred = data.get("preferred_login_accounts", {})
+        self.preferred_login_accounts = {
+            key: value for key, value in preferred.items()
+            if isinstance(key, str) and isinstance(value, str)
+        } if isinstance(preferred, dict) else {}
+        favorites = data.get("favorite_workstations", [])
+        self.favorite_workstations = [
+            value for value in favorites if isinstance(value, str) and value.strip()
+        ] if isinstance(favorites, list) else []
+        self.machine_view = "list" if data.get("machine_view") == "list" else "cards"
         if uses_legacy_data and data.get("version", 0) < 3:
             self.theme_mode = "dark" if stored_theme == "dark" else "system"
         else:
@@ -322,8 +385,35 @@ class LocalStore:
             self.preferences_path,
             {"version": 2, "theme_mode": self.theme_mode, "user": self._user_data(user),
              "selected_login_accounts": self.selected_login_accounts,
+             "preferred_login_accounts": self.preferred_login_accounts,
+             "favorite_workstations": self.favorite_workstations,
+             "machine_view": self.machine_view,
+             "machine_order": self.machine_order,
              "status_refresh_interval": self.status_refresh_interval},
         )
+
+    def save_machine_order(self, order: list[str], user: MockUser) -> list[str]:
+        """Die selbst gelegte Reihenfolge der Maschinenkarten merken.
+
+        Gehört in die Benutzerdatei und nicht in den gemeinsamen Stand: Sie ist
+        eine Angewohnheit, keine Eigenschaft der Maschinen. Würde sie geteilt,
+        legte der Letzte, der eine Karte verschiebt, die Anordnung für alle fest.
+
+        Eine leere Liste bedeutet "keine eigene Reihenfolge" und stellt damit die
+        Sortierung nach Zustand wieder her.
+        """
+        previous = list(self.machine_order)
+        seen: dict[str, str] = {}
+        for value in order:
+            if isinstance(value, str) and value.strip():
+                seen.setdefault(value.strip().casefold(), value.strip())
+        self.machine_order = list(seen.values())
+        try:
+            self._save_preferences(user, self.theme_mode)
+        except OSError:
+            self.machine_order = previous
+            raise
+        return list(self.machine_order)
 
     def save_status_refresh_interval(self, seconds: int, user: MockUser) -> int:
         if type(seconds) is not int or not 2 <= seconds <= 60:
@@ -348,6 +438,50 @@ class LocalStore:
             self._save_preferences(user, self.theme_mode)
         except OSError:
             self.selected_login_accounts = previous
+            raise
+
+    def save_favorite(self, workstation_id: str, favorite: bool, user: MockUser) -> None:
+        previous = list(self.favorite_workstations)
+        favorites = {value.casefold(): value for value in previous}
+        key = workstation_id.strip().casefold()
+        if favorite:
+            favorites[key] = workstation_id.strip()
+        else:
+            favorites.pop(key, None)
+        self.favorite_workstations = list(favorites.values())
+        try:
+            self._save_preferences(user, self.theme_mode)
+        except OSError:
+            self.favorite_workstations = previous
+            raise
+
+    def save_preferred_login_account(
+        self, workstation_id: str, account: str | None, user: MockUser
+    ) -> None:
+        from shared.login_accounts import validate_login_account
+
+        previous = dict(self.preferred_login_accounts)
+        if account is None:
+            self.preferred_login_accounts.pop(workstation_id, None)
+        else:
+            self.preferred_login_accounts[workstation_id] = (
+                validate_login_account(account) if account else ""
+            )
+        try:
+            self._save_preferences(user, self.theme_mode)
+        except OSError:
+            self.preferred_login_accounts = previous
+            raise
+
+    def save_machine_view(self, view: str, user: MockUser) -> None:
+        if view not in {"cards", "list"}:
+            raise ValueError("Unbekannte Maschinenansicht")
+        previous = self.machine_view
+        self.machine_view = view
+        try:
+            self._save_preferences(user, self.theme_mode)
+        except OSError:
+            self.machine_view = previous
             raise
 
     def _set_baseline(self, data: dict) -> None:
@@ -414,12 +548,22 @@ class LocalStore:
         }
 
     def has_external_changes(self) -> bool:
-        """Return whether the OneDrive/SharePoint mirror changed since the last read/write."""
+        """Whether the shared machine state changed since the last read/write.
+
+        Das Ereignisprotokoll steht hier bewusst nicht mehr mit drin. Liegt es
+        in einem gemeinsamen Ordner, schreibt jeder Kollege staendig hinein --
+        und jeder dieser Eintraege haette einen vollstaendigen Neuaufbau des
+        Inventars ausgeloest, samt erneutem Parsen des gesamten Protokolls.
+        Siehe :meth:`has_new_events`.
+        """
         return (
             self._signature(self.path) != self._state_signature
-            or self._signature(self.events_path) != self._events_signature
             or self._signature(self.directory_users_path) != self._directory_users_signature
         )
+
+    def has_new_events(self) -> bool:
+        """Whether the event log changed since it was last read."""
+        return self._signature(self.events_path) != self._events_signature
 
     @staticmethod
     def _normalise_accounts(accounts: list[str]) -> list[str]:
@@ -516,7 +660,17 @@ class LocalStore:
             removed_legacy_placeholders = False
             for workstation in workstations:
                 choice = self.selected_login_accounts.get(workstation.workstation_id)
-                if choice and choice in workstation.login_accounts + [workstation.username_hint]:
+                # Die eigene Wahl gilt ohne weitere Prüfung. Sie vorher gegen
+                # login_accounts und username_hint zu halten, hat genau die
+                # Wahl weggeworfen, die man über eine gemeldete Sitzung trifft:
+                # die steht in session_accounts, und die kennt der Store nicht.
+                # Das Ergebnis war ein stiller Rücksprung auf "Standard" bei
+                # jedem Neuladen -- und neu geladen wird alle paar Sekunden,
+                # sobald ein anderes Portal den gemeinsamen Stand schreibt.
+                # Der Kontoname wurde beim Speichern bereits geprüft, und die
+                # Auswahlliste zeigt eine nicht mehr gelistete Wahl als
+                # "Gewählt · …" an, statt sie verschwinden zu lassen.
+                if choice:
                     workstation.selected_login_account = choice
                 username_hint = workstation.username_hint or ""
                 if re.fullmatch(r"user\d+@prof-kirschke\.de", username_hint, re.IGNORECASE):
@@ -582,6 +736,7 @@ class LocalStore:
         rotated on append, so this bounds both the read and the Pydantic
         validation regardless of how long the pilot has been running.
         """
+        self._events_signature = self._signature(self.events_path)
         if not self.events_path.exists():
             return []
         events: list[SessionEvent] = []
@@ -661,15 +816,13 @@ class LocalStore:
             self._save_directory_config()
             return
         with file_lock(self.path.with_suffix(".lock")):
-            pairs = [
-                (source, target)
-                for source, target in (
-                    (self.path, target_state),
-                    (self.events_path, target_events),
-                    (self.directory_users_path, target_directory_users),
-                )
-                if source.exists()
-            ]
+            # Ein eingetragener Protokollordner wird nicht mitverschoben: Er
+            # ist bewusst vom Stand getrennt, und ein gemeinsames Protokoll
+            # gehoert nicht in den Ordner eines einzelnen Portals.
+            movable = [(self.path, target_state), (self.directory_users_path, target_directory_users)]
+            if self.event_log_directory is None:
+                movable.insert(1, (self.events_path, target_events))
+            pairs = [(source, target) for source, target in movable if source.exists()]
             for _, target in pairs:
                 if target.exists():
                     raise FileExistsError(f"Zieldatei existiert bereits: {target.name}")
@@ -685,7 +838,6 @@ class LocalStore:
                 for source, _ in pairs:
                     source.unlink()
         self.path = target_state
-        self.events_path = target_events
         self.directory_users_path = target_directory_users
         self._remember_signatures()
 

@@ -180,7 +180,8 @@ def test_new_json_updates_dashboard_details_report_and_restart(tmp_path, monkeyp
     assert "PILOT.json" in window.settings_view.agent_report.toPlainText()
     window.settings_view.copy_agent_report.click()
     assert "TARGET\\tester" in QApplication.clipboard().text()
-    window.overview_view.agent_diagnostics_button.click()
+    assert not hasattr(window.overview_view, "agent_diagnostics_button")
+    window.nav_buttons[window.PAGE_SETTINGS].click()
     assert window.stack.currentWidget() is window.settings_view
     window.on_refresh()
     assert window.detail_view.workstation is window.workstations[0]

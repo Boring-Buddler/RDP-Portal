@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 import sys
 import uuid
-from copy import deepcopy
+from copy import copy, deepcopy
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -48,11 +48,12 @@ from portal_app.services.live_status_polling import AutomaticLiveStatusPoller
 from portal_app.services.local_identity import detect_initial_user
 from portal_app.services.local_store import LocalStore, StoreConflictError
 from portal_app.services.reservation_access import apply_reservations
+from portal_app.services.session_claims import SessionClaimReporter
 from portal_app.services.windows_admin_auth import (
     check_windows_admin_authorization,
     test_password_fallback_allowed,
 )
-from portal_app.ui.design import Typography
+from portal_app.ui.design import Typography, apply_scaled_geometry, scale_stylesheet, scaled
 from portal_app.ui.icons import kirschke_window_icon
 from portal_app.ui.widgets.machine_registration_wizard import (
     AgentAssignment,
@@ -68,6 +69,7 @@ from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
 from portal_app.ui.widgets.workstation_dialog import WorkstationDialog
 from portal_app.version import PORTAL_VERSION
 from shared.enums import EventResult, EventSource, EventType, ManualFlagType
+from shared.name_resolution import unc_server_name
 from shared.session_identity import is_active_session, is_console_session, session_username
 
 logger = logging.getLogger(__name__)
@@ -97,8 +99,7 @@ class MainWindow(QMainWindow):
         self._automatic_live_status_enabled = automatic_live_status
         self.logo_path = Path(__file__).resolve().parent / "assets" / "kirschke_logo.png"
         self.setWindowIcon(kirschke_window_icon())
-        self.setMinimumSize(QSize(1080, 720))
-        self.resize(1360, 860)
+        self._apply_initial_geometry()
 
         self.store = LocalStore()
         self.directory_mode = directory_mode()
@@ -111,6 +112,15 @@ class MainWindow(QMainWindow):
         # _run_status_update_cycle: waehrend der Abmeldung ist der Agent
         # nicht abfragbar, und das darf nicht als Ausfall erscheinen.
         self._logoff_in_progress: set[str] = set()
+        # Meldet dem Agenten jede vom Portal gestartete Verbindung und haelt
+        # nach, was noch nicht angekommen ist. Wiederholt wird, weil das
+        # Ausbleiben einer Meldung selbst eine Auskunft ist -- siehe
+        # portal_app.services.session_claims.
+        self._claim_reporter = SessionClaimReporter()
+        # Maschine und Konto, fuer die diese Sitzung bereits eine Aufschaltung
+        # gemeldet hat. Siehe _learn_reported_account: Ohne das ginge bei jedem
+        # Statuslauf erneut eine Pipe-Anfrage an dieselbe Maschine.
+        self._reported_claims: set[tuple[str, str]] = set()
         self.fallback_scanner = FallbackScanner(parent=self)
         self.fallback_scanner.completed.connect(self._on_fallback_scan_completed)
         self.share_reconnector = ShareReconnector(parent=self)
@@ -173,6 +183,22 @@ class MainWindow(QMainWindow):
                 # otherwise an admin action, but here it is the only way past an
                 # empty window, so the assistant opens without the password gate.
                 QTimer.singleShot(150, lambda: self._run_connection_wizard(first_run=True))
+
+    def _apply_initial_geometry(self) -> None:
+        """Startgröße aus dem tatsächlich verfügbaren Bildschirm ableiten.
+
+        Vorher standen hier feste 1360 x 860 mit einem Minimum von 1080 x 720.
+        Beides ist in logischen Pixeln gerechnet, und genau die werden knapp,
+        sobald jemand die Windows-Anzeige auf 150 % stellt: Aus einem
+        1920 x 1080-Schirm werden 1280 x 720 logische Pixel, das Minimum passte
+        nicht mehr hinein, und das Fenster ließ sich nicht klein genug ziehen,
+        um noch an die Taskleiste zu kommen.
+
+        Das Minimum bleibt eine Aussage darüber, ab wann die Oberfläche
+        unbrauchbar wird -- es wird aber nie größer gesetzt, als der Bildschirm
+        hergibt.
+        """
+        apply_scaled_geometry(self, (1080, 720), (1360, 860))
 
     def _load_data(self) -> None:
         fallback = []  # A new pilot must not offer fictitious targets as real PCs.
@@ -275,7 +301,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(14)
         self.logo_label = QLabel()
         self.logo_label.setObjectName("brandLogo")
-        self.logo_label.setFixedSize(285, 48)
+        self.logo_label.setFixedSize(scaled(285), scaled(48))
         layout.addWidget(self.logo_label)
         self._update_logo()
         product = QLabel(f"RDP PORTAL · TEST {PORTAL_VERSION}")
@@ -289,7 +315,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.user_button)
         self.avatar_button = QPushButton()
         self.avatar_button.setObjectName("avatarButton")
-        self.avatar_button.setFixedSize(42, 42)
+        self.avatar_button.setFixedSize(scaled(42), scaled(42))
         self.avatar_button.setCursor(Qt.PointingHandCursor)
         self.avatar_button.clicked.connect(self._edit_user)
         layout.addWidget(self.avatar_button)
@@ -321,10 +347,11 @@ class MainWindow(QMainWindow):
         content = QWidget()
         content.setObjectName("content")
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(36, 26, 36, 30)
-        layout.setSpacing(16)
+        layout.setContentsMargins(30, 8, 30, 18)
+        layout.setSpacing(8)
         self.page_eyebrow = QLabel("ARBEITSPLATZÜBERSICHT")
         self.page_eyebrow.setObjectName("eyebrow")
+        self.page_eyebrow.hide()
         layout.addWidget(self.page_eyebrow)
         title_row = QHBoxLayout()
         title_box = QVBoxLayout()
@@ -335,13 +362,18 @@ class MainWindow(QMainWindow):
         title_box.addWidget(self.page_title)
         self.page_subtitle = QLabel("Verfügbare Arbeitsplätze und aktive Sitzungen auf einen Blick.")
         self.page_subtitle.setObjectName("pageSubtitle")
+        self.page_subtitle.hide()
         title_box.addWidget(self.page_subtitle)
         title_row.addLayout(title_box)
         title_row.addStretch()
         self.summary = QLabel()
         self.summary.setObjectName("summaryBadge")
         self._update_summary()
-        title_row.addWidget(self.summary, alignment=Qt.AlignBottom)
+        title_row.addWidget(self.summary, alignment=Qt.AlignVCenter)
+        self.overview_refresh_button = QPushButton("Aktualisieren")
+        self.overview_refresh_button.setObjectName("toolbarButton")
+        self.overview_refresh_button.clicked.connect(self.on_refresh)
+        title_row.addWidget(self.overview_refresh_button, alignment=Qt.AlignVCenter)
         layout.addLayout(title_row)
 
         self.stack = QStackedWidget()
@@ -383,8 +415,17 @@ class MainWindow(QMainWindow):
         self.overview_view.account_selected.connect(self._select_login_account)
         self.overview_view.account_add_requested.connect(self._add_login_account)
         self.overview_view.display_settings_changed.connect(self._set_display_settings)
-        self.overview_view.refresh_requested.connect(self.on_refresh)
-        self.overview_view.agent_diagnostics_requested.connect(self._show_agent_diagnostics)
+        self.overview_view.order_changed.connect(self._save_machine_order)
+        self.overview_view.favorite_toggled.connect(self._set_machine_favorite)
+        self.overview_view.preferred_toggled.connect(self._set_preferred_login_account)
+        self.overview_view.view_changed.connect(self._set_machine_view)
+        self.overview_view.set_machine_order(self.store.machine_order)
+        self.overview_view.set_favorites(self.store.favorite_workstations)
+        self.overview_view.set_preferred_accounts(self.store.preferred_login_accounts)
+        self.overview_view.set_machine_view(self.store.machine_view)
+        self.admin_view.event_log_directory_requested.connect(self._setup_event_log_directory)
+        self.admin_view.event_log_directory_cleared.connect(self._clear_event_log_directory)
+        self._refresh_event_log_location()
         self.admin_view.add_requested.connect(self._add_workstation)
         self.admin_view.edit_requested.connect(self._edit_workstation)
         self.admin_view.force_disconnect_requested.connect(self._force_disconnect_workstation)
@@ -418,6 +459,9 @@ class MainWindow(QMainWindow):
         self.detail_view.live_status_requested.connect(self._query_live_status)
         self.detail_view.account_selected.connect(self._select_login_account)
         self.detail_view.account_add_requested.connect(self._add_login_account)
+        self.detail_view.account_selector.preferred_toggled.connect(
+            self._set_preferred_login_account
+        )
         self.detail_view.account_claim_requested.connect(self._claim_reported_account)
         self.detail_view.diagnostics_requested.connect(self._run_rdp_diagnostics)
         self.detail_view.agent_assignment_requested.connect(self._assign_agent)
@@ -499,6 +543,63 @@ class MainWindow(QMainWindow):
         else:
             workstation.selected_login_account = account or None
         self._refresh_login_views(workstation)
+
+    @Slot(Workstation, bool)
+    def _set_machine_favorite(self, workstation: Workstation, favorite: bool) -> None:
+        try:
+            self.store.save_favorite(workstation.workstation_id, favorite, self._saved_user)
+        except OSError as exc:
+            QMessageBox.warning(self, "Favorit nicht gespeichert", str(exc))
+        self.overview_view.set_favorites(self.store.favorite_workstations)
+
+    @Slot(Workstation, object)
+    def _set_preferred_login_account(
+        self, workstation: Workstation, account: object
+    ) -> None:
+        value = account if isinstance(account, str) else None
+        if value and value not in workstation.login_accounts + workstation.session_accounts():
+            return
+        try:
+            self.store.save_preferred_login_account(
+                workstation.workstation_id, value, self._saved_user
+            )
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Bevorzugtes Konto nicht gespeichert", str(exc))
+            return
+        self.overview_view.set_preferred_accounts(self.store.preferred_login_accounts)
+        if self.detail_view.workstation is not None:
+            self.detail_view.account_selector.set_preferred_account(
+                self.store.preferred_login_accounts.get(workstation.workstation_id)
+            )
+        if value is not None:
+            self._select_login_account(workstation, value)
+
+    @Slot(str)
+    def _set_machine_view(self, view: str) -> None:
+        try:
+            self.store.save_machine_view(view, self._saved_user)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Ansicht nicht gespeichert", str(exc))
+            return
+        self.overview_view.set_machine_view(view)
+
+    @Slot(list)
+    def _save_machine_order(self, order: list) -> None:
+        """Die selbst gelegte Kartenreihenfolge merken.
+
+        Persönlich, nicht gemeinsam: Würde sie geteilt, legte der Letzte, der
+        eine Karte verschiebt, die Anordnung für alle fest.
+        """
+        try:
+            stored = self.store.save_machine_order([str(item) for item in order], self._saved_user)
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Reihenfolge nicht gespeichert",
+                f"Die Anordnung konnte nicht in deinen Einstellungen abgelegt werden: {exc}",
+            )
+            return
+        self.overview_view.set_machine_order(stored)
 
     def _refresh_login_views(self, workstation: Workstation) -> None:
         self._refresh_workstation_views()
@@ -601,7 +702,7 @@ class MainWindow(QMainWindow):
             target, _ = workstation.get_connection_target()
         except ValueError:
             target = workstation.hostname
-        server = (workstation.hostname or target or workstation.display_name).split(".", 1)[0]
+        server = unc_server_name(workstation.hostname or target or workstation.display_name)
         # Do not prefill a machine with the former global fallback.  Its server
         # and the machine-local PortalLeser account can otherwise be mixed (for
         # example Remote-Ettlingen as server with NB12KI as account).  Only a
@@ -847,7 +948,7 @@ class MainWindow(QMainWindow):
         """
         from portal_app.services.share_connection import connect_status_share
 
-        server = (probe.hostname or probe.target or workstation.hostname or "").split(".", 1)[0]
+        server = unc_server_name(probe.hostname or probe.target or workstation.hostname)
         if not server:
             return f"{workstation.display_name}: kein Servername für die Statusfreigabe."
         path = rf"\\{server}\RDP-Status"
@@ -988,7 +1089,19 @@ class MainWindow(QMainWindow):
             }
             if not (reported & here):
                 continue
-            if self.current_user.claim_account(session_username(item)):
+            account = session_username(item)
+            # Dieselbe Lücke wie oben, nur für die Aufschaltmeldung: Gemeldet
+            # wurde beim Start der Kontoname, mit dem das Portal verbindet. Bei
+            # einem Entra-Konto ist das die UPN, während der Agent die Sitzung
+            # unter dem Profilnamen führt -- dann fände die Meldung ihre Sitzung
+            # nie. Hier ist die Zuordnung durch den Client-Namen bezeugt, also
+            # wird sie unter der Schreibweise nachgereicht, die der Agent
+            # tatsächlich meldet. Einmal pro Konto und Maschine, sonst ginge bei
+            # jedem Statuslauf eine Pipe-Anfrage hinaus.
+            if (workstation.workstation_id, account.casefold()) not in self._reported_claims:
+                self._reported_claims.add((workstation.workstation_id, account.casefold()))
+                self._report_session_claim(workstation, account)
+            if self.current_user.claim_account(account):
                 claimed = True
         return claimed
 
@@ -1047,7 +1160,7 @@ class MainWindow(QMainWindow):
         self._update_storage_status(f"Agent-Status nicht lesbar: {exc}")
         self.settings_view.agent_status.setText(f"Agent-Status nicht lesbar: {exc}")
         self.settings_view.set_agent_report(f"RDP-Portal {PORTAL_VERSION}\nKonfiguration: {self.store.agent_config_path}\nFehler: {exc}")
-        self.overview_view.agent_channel_status.setText("Agent-Status nicht lesbar · Agent-Diagnose öffnen")
+        self.overview_view.agent_channel_status.setText("Agent-Status nicht lesbar · Einstellungen prüfen")
 
     @Slot(object)
     def _on_fallback_scan_completed(self, scans: object) -> None:
@@ -1083,6 +1196,10 @@ class MainWindow(QMainWindow):
         )
         self.overview_view.agent_channel_status.setToolTip(service.directory_summary)
         reservation_changed = self._adopt_reported_reservations() or reservation_changed
+        # Offene Aufschaltmeldungen nachreichen. Muss vor _learn_reported_account
+        # stehen: Dieses meldet nach, was der Agent tatsächlich sieht, und dabei
+        # soll der frische Stand aus dem gerade gelesenen Snapshot gelten.
+        self._claim_reporter.flush(self.workstations, self.current_user)
         if any(self._learn_reported_account(ws) for ws in self.workstations):
             self._saved_user = deepcopy(self.current_user)
             reservation_changed = True
@@ -1090,11 +1207,7 @@ class MainWindow(QMainWindow):
             return
         # Heartbeats are transient. They must not save unsaved form changes or
         # cause competing writes to the shared machine configuration.
-        self._refresh_workstation_views()
-        if self.detail_view.workstation is not None:
-            selected = next((ws for ws in self.workstations if ws.workstation_id == self.detail_view.workstation.workstation_id), None)
-            if selected is not None:
-                self.detail_view.set_workstation(selected)
+        self._refresh_status_views()
 
     @Slot()
     def _scheduled_status_update(self) -> None:
@@ -1213,6 +1326,10 @@ class MainWindow(QMainWindow):
         if page_index == self.PAGE_ADMIN and self.directory_mode == "active_directory":
             self._update_active_directory_status()
         self.stack.setCurrentIndex(page_index)
+        if page_index == self.PAGE_CALENDAR:
+            self.calendar_view.set_workstations(self.workstations)
+        elif page_index == self.PAGE_ADMIN:
+            self.admin_view.set_workstations(self.workstations)
         pages = (
             ("ARBEITSPLATZÜBERSICHT", "Maschinen", "Verfügbare Arbeitsplätze und aktive Sitzungen auf einen Blick."),
             ("PLANUNG", "Reservierungen", "Maschinen über mehrere Tage und Zeiträume reservieren."),
@@ -1224,7 +1341,11 @@ class MainWindow(QMainWindow):
         self.page_eyebrow.setText(eyebrow)
         self.page_title.setText(title)
         self.page_subtitle.setText(subtitle)
-        self.summary.setVisible(page_index == self.PAGE_MACHINES)
+        machines_page = page_index == self.PAGE_MACHINES
+        self.page_eyebrow.setVisible(not machines_page)
+        self.page_subtitle.setVisible(not machines_page)
+        self.summary.setVisible(machines_page)
+        self.overview_refresh_button.setVisible(machines_page)
         if page_index == self.PAGE_MACHINES and self._automatic_live_status_enabled:
             self._run_status_update_cycle(force=True)
 
@@ -1322,6 +1443,9 @@ class MainWindow(QMainWindow):
     @Slot(Workstation)
     def on_workstation_selected(self, workstation: Workstation) -> None:
         self.workstation_selected.emit(workstation)
+        self.detail_view.account_selector.set_preferred_account(
+            self.store.preferred_login_accounts.get(workstation.workstation_id)
+        )
         events = [
             event for event in self.session_events if event.workstation_id == workstation.workstation_id
         ]
@@ -1330,7 +1454,10 @@ class MainWindow(QMainWindow):
         self.page_eyebrow.setText("MASCHINENDETAILS")
         self.page_title.setText(workstation.display_name)
         self.page_subtitle.setText(workstation.get_connection_target_display())
+        self.page_eyebrow.show()
+        self.page_subtitle.show()
         self.summary.setVisible(False)
+        self.overview_refresh_button.hide()
 
     def _show_machines(self) -> None:
         self.nav_buttons[self.PAGE_MACHINES].setChecked(True)
@@ -1577,6 +1704,24 @@ class MainWindow(QMainWindow):
             if selected is not None:
                 self.detail_view.set_workstation(selected)
 
+    def _refresh_status_views(self) -> None:
+        """Update live information without repainting hidden tables on each poll."""
+        apply_reservations(self.workstations, self.reservations, self.current_user.upn)
+        self.overview_view.set_workstations(self.workstations)
+        if self.stack.currentWidget() is self.calendar_view:
+            self.calendar_view.set_workstations(self.workstations)
+        if self.stack.currentWidget() is self.admin_view:
+            self.admin_view.set_workstations(self.workstations)
+        self._update_summary()
+        if self.detail_view.workstation is not None:
+            selected = next(
+                (ws for ws in self.workstations
+                 if ws.workstation_id == self.detail_view.workstation.workstation_id),
+                None,
+            )
+            if selected is not None:
+                self.detail_view.set_workstation(selected)
+
     def _edit_user(self) -> None:
         dialog = UserSettingsDialog(self.current_user, self)
         if dialog.exec() != QDialog.Accepted:
@@ -1704,7 +1849,7 @@ class MainWindow(QMainWindow):
         self._set_theme_mode("dark" if dark_mode else "light")
 
     def _apply_theme(self) -> None:
-        self.setStyleSheet(self._application_style(self.dark_mode))
+        self.setStyleSheet(scale_stylesheet(self._application_style(self.dark_mode)))
         self._update_logo()
         # Der Kalender faerbt seine Zellen selbst; ein Stylesheet erreicht
         # einzelne Tabellenfelder nicht.
@@ -1726,7 +1871,9 @@ class MainWindow(QMainWindow):
             painter.end()
             pixmap = QPixmap.fromImage(image)
         self.logo_label.setPixmap(
-            pixmap.scaled(285, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pixmap.scaled(
+                scaled(285), scaled(48), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
         )
 
     @Slot(list)
@@ -1781,20 +1928,145 @@ class MainWindow(QMainWindow):
             return False
         self.reservations = merged
         self.calendar_view.reservations = list(self.reservations)
-        self.calendar_view.refresh()
+        if self.stack.currentWidget() is self.calendar_view:
+            self.calendar_view.refresh()
         return True
 
-    def _check_reservation_access(self, workstation: Workstation) -> bool:
+    @Slot()
+    def _setup_event_log_directory(self) -> None:
+        """Den gemeinsamen Protokollordner eintragen, nachdem er beschreibbar war.
+
+        Geprüft wird durch einen echten Schreibversuch und nicht durch das
+        Verbinden allein: Die Agentenfreigaben sind mit Leserecht eingerichtet,
+        und dort *hineinzukommen* sagt noch nicht, dass man hineinschreiben
+        darf. Ohne diese Prüfung fiele das erst beim ersten Ereignis auf -- also
+        genau dann, wenn niemand mehr an die Einstellung denkt.
+        """
+        from portal_app.services.share_connection import connect_status_share
+        from portal_app.ui.widgets.share_setup_dialog import ShareSetupDialog
+
+        current = str(self.store.event_log_directory or "")
+        dialog = ShareSetupDialog(
+            current,
+            self,
+            suggested_path=current or r"\\SERVER\RDP-Protokoll",
+            suggested_username="",
+            workstation_name="das gemeinsame Protokoll",
+            require_write=True,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        target = dialog.connected_path
+        connect_status_share(target)
+        try:
+            stored = self.store.set_event_log_directory(target)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Protokollordner nicht gespeichert", str(exc))
+            return
+        self._refresh_event_log_location()
+        self._reload_events()
+        QMessageBox.information(
+            self,
+            "Gemeinsames Protokoll aktiv",
+            f"Neue Ereignisse werden nach\n{stored}\ngeschrieben. Das bisherige lokale "
+            "Protokoll bleibt erhalten, wird hier aber nicht mehr angezeigt.",
+        )
+
+    @Slot()
+    def _clear_event_log_directory(self) -> None:
+        """Das Protokoll wieder lokal führen."""
+        answer = QMessageBox.question(
+            self,
+            "Protokoll wieder lokal führen",
+            "Neue Ereignisse werden dann wieder neben dem eigenen Stand abgelegt und "
+            "nicht mehr mit den Kollegen geteilt.\n\nDie gemeinsame Datei bleibt "
+            "unverändert erhalten.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            self.store.set_event_log_directory(None)
+        except OSError as exc:
+            QMessageBox.warning(self, "Einstellung nicht gespeichert", str(exc))
+            return
+        self._refresh_event_log_location()
+        self._reload_events()
+
+    def _refresh_event_log_location(self) -> None:
+        directory = self.store.event_log_directory
+        self.admin_view.set_event_log_location(
+            str(directory) if directory else "", str(self.store.events_path)
+        )
+
+    def _report_session_claim(self, workstation: Workstation, account: str | None) -> None:
+        """Dem Agenten melden, dass diese Person sich gerade aufschaltet.
+
+        Der Punkt, an dem die Workstation aufhört, bei allen als "von dir
+        belegt" zu erscheinen: Auf ihr meldet sich jeder unter demselben
+        gemeinsamen Windows-Konto an, und ohne diese Meldung erkennt jedes
+        Portal den Kontonamen als den eigenen wieder.
+
+        Eine misslungene Meldung bleibt im Protokoll und stört sonst nicht --
+        die Verbindung läuft bereits.
+        """
+        problem = self._claim_reporter.report(workstation, self.current_user, account)
+        if problem:
+            # Nicht angekommen, aber vorgemerkt: Der naechste Statuslauf
+            # versucht es erneut, solange die Sitzung besteht.
+            logger.info(
+                "Aufschaltung für %s vorgemerkt: %s", workstation.display_name, problem
+            )
+
+    def _fresh_reservation_block_reason(self, workstation: Workstation) -> str:
+        """Der aktuellste Grund, warum diese Maschine für jemand anderen gebucht ist.
+
+        Der gemeinsame Stand wird noch einmal frisch gelesen, weil zwischen dem
+        letzten Abgleich und diesem Klick jemand gebucht haben kann. Ist er
+        nicht lesbar, gilt der zuletzt bekannte Stand: Eine Reservierung ist
+        eine Absprache unter Kollegen, und eine unlesbare Datei ist kein Grund,
+        jemanden von einer Maschine fernzuhalten.
+        """
         try:
             reservations = self.store.read_reservations()
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            QMessageBox.warning(self, "Reservierungen nicht prüfbar", f"Der gemeinsame Reservierungsstand ist nicht lesbar. Bitte aktualisieren.\n{exc}")
-            return False
-        apply_reservations([workstation], reservations, self.current_user.upn)
-        if workstation.reservation_block_reason:
-            QMessageBox.warning(self, "Rechner reserviert", workstation.reservation_block_reason)
-            return False
-        return True
+            logger.warning("Reservierungsstand nicht lesbar: %s", exc)
+            reservations = self.reservations
+        probe = copy(workstation)
+        apply_reservations([probe], reservations, self.current_user.upn)
+        return probe.reservation_block_reason
+
+    def _confirm_connection(self, workstation: Workstation) -> tuple[bool, str]:
+        """Bei belegter oder fremd gebuchter Maschine warnen und entscheiden lassen.
+
+        Früher wurde hier abgebrochen. Zusammen mit dem gesperrten Knopf war das
+        der Zustand, aus dem niemand mehr herauskam: Wer reserviert hatte, kam
+        wegen der laufenden fremden Sitzung nicht auf die Maschine, und wer
+        angemeldet war, kam wegen der Reservierung nicht zurück auf seine eigene.
+
+        Gibt zurück, ob gestartet werden darf, und welchen Reservierungsgrund
+        die Person dabei gesehen hat.
+        """
+        from portal_app.ui.machine_actions import connection_warning
+
+        reason = self._fresh_reservation_block_reason(workstation)
+        warning = connection_warning(
+            workstation, self.current_user, reservation_block_reason=reason
+        )
+        if warning is None:
+            return True, reason
+        question = QMessageBox(self)
+        question.setIcon(QMessageBox.Warning)
+        question.setWindowTitle(f"{workstation.display_name} ist belegt")
+        question.setText(warning)
+        proceed = question.addButton("Trotzdem verbinden", QMessageBox.DestructiveRole)
+        cancel = question.addButton(QMessageBox.Cancel)
+        # Abbrechen ist die Vorgabe: Wer hier landet, hat den Knopf gedrückt,
+        # ohne die Belegung unbedingt schon gekannt zu haben.
+        question.setDefaultButton(cancel)
+        question.exec()
+        return question.clickedButton() is proceed, reason
 
     def _record_event(
         self,
@@ -1834,9 +2106,6 @@ class MainWindow(QMainWindow):
     def on_connect_requested(self, workstation: Workstation) -> None:
         from portal_app.rdp import focus_rdp_session, has_active_rdp_session, launch_rdp_session
 
-        if not self._check_reservation_access(workstation):
-            return
-
         if has_active_rdp_session(workstation.workstation_id):
             # Raising the window is what the user actually wanted; the old message
             # was correct and useless, because the window is usually just minimised.
@@ -1851,7 +2120,9 @@ class MainWindow(QMainWindow):
                 "versuche es nach 30 Sekunden erneut; ein Prozess ohne Fenster blockiert dann nicht mehr.",
             )
             return
-        owned_sessions = workstation.owned_sessions(self.current_user.windows_accounts())
+        owned_sessions = workstation.owned_sessions(
+            self.current_user.windows_accounts(), self.current_user.upn
+        )
         if (
             workstation.has_active_session()
             and not workstation.matching_sessions(self.current_user.get_rdp_username())
@@ -1872,17 +2143,22 @@ class MainWindow(QMainWindow):
                     session_accounts, 0, False)
                 if not accepted:
                     return
-            workstation.selected_login_account = account
-            self._refresh_login_views(workstation)
-        if not workstation.can_connect(
-            self.current_user.get_rdp_username(),
-            self.current_user.windows_accounts(),
-        ):
+            # Über _select_login_account, damit die Wahl in der Benutzerdatei
+            # landet. Nur ins Modell geschrieben überlebte sie den nächsten
+            # Abgleich des gemeinsamen Stands nicht.
+            self._select_login_account(workstation, account)
+        if not workstation.enabled or workstation.is_blocked():
+            # Nach der Rückfrage bleiben nur die Gründe übrig, die eine Person
+            # nicht überstimmen kann: im Portal deaktiviert oder von jemandem
+            # bewusst als gesperrt bzw. in Wartung gekennzeichnet.
             QMessageBox.warning(
                 self,
                 "Verbindung nicht möglich",
                 f"{workstation.display_name} ist momentan nicht verfügbar: {workstation.get_status_display()}",
             )
+            return
+        proceed, confirmed_reason = self._confirm_connection(workstation)
+        if not proceed:
             return
         spelling_warning = workstation.entra_spelling_warning(
             self.current_user.get_rdp_username()
@@ -1949,8 +2225,13 @@ class MainWindow(QMainWindow):
                     profile = workstation.get_rdp_profile(self.current_user.get_rdp_username())
                 elif confirmation.clickedButton() != show_warning:
                     return
-            if not self._check_reservation_access(workstation):
-                return
+            # Zwischen der Rückfrage und diesem Punkt können Dialoge lange offen
+            # gestanden haben. Noch einmal gefragt wird nur, wenn in dieser Zeit
+            # eine Buchung dazugekommen ist -- sonst wäre es zweimal dieselbe Frage.
+            if self._fresh_reservation_block_reason(workstation) != confirmed_reason:
+                proceed, confirmed_reason = self._confirm_connection(workstation)
+                if not proceed:
+                    return
             success, message = launch_rdp_session(
                 profile,
                 workstation.workstation_id,
@@ -1958,6 +2239,7 @@ class MainWindow(QMainWindow):
             )
             if success:
                 self._record_event(workstation, EventType.LAUNCH_REQUESTED, EventResult.SUCCESS)
+                self._report_session_claim(workstation, profile.username_hint)
                 # Remember which Windows account this person connects as, so the
                 # resulting session is recognised as theirs next time instead of
                 # showing up as somebody else's and locking them out.
@@ -2199,6 +2481,10 @@ class MainWindow(QMainWindow):
         self.settings_view.set_status_refresh_interval(
             self.store.status_refresh_interval
         )
+        self.overview_view.set_machine_order(self.store.machine_order)
+        self.overview_view.set_favorites(self.store.favorite_workstations)
+        self.overview_view.set_preferred_accounts(self.store.preferred_login_accounts)
+        self.overview_view.set_machine_view(self.store.machine_view)
         self.agent_poll_timer.setInterval(self.store.status_refresh_interval * 1000)
         self.live_status_poller.set_interval(self.store.status_refresh_interval)
         self.detail_view.set_user(self.current_user)
@@ -2214,12 +2500,33 @@ class MainWindow(QMainWindow):
                 self._show_machines()
 
     def _sync_shared_store(self) -> None:
-        """Reload an updated OneDrive/SharePoint mirror after another portal saves."""
+        """Reload an updated OneDrive/SharePoint mirror after another portal saves.
+
+        Ein gemeinsames Ereignisprotokoll wächst ständig -- jeder Kollege
+        schreibt hinein. Das allein darf keinen vollständigen Neuaufbau des
+        Inventars auslösen; es genügt, die neuen Einträge nachzuladen.
+        """
         if self._pending_save or self._has_unsaved_machine_settings():
             return
-        if not self.store.has_external_changes():
+        if self.store.has_external_changes():
+            self.on_refresh()
             return
-        self.on_refresh()
+        if self.store.has_new_events():
+            self._reload_events()
+
+    def _reload_events(self) -> None:
+        """Nur das Ereignisprotokoll neu einlesen und anzeigen."""
+        try:
+            self.session_events = self.store.load_events()
+        except OSError as exc:
+            logger.warning("Ereignisprotokoll nicht lesbar: %s", exc)
+            return
+        self.session_log_view.set_events(self.session_events)
+        if self.detail_view.workstation is not None:
+            selected = self.detail_view.workstation.workstation_id
+            self.detail_view.set_session_events(
+                [item for item in self.session_events if item.workstation_id == selected]
+            )
 
     def _persist(self) -> bool:
         try:
@@ -2249,13 +2556,26 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "admin_view"):
             return
         timestamp = datetime.now().strftime("%H:%M:%S")
-        from shared.agent_paths import local_app_directory
+        from shared.agent_paths import is_private_program_location
 
-        location = (
-            "Nur auf diesem PC – das Portal für gemeinsame Einstellungen aus SharePoint starten"
-            if self.store.directory.is_relative_to(local_app_directory())
-            else "state neben der Portal-EXE · Verteilung nach SharePoint-Synchronisierung"
-        )
+        # Drei ehrliche Fälle statt zwei. Der mittlere sagt "wenn" und nicht
+        # "wird": Ob ein Ordner tatsächlich synchronisiert wird, kann das
+        # Portal nicht wissen, und eine Zusage, die es nicht halten kann, hat
+        # hier schon einmal jemanden auf eine Verteilung warten lassen, die nie
+        # kam. Siehe shared.agent_paths.is_private_program_location.
+        if is_private_program_location(self.store.directory):
+            location = (
+                "Lokale Installation · Maschinen und Protokoll gelten nur für dich auf "
+                "diesem PC. Reservierungen und Aufschaltungen laufen über die Agenten "
+                "und bleiben gemeinsam."
+            )
+        elif str(self.store.directory).startswith("\\\\"):
+            location = "Netzwerkpfad · gemeinsam für alle, die ihn erreichen"
+        else:
+            location = (
+                "state neben der Portal-EXE · gemeinsam, sofern dieser Ordner "
+                "synchronisiert wird"
+            )
         self.admin_view.set_storage_status(
             f"{action} · {timestamp}\n{self.store.directory}\n{location}"
         )
@@ -2318,7 +2638,7 @@ class MainWindow(QMainWindow):
             QPushButton#themeButton { background: #ffffff; color: #315e80; border: 1px solid #c8d4dc; border-radius: 8px; padding: 8px 12px; font-weight: 600; }
             QPushButton#themeButton:hover { background: #eef4f8; border-color: #7899af; }
             QWidget#navigation { background: #f8fafb; border-top: 1px solid #e3e8ec; border-bottom: 1px solid #dce3e8; }
-            QPushButton#navButton { background: transparent; color: #425c70; border: none; border-bottom: 3px solid transparent; padding: 16px 18px 13px 18px; font-weight: 600; }
+            QPushButton#navButton { background: transparent; color: #425c70; border: none; border-bottom: 3px solid transparent; padding: 10px 18px 8px 18px; font-weight: 600; }
             QPushButton#navButton:hover { color: #315e80; background: #eef4f8; }
             QPushButton#navButton:checked { color: #315e80; border-bottom-color: #567f9e; }
             QWidget#content { background: #f7f9fa; }
@@ -2349,6 +2669,7 @@ class MainWindow(QMainWindow):
                 selection-color: #17212b;
             }
             QLineEdit#dashboardSearch, QComboBox#dashboardFilter { background: #ffffff; color: #17212b; border: 1px solid #b9c7d0; border-radius: 8px; padding: 10px 13px; min-height: 20px; }
+            QLineEdit#dashboardSearch { padding: 7px 10px; }
             QLineEdit#dashboardSearch:focus, QComboBox#dashboardFilter:focus { border-color: #5e87a5; }
             QFrame#pingTool { background: #ffffff; border: 1px solid #d5dde3; border-radius: 9px; }
             QLabel#pingTitle { color: #334d60; font-weight: 700; }
@@ -2359,6 +2680,12 @@ class MainWindow(QMainWindow):
             QLabel#pingResult[pingOk="false"] { color: #9b4144; font-weight: 700; }
             QPushButton#toolbarButton { background: #ffffff; color: #385d77; border: 1px solid #c8d4dc; border-radius: 8px; padding: 9px 14px; font-weight: 600; }
             QPushButton#toolbarButton:hover { background: #eef4f8; border-color: #7899af; }
+            QPushButton#toolbarButton:checked, QPushButton#viewSwitchButton:checked { background: #dceaf3; color: #183d55; border-color: #5e87a5; }
+            QPushButton#viewSwitchButton { background: #ffffff; color: #385d77; border: 1px solid #c8d4dc; border-radius: 8px; padding: 7px 12px; min-width: 22px; font-size: 13pt; }
+            QPushButton#viewSwitchButton:hover, QPushButton#favoriteButton:hover { border-color: #7899af; background: #eef4f8; }
+            QPushButton#favoriteButton { background: transparent; color: #385d77; border: 1px solid transparent; border-radius: 7px; font-size: 17pt; }
+            QPushButton#favoriteButton:checked { color: #8b5a00; }
+            QPushButton#favoriteButton:focus, QPushButton#viewSwitchButton:focus { border: 2px solid #385d77; }
             QPushButton#cardPrimaryButton { background: #4f7897; color: #ffffff; border: 1px solid #4f7897; border-radius: 7px; padding: 9px 14px; font-weight: 600; }
             QPushButton#cardPrimaryButton:hover { background: #416985; }
             QPushButton#cardPrimaryButton:disabled { background: #e8ecef; color: #87939c; border-color: #d8dfe4; }
@@ -2370,10 +2697,15 @@ class MainWindow(QMainWindow):
             QScrollBar::handle:vertical:hover { background: #6f8b9e; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
             QFrame#workstationCard { background: #ffffff; border: 1px solid #d5dde3; border-radius: 11px; }
+            QFrame#workstationListRow { background: #ffffff; border: 1px solid #d5dde3; border-radius: 9px; }
+            QFrame#workstationListRow:hover { border-color: #7799b0; }
             QFrame#workstationCard:hover { border: 1px solid #7799b0; background: #fbfdfe; }
             QLabel#cardTitle { color: #1d2b36; }
             QLabel#cardStatus { color: #344652; font-size: 9pt; font-weight: 600; }
             QLabel#cardMeta { color: #526572; font-size: 8pt; }
+            /* Der Griff zum Verschieben: zurueckhaltend, bis der Zeiger darauf steht. */
+            QLabel#cardDragHandle { color: #aab8c2; font-size: 10pt; letter-spacing: 2px; }
+            QLabel#cardDragHandle:hover { color: #4f7897; }
             QPushButton#cardSecondaryButton { background: #ffffff; color: #526673; border: 1px solid #d3dbe1; border-radius: 7px; padding: 8px 12px; }
             QPushButton#cardSecondaryButton:hover { background: #f1f5f7; }
             QFrame#detailCard { background: #ffffff; border: 1px solid #d8e0e5; border-radius: 10px; }
@@ -2489,16 +2821,24 @@ class MainWindow(QMainWindow):
             QLineEdit#dashboardSearch:focus, QLineEdit#pingInput:focus { background: #1a2a35; color: #f1f6fa; border-color: #8fc1dd; }
             QComboBox QAbstractItemView, QDateEdit QAbstractItemView, QDateTimeEdit QAbstractItemView { background: #1c2d38; color: #f1f6fa; border-color: #59788b; selection-background-color: #3a6884; selection-color: #ffffff; }
             QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QDateTimeEdit:focus, QTextEdit:focus { border-color: #8fc1dd; }
-            QFrame#pingTool, QFrame#workstationCard, QFrame#detailCard { background: #1c2d38; border-color: #3d5868; }
+            QFrame#pingTool, QFrame#workstationCard, QFrame#workstationListRow, QFrame#detailCard { background: #1c2d38; border-color: #3d5868; }
             QFrame#workstationCard:hover { background: #213642; border-color: #79a6bf; }
+            QFrame#workstationListRow:hover { background: #213642; border-color: #79a6bf; }
             QLabel#pingTitle, QLabel#cardTitle, QLabel#cardStatus, QLabel#detailCardTitle, QLabel#detailValue, QLabel#dialogTitle { color: #f3f7fa; }
             QLabel#logTitle, QLabel#dialogFormLabel { color: #f3f7fa; }
             QLabel#pingResult, QLabel#cardMeta, QLabel#detailLabel, QLabel#detailMuted, QLabel#dialogNote, QLabel#calendarRange { color: #b9cad5; }
+            QLabel#cardDragHandle { color: #5d7382; }
+            QLabel#cardDragHandle:hover { color: #9fc4db; }
             QLabel#dialogWarning { color: #ffda89; font-weight: 600; }
             QLabel#adminAccessStatus { background: #2b3b46; color: #d3dee5; }
             QLabel#adminAccessStatus[unlocked="true"] { background: #1c4b3a; color: #c4f0d1; }
             QPushButton#toolbarButton, QPushButton#cardSecondaryButton { background: #223743; color: #eaf3f8; border-color: #527082; }
             QPushButton#toolbarButton:hover, QPushButton#cardSecondaryButton:hover { background: #2d4758; border-color: #86b0c8; }
+            QPushButton#viewSwitchButton { background: #223743; color: #eaf3f8; border-color: #527082; }
+            QPushButton#viewSwitchButton:checked, QPushButton#toolbarButton:checked { background: #3a6884; color: #ffffff; border-color: #8fc1dd; }
+            QPushButton#favoriteButton { color: #c7d6df; }
+            QPushButton#favoriteButton:checked { color: #ffcf70; }
+            QPushButton#favoriteButton:focus, QPushButton#viewSwitchButton:focus { border-color: #8fc1dd; }
             QPushButton#cardPrimaryButton { background: #477896; border-color: #477896; color: #ffffff; }
             QPushButton#cardPrimaryButton:hover { background: #5c91b1; border-color: #5c91b1; }
             QPushButton#dangerButton { background: #482a30; color: #ffd7d9; border-color: #9d6268; }

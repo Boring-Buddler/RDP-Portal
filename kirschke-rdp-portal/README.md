@@ -2,6 +2,21 @@
 
 **Version:** Portal 0.7.0 · Agent 1.5.1
 
+## Maschinenübersicht
+
+Der Stern auf einer Maschinenkarte oder in einer Listenzeile markiert einen
+persönlichen Favoriten. Mit **☆ Favoriten** links neben dem Standortfilter
+werden nur diese Maschinen angezeigt. Die Schaltflächen rechts neben der Suche
+wechseln zwischen Karten und kompakter Liste. Ansicht und Favoriten bleiben im
+persönlichen Windows-Profil gespeichert und ändern keine gemeinsamen
+Maschinendaten. Im Dropdown **Anmelden als** markiert der Stern rechts vom
+Kontonamen das bevorzugte Konto für diese Maschine; ein Klick darauf wählt es
+auch direkt aus. Die bisherige manuelle Kartenreihenfolge bleibt beim Wechsel
+der Ansicht erhalten.
+Die Maschinenübersicht zeigt einen kompakten Kopf: Zusammenfassung und
+**Aktualisieren** stehen neben dem Titel, der Agentstatus direkt über den
+Filtern.
+
 ## Verbindungsassistent
 
 Beim ersten Start ohne Maschinen öffnet sich der **Verbindungsassistent**

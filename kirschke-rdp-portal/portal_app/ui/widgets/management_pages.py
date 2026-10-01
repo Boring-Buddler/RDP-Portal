@@ -37,6 +37,9 @@ class AdministrationWidget(QWidget):
     lock_requested = Signal()
     save_requested = Signal()
     active_directory_status_requested = Signal()
+    #: Der gemeinsame Protokollordner soll eingerichtet oder entfernt werden.
+    event_log_directory_requested = Signal()
+    event_log_directory_cleared = Signal()
 
     def __init__(self, workstations: list[Workstation], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -114,6 +117,48 @@ class AdministrationWidget(QWidget):
         self.storage_directory.setReadOnly(True)
         storage_layout.addWidget(self.storage_directory)
         root.addWidget(storage_card)
+
+        # Das Ereignisprotokoll bekommt eine eigene Karte, weil es den einzigen
+        # Teil des Stands darstellt, der auch dann gemeinsam sein kann, wenn
+        # jeder das Portal lokal installiert hat -- dann liegt der uebrige Stand
+        # naemlich in jedem eigenen Profil.
+        log_card = QFrame()
+        log_card.setObjectName("detailCard")
+        log_layout = QVBoxLayout(log_card)
+        log_layout.setContentsMargins(16, 12, 16, 12)
+        log_layout.setSpacing(10)
+        log_title = QLabel("Gemeinsames Protokoll")
+        log_title.setObjectName("detailCardTitle")
+        log_layout.addWidget(log_title)
+        log_note = QLabel(
+            "Ohne Eintrag führt jedes Portal sein Protokoll für sich. Ein Netzwerkordner "
+            "hier lässt alle Portale in dieselbe Datei schreiben — dann steht im Reiter "
+            "Logs, wer wann welche Maschine verbunden oder abgemeldet hat, quer über "
+            "alle Beteiligten. Die Freigabe muss Schreibrecht gewähren; das Lesekonto "
+            "der Agentenfreigaben genügt dafür nicht."
+        )
+        log_note.setObjectName("detailMuted")
+        log_note.setWordWrap(True)
+        log_layout.addWidget(log_note)
+        self.event_log_status = QLabel()
+        self.event_log_status.setObjectName("detailMuted")
+        self.event_log_status.setWordWrap(True)
+        log_layout.addWidget(self.event_log_status)
+        self.event_log_directory = QLineEdit()
+        self.event_log_directory.setReadOnly(True)
+        log_layout.addWidget(self.event_log_directory)
+        log_buttons = QHBoxLayout()
+        log_buttons.addStretch()
+        self.set_event_log = QPushButton("Protokollordner einrichten")
+        self.set_event_log.setObjectName("toolbarButton")
+        self.set_event_log.clicked.connect(self.event_log_directory_requested)
+        log_buttons.addWidget(self.set_event_log)
+        self.clear_event_log = QPushButton("Wieder lokal führen")
+        self.clear_event_log.setObjectName("toolbarButton")
+        self.clear_event_log.clicked.connect(self.event_log_directory_cleared)
+        log_buttons.addWidget(self.clear_event_log)
+        log_layout.addLayout(log_buttons)
+        root.addWidget(log_card)
         self.directory_card = QFrame()
         self.directory_card.setObjectName("detailCard")
         directory_layout = QHBoxLayout(self.directory_card)
@@ -178,6 +223,17 @@ class AdministrationWidget(QWidget):
 
     def set_storage_status(self, status: str) -> None:
         self.storage_status.setText(status)
+
+    def set_event_log_location(self, directory: str, path: str) -> None:
+        """Zeigen, wo das Protokoll liegt und ob es geteilt wird."""
+        shared = bool(directory)
+        self.event_log_directory.setText(directory or path)
+        self.event_log_status.setText(
+            "Gemeinsam: Alle Portale mit diesem Eintrag schreiben in dieselbe Datei."
+            if shared
+            else "Nur auf diesem PC. Kein Netzwerkordner eingetragen."
+        )
+        self.clear_event_log.setVisible(shared)
 
     def set_active_directory_status(self, status: str) -> None:
         self.active_directory_status.setText(status)

@@ -116,9 +116,102 @@ from __future__ import annotations
 # The reader account may now ship with the release (see
 # portal_app/services/reader_account.py, which is empty in the repository and
 # filled at build time); a password entered on a PC still wins over it.
-PORTAL_VERSION = "0.7.0"
+# 0.8.0: die Oberfläche folgt der Windows-Schriftgröße, und drei Dinge, die sich
+# gegenseitig blockiert haben, sind entkoppelt. Eine fremde Reservierung sperrt
+# nichts mehr: Sie hat gleichzeitig den Reservierenden (wegen der laufenden
+# fremden Sitzung) und den Angemeldeten (der weder zurück auf seine Sitzung kam
+# noch sie beenden konnte) ausgesperrt, und niemand konnte den Zustand
+# auflösen. Aus dem toten "Maschine besetzt" wird ein Verbinden-Knopf, der
+# vorher sagt, wer die Maschine hält und dass Windows die bestehende Sitzung
+# dabei trennt; Farbe und Randstärke der Karte bleiben unverändert. Die
+# Kontowahl überlebt wieder einen Abgleich des gemeinsamen Stands -- ein Konto
+# aus einer gemeldeten Sitzung steht weder in login_accounts noch im
+# username_hint, und genau dagegen prüfte der Store beim Laden, was alle paar
+# Sekunden zu einem stillen Rücksprung auf "Standard" führte. Jeder ordnet die
+# Maschinenkarten für sich selbst an, per Ziehen und in der eigenen
+# Benutzerdatei. Behoben: Der Verbindungsassistent kürzte eine IP-Adresse wie
+# ein DNS-Label und baute daraus \\192\RDP-Status, was Windows mit Fehler 67
+# beantwortete; und der Fallback-Dialog schlug ein Lesekonto vor, das nicht zum
+# Server im Pfad gehörte.
+# 1.6.0 (agent): CLAIM/1 -- das Portal meldet dem Agenten, welcher Mensch sich
+# unter welchem Windows-Konto aufgeschaltet hat, und der Agent bindet die
+# Meldung an die Sitzung, die er dazu findet. Gebraucht für Maschinen mit einem
+# einzigen gemeinsamen Konto: Dort erkannte bisher jedes Portal den Kontonamen
+# als den eigenen wieder und zeigte die Maschine allen als "von dir belegt".
+# Weil jede vom Portal gestartete Verbindung gemeldet wird, ist das Ausbleiben
+# einer Meldung selbst eine Auskunft -- die Karte schreibt dann "direkt
+# verbunden". Ältere Agenten melden keine Aufschaltungen, was das Portal von
+# "niemand hat sich gemeldet" unterscheidet.
+# 0.8.1: das Ereignisprotokoll kann in einen gemeinsamen Netzwerkordner gelegt
+# werden (Admin → Gemeinsames Protokoll). Gebraucht, seit klar ist, dass eine
+# Installation über das Setup nach %LOCALAPPDATA%\Programs\KirschkeRDPPortal
+# geht: Der gemeinsame Stand liegt neben der EXE und ist dort privat, jeder
+# pflegt also sein eigenes Inventar. Das Protokoll ist der Teil, den man
+# trotzdem zusammen sehen will. Beim Einrichten wird wirklich geschrieben und
+# nicht nur verbunden -- die Agentenfreigaben geben nur Leserecht, und das
+# fiele sonst erst beim ersten Ereignis auf. Ein wachsendes gemeinsames
+# Protokoll löst außerdem keinen vollständigen Neuaufbau des Inventars mehr
+# aus; nachgeladen werden nur die neuen Einträge.
+# Behoben: Der Adminbereich behauptete bei einer lokalen Installation eine
+# "Verteilung nach SharePoint-Synchronisierung". Die Prüfung dahinter verglich
+# gegen %LOCALAPPDATA%\KirschkeRDPPortal und traf den Installationspfad nie --
+# wer dem Text folgte, wartete auf eine Verteilung, die es nicht gibt.
+# 0.8.2: die Maschinenkarten werden an einem eigenen Griff verschoben -- drei
+# Punkte unter dem Verbinden-Knopf, an denen der Zeiger zur greifenden Hand
+# wird. Vorher nahm die ganze Karte das Ziehen entgegen, und das ging nicht
+# zusammen: Derselbe Mausdruck oeffnete die Maschinenseite, die dann jedes
+# Verschieben abfing -- die Anordnung war eingebaut, aber nicht erreichbar.
+# Ausserdem sortiert der Zustand nicht mehr mit. Eine Karte wanderte durchs
+# Raster, sobald sich jemand verband oder abmeldete, und man suchte seine
+# Maschine nach jeder Aktualisierung neu; eine Kachel merkt man sich aber ueber
+# ihren Platz. Ohne eigene Anordnung gilt jetzt der Name, und wie es um eine
+# Maschine steht, sagt weiterhin ihre Farbe.
+PORTAL_VERSION = "0.8.2"
 # 1.4.0: every reported session carries its account SID, so the portal no longer
 # has to resolve Entra names against a cache that may not know them.
-AGENT_VERSION = "1.5.1"
+# 1.6.1 (agent setup): das Setup kann auf Wunsch zusätzlich die beschreibbare
+# Freigabe RDP-Protokoll anlegen, in der alle Portale ihr Ereignisprotokoll
+# sammeln. Nötig auf genau einer Maschine im Testbetrieb, deshalb standardmäßig
+# aus. Bewusst dasselbe Konto PortalLeser wie für den Statusordner -- ein
+# zweites brächte ein zweites Kennwort in Umlauf, und das Portal probiert für
+# jeden Server ohnehin dasselbe. Schreibrecht bekommt das Konto nur im
+# Protokollordner; der Statusordner bleibt lesend.
+# 1.6.2 (agent setup): das Fenster misst seinen Inhalt, statt auf 680x635
+# festgenagelt zu sein, und die Knopfzeile hängt am Fenster statt im
+# Inhaltsraster. Der Kasten für die Protokollfreigabe hatte "Jetzt
+# installieren" unter den unteren Rand geschoben, und weil das Fenster
+# unveränderbar war, kam man auch durch Aufziehen nicht daran. Jetzt bleiben
+# die Knöpfe unten sitzen, egal wie hoch der Inhalt wird -- auch bei einer
+# größeren Windows-Schrift oder auf einem kleinen Bildschirm.
+# 1.6.3 (agent setup): behebt ein Setup, das nach getaner Arbeit wie eingefroren
+# dastand. `log_share_note` wurde erst im Arbeitsthread gesetzt und nur bei
+# angekreuzter Protokollfreigabe -- sonst lief die Erfolgsmeldung in einen
+# AttributeError mitten im Tk-Callback: kein Dialog, keine Fehlermeldung, nur
+# gesperrte Knöpfe. Der Agent war dabei längst eingerichtet und lief.
+# Damit so etwas nicht mehr unsichtbar bleibt: Die Statuszeile nennt jetzt den
+# laufenden Schritt und dessen Nummer ("Schritt 5/8: Programmdateien kopieren"),
+# das Warten auf die erste Statusmeldung zählt sichtbar herunter, und scheitert
+# die Anzeige des Ergebnisses trotzdem, sagt das Fenster es und gibt die Knöpfe
+# wieder frei, statt stumm stehen zu bleiben.
+# 1.6.4 (agent): eine Aufschaltmeldung hängt sich nicht mehr an die nächste
+# Sitzung desselben Kontos. Einmal an eine Sitzung gebunden, gilt sie nur noch
+# für genau diese -- erkannt an Sitzungsnummer *und* Anmeldezeitpunkt, weil
+# Windows Nummern neu vergibt. Vorher übernahm die alte Meldung jede spätere
+# Anmeldung unter demselben Konto, und auf einer Maschine, auf der sich alle
+# unter einem gemeinsamen Konto anmelden, ist das der Normalfall: Nach dem
+# Abmelden stand die Maschine als "belegt durch" eine Person da, die längst weg
+# war, und der Nächste sah dasselbe, bevor er überhaupt verbunden hatte.
+# 1.6.5 (agent): eine getrennte RDP-Sitzung gilt nicht mehr als Konsolensitzung.
+# ``WTSClientProtocolType`` beschreibt den *gerade angehängten* Client, nicht die
+# Art der Sitzung: Trennt sich eine RDP-Sitzung, hängt keiner mehr daran und
+# Windows meldet 0 -- denselben Wert wie für die Konsole. Damit galt ausgerechnet
+# der häufigste Fall als lokale Sitzung, weil die meisten ihr Fenster schließen
+# statt sich abzumelden. Sichtbar war das als "Konsole am Gerät" bei jemandem,
+# der von einem anderen Standort verbunden war, und als Abmeldung, die mit
+# "lokale Konsolensitzung" abgelehnt wurde, obwohl gar keine vorlag.
+# Maßgeblich ist jetzt der WinStation-Name (`RDP-Tcp#5` gegen `Console`): Er
+# gehört zur Sitzung, das Protokoll nur zur Verbindung. An echten WinStations
+# nachgemessen -- die Station `RDP-Tcp` meldet ohne Client ebenfalls 0.
+AGENT_VERSION = "1.6.5"
 
 __all__ = ["AGENT_VERSION", "PORTAL_VERSION"]

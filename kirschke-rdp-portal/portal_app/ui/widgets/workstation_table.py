@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
 from portal_app.ui.design import Colors, DesignSystem, Spacing
+from portal_app.ui.machine_actions import describe_actions
 from portal_app.ui.widgets.connect_button import ConnectButton
 from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 from shared.enums import AgentStatus, ManualFlagType
@@ -404,11 +405,12 @@ class WorkstationTableWidget(QWidget):
         menu = QMenu(self)
 
         # Connect action
-        connect_action = menu.addAction("Verbinden")
-        connect_action.setEnabled(
-            ws.can_connect(self.user.get_rdp_username(), self.user.windows_accounts())
-            or ws.can_choose_session()
-        )
+        # Über dieselbe Entscheidung wie Knopf, Karte und Detailseite. Vorher
+        # stand hier eine eigene Bedingung, und seit eine belegte Maschine einen
+        # Verbinden-Knopf hat, sagte das Kontextmenü als Einziges noch Nein.
+        actions = describe_actions(ws, self.user)
+        connect_action = menu.addAction(actions.primary_text)
+        connect_action.setEnabled(actions.primary_enabled)
         connect_action.triggered.connect(lambda: self.connect_requested.emit(ws))
 
         menu.addSeparator()

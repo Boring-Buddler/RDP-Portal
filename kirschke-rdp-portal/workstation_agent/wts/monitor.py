@@ -13,6 +13,7 @@ from enum import IntEnum
 from typing import Any
 
 from shared.enums import SessionState
+from shared.session_identity import is_console_session
 
 logger = logging.getLogger(__name__)
 
@@ -229,12 +230,23 @@ class WTSSessionInfo:
 
     @property
     def is_rdp_session(self) -> bool:
+        """Ob diese Sitzung ueber RDP aufgebaut wurde.
+
+        Entscheidet im Abmeldeweg darueber, ob der Agent sie ueberhaupt
+        annimmt. Die Regel steht einmal in shared.session_identity -- sie hier
+        ein zweites Mal zu formulieren hat schon einmal dazu gefuehrt, dass
+        beide Seiten dasselbe falsch machten: Eine getrennte RDP-Sitzung meldet
+        protocol_type 0 wie die Konsole und galt deshalb als Konsolensitzung.
+        """
         if not self.username:
             return False
-        if self.protocol_type in (0, 2):
-            return self.protocol_type == 2
-        station_name = (self.display_name or "").upper()
-        return self.protocol_type == 2 or station_name.startswith("RDP-")
+        return not is_console_session(
+            {
+                "display_name": self.display_name,
+                "protocol_type": self.protocol_type,
+                "is_console_session": self.is_console_session,
+            }
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -441,12 +453,20 @@ class WTSMonitor:
             connect_state=connect_state,
             session_state=self._map_connect_state_to_session_state(connect_state),
             protocol_type=protocol_type,
+            # Nicht mehr aus protocol_type abgeleitet: Der Wert faellt beim
+            # Trennen auf 0 zurueck und haette jede getrennte RDP-Sitzung zur
+            # Konsolensitzung gemacht. Massgeblich ist der Stationsname; die
+            # Sitzungsnummer der Konsole dient als Rueckfallebene, wenn Windows
+            # keinen Namen liefert.
             is_console_session=(
-                protocol_type == 0
-                or (protocol_type is None
-                    and not (station_name or "").upper().startswith("RDP-")
-                    and console_session_id != NO_CONSOLE_SESSION
-                    and session_id == console_session_id)
+                not (station_name or "").upper().startswith("RDP-")
+                and (
+                    (station_name or "").upper() == "CONSOLE"
+                    or (
+                        console_session_id != NO_CONSOLE_SESSION
+                        and session_id == console_session_id
+                    )
+                )
             ),
         )
 

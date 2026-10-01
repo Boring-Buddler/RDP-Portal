@@ -17,28 +17,44 @@ from shared.enums import ConnectionTargetMode, SessionState
 
 
 def test_reservation_boundaries_and_identity():
+    """Die Buchung entscheidet über den Text, nicht mehr über den Zugang.
+
+    Früher setzte eine fremde Reservierung ``can_connect()`` auf False. Zusammen
+    mit dem gesperrten Knopf war das der Softlock: Wer gebucht hatte, kam wegen
+    der laufenden fremden Sitzung nicht auf die Maschine, und wer angemeldet
+    war, kam wegen der Buchung nicht zurück auf seine eigene Sitzung. Zeitraum
+    und Zuordnung werden unverändert genau so bestimmt.
+    """
     start = datetime(2026, 9, 10, 9)
     end = start + timedelta(hours=1)
     r = Reservation("A", "Arbeit", start, end, "owner@example.com")
     ws = Workstation("A", "A", "PC")
     apply_reservations([ws], [r], "other@example.com", start - timedelta(seconds=1))
-    assert ws.can_connect()
+    assert not ws.reservation_block_reason
     apply_reservations([ws], [r], "other@example.com", start)
-    assert not ws.can_connect()
+    assert ws.reservation_block_reason
     assert "owner@example.com" in ws.reservation_message
-    apply_reservations([ws], [r], "OWNER@example.com", start)
     assert ws.can_connect()
+    apply_reservations([ws], [r], "OWNER@example.com", start)
+    assert not ws.reservation_block_reason
     ws.current_session_state = SessionState.DISCONNECTED
     ws.current_session_user = "AzureAD\\Owner"
     ws.selected_login_account = "AzureAD\\Owner"
     assert ws.can_connect()
     apply_reservations([ws], [r], "other@example.com", start)
-    assert not ws.can_connect() and not ws.can_choose_session()
+    # Die eigene laufende Sitzung bleibt erreichbar -- das ist der Softlock-Fix.
+    assert ws.can_connect() and ws.can_choose_session()
     apply_reservations([ws], [r], "other@example.com", end)
-    assert ws.can_connect()
+    assert not ws.reservation_block_reason
 
 
 def test_owner_cannot_implicitly_take_foreign_windows_session():
+    """Eine eigene Buchung macht eine fremde Sitzung nicht stillschweigend zur eigenen.
+
+    Verbinden ist möglich, aber nur über die Warnung, die sagt, dass dabei eine
+    fremde Sitzung getrennt wird. ``can_connect()`` sagt genau das: ohne
+    Rückfrage geht es nicht.
+    """
     now = datetime.now()
     ws = Workstation("A", "A", "PC", current_session_state=SessionState.CONNECTED,
                      current_session_user="PC\\other", selected_login_account="PC\\owner")

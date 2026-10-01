@@ -10,6 +10,7 @@ from shared.session_identity import (
     ACTIVE_SESSION_STATE_VALUES,
     ACTIVE_SESSION_STATES,
     is_active_session,
+    is_console_session,
     session_username,
 )
 from workstation_agent.session_control import ACTIVE_STATES
@@ -87,3 +88,84 @@ def test_no_module_rebuilds_the_identity_rule_inline() -> None:
     assert not offenders, (
         "use shared.session_identity instead of rebuilding the rule:\n" + "\n".join(offenders)
     )
+
+
+# --- Konsole oder RDP --------------------------------------------------------
+#
+# Der gemeldete Fehler: Eine Person war aus München verbunden, das Portal
+# schrieb "Konsole am Gerät" und verweigerte die Abmeldung mit der Begründung,
+# es handle sich um eine lokale Sitzung. In Wahrheit war es eine getrennte
+# RDP-Sitzung.
+#
+# Ursache: ``WTSClientProtocolType`` beschreibt den *gerade angehängten* Client.
+# Trennt sich eine RDP-Sitzung, hängt keiner mehr daran und Windows meldet 0 --
+# denselben Wert wie für die Konsole. Damit galt jede getrennte RDP-Sitzung als
+# Konsolensitzung, also ausgerechnet der häufigste Fall.
+#
+# Die Werte unten sind an echten WinStations gemessen, nicht angenommen.
+
+
+def test_a_disconnected_rdp_session_is_not_the_console() -> None:
+    """Der Fall, der das Ganze ausgelöst hat."""
+    getrennt = {
+        "display_name": "RDP-Tcp#5",
+        "protocol_type": 0,  # Kein Client mehr dran -- nicht "Konsole".
+        "is_console_session": True,
+        "session_state": SessionState.DISCONNECTED.value,
+    }
+
+    assert not is_console_session(getrennt)
+
+
+def test_a_connected_rdp_session_is_not_the_console() -> None:
+    verbunden = {"display_name": "RDP-Tcp#1", "protocol_type": 2}
+
+    assert not is_console_session(verbunden)
+
+
+def test_the_console_station_is_the_console() -> None:
+    konsole = {"display_name": "Console", "protocol_type": 0, "is_console_session": True}
+
+    assert is_console_session(konsole)
+
+
+def test_the_station_name_beats_a_wrong_console_flag() -> None:
+    """Der Name gehört zur Sitzung, das Protokoll nur zur Verbindung."""
+    rdp = {"display_name": "RDP-Tcp", "protocol_type": 0, "is_console_session": True}
+
+    assert not is_console_session(rdp)
+
+
+def test_without_a_station_name_the_flag_decides() -> None:
+    """Rückfallebene für einen Agenten, der keinen Namen liefert."""
+    assert is_console_session({"protocol_type": 0, "is_console_session": True})
+    assert not is_console_session({"protocol_type": 0, "is_console_session": False})
+
+
+def test_in_doubt_it_is_not_the_console() -> None:
+    """Der Agent prüft die Berechtigung selbst und weist sonst mit eigener
+    Begründung ab -- eine falsche Vermutung kostet einen Versuch, kein Recht."""
+    assert not is_console_session({})
+
+
+def test_the_agent_property_agrees_with_the_shared_rule() -> None:
+    """Zwei Kopien derselben Regel hatten beide denselben Fehler."""
+    getrennt = WTSSessionInfo(
+        session_id=5,
+        username="RainerJouaux",
+        domain="AzureAD",
+        display_name="RDP-Tcp#5",
+        protocol_type=0,
+        is_console_session=True,
+        session_state=SessionState.DISCONNECTED,
+    )
+
+    assert getrennt.is_rdp_session
+    assert not is_console_session(getrennt.to_dict())
+
+
+def test_a_session_without_a_user_is_never_an_rdp_session() -> None:
+    """Die Dienste-Sitzung und der RDP-Lauscher gehören niemandem."""
+    lauscher = WTSSessionInfo(session_id=65536, display_name="RDP-Tcp", protocol_type=0)
+
+    assert not lauscher.is_rdp_session

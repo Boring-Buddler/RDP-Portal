@@ -46,6 +46,39 @@ def local_app_directory() -> Path:
     return Path(local_data) / "KirschkeRDPPortal"
 
 
+def is_private_program_location(directory: str | Path) -> bool:
+    """Ob dieser Ordner im lokalen Profilbereich liegt und deshalb nie geteilt wird.
+
+    Gebraucht, damit das Portal nicht das Falsche behauptet. Das Setup
+    installiert nach ``%LOCALAPPDATA%\\Programs\\KirschkeRDPPortal``, und der
+    gemeinsame Stand liegt neben der EXE -- also mitten im eigenen Profil.
+    Die Anzeige versprach dort trotzdem eine "Verteilung nach
+    SharePoint-Synchronisierung": Sie verglich gegen
+    ``%LOCALAPPDATA%\\KirschkeRDPPortal`` und traf den Installationspfad damit
+    nie. Wer dem Text folgte, wartete auf eine Synchronisierung, die es nicht
+    gibt.
+
+    Geprüft wird gegen die Profilordner selbst und nicht gegen einen einzelnen
+    Programmordner darin: Wo die EXE unterhalb davon liegt, ist für diese Frage
+    gleichgültig. OneDrive nimmt weder ``%LOCALAPPDATA%`` noch ``%APPDATA%``
+    mit, ein synchronisierter Ordner liegt immer woanders.
+    """
+    try:
+        target = expand_directory(directory).resolve()
+    except OSError:
+        return False
+    for variable in ("LOCALAPPDATA", "APPDATA"):
+        value = os.environ.get(variable)
+        if not value:
+            continue
+        try:
+            if target.is_relative_to(Path(value).resolve()):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 def legacy_portal_directory() -> Path:
     """The SharePoint folder the portal used to default to.
 

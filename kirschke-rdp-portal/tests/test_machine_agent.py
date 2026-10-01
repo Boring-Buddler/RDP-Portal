@@ -114,7 +114,7 @@ def test_ping_latency_stays_in_card_corner_after_agent_refresh(qtbot, monkeypatc
     assert ws.agent_status == AgentStatus.ONLINE
 
 
-def test_dashboard_orders_free_first_and_draws_the_unusable_ones_quieter(qtbot):
+def test_dashboard_sorts_by_name_and_draws_the_unusable_ones_quieter(qtbot):
     grey = Workstation("G", "Grey", "grey")
     blue = Workstation(
         "B", "Blue", "blue", agent_status=AgentStatus.ONLINE,
@@ -128,12 +128,15 @@ def test_dashboard_orders_free_first_and_draws_the_unusable_ones_quieter(qtbot):
     view = WorkstationCardsWidget([grey, blue, green], MockUser.create_user())
     qtbot.addWidget(view)
     cards = [item for item in view._cards if isinstance(item, WorkstationCard)]
-    assert [card.workstation.workstation_id for card in cards] == ["A", "B", "G"]
+    # Nach Anzeigenamen: Blue, Green, Grey. Der Zustand sortiert nicht mit --
+    # eine Karte soll nicht wandern, nur weil jemand sich verbindet.
+    assert [card.workstation.workstation_id for card in cards] == ["B", "A", "G"]
     # Frei traegt den vollen Rahmen; belegt und ohne Status treten zurueck, damit
     # das Raster nach Gewicht lesbar ist, bevor man die Farbe entziffern muss.
-    assert "border: 4px" in cards[0].styleSheet()
-    assert "border: 2px" in cards[1].styleSheet()
-    assert "border: 2px" in cards[2].styleSheet()
+    by_id = {card.workstation.workstation_id: card for card in cards}
+    assert "border: 4px" in by_id["A"].styleSheet()
+    assert "border: 2px" in by_id["B"].styleSheet()
+    assert "border: 2px" in by_id["G"].styleSheet()
 
 
 def test_reported_session_carries_the_sid_the_portal_compares_against():
@@ -176,6 +179,8 @@ def test_a_remote_monitor_reports_no_sid_instead_of_resolving_it_locally():
     (False, None, "RDP-Tcp#1", False),
     (False, None, "Console", True),
     (True, None, None, False),
+    # Getrennte RDP-Sitzung: Protokoll 0 wie die Konsole, Name unveraendert.
+    (False, 0, "RDP-Tcp#5", False),
 ])
 def test_console_id_does_not_override_rdp_or_a_remote_server(
     monkeypatch, remote, protocol, station, expected_console,
@@ -196,6 +201,30 @@ def test_console_id_does_not_override_rdp_or_a_remote_server(
         assert info.is_rdp_session
 
 
-def test_explicit_console_protocol_is_not_rdp_even_with_old_station_name():
-    info = WTSSessionInfo(2, username="tester", protocol_type=0, display_name="RDP-Tcp#1")
-    assert not info.is_rdp_session
+def test_a_disconnected_rdp_session_keeps_its_station_name(monkeypatch):
+    """Umgekehrt zur frueheren Annahme -- und an echten WinStations nachgemessen.
+
+    ``protocol_type`` beschreibt den gerade angehaengten Client, nicht die Art
+    der Sitzung: Beim Trennen faellt der Wert auf 0 zurueck, denselben, den die
+    Konsole meldet. Der Stationsname bleibt dagegen stehen. Wer die Sitzung
+    danach am Protokoll festmacht, erklaert jede getrennte RDP-Sitzung zur
+    Konsolensitzung -- und das ist der haeufigste Fall ueberhaupt, weil die
+    meisten ihr Fenster schliessen statt sich abzumelden.
+    """
+    from workstation_agent.wts import monitor as module
+
+    monitor = WTSMonitor.__new__(WTSMonitor)
+    monitor.server_name = None
+    monkeypatch.setattr(module.kernel32, "WTSGetActiveConsoleSessionId", lambda: 7)
+    monkeypatch.setattr(monitor, "_query_number", lambda *args: 0)
+    monkeypatch.setattr(monitor, "_query_text", lambda *args: "tester")
+    monkeypatch.setattr(monitor, "_query_sid", lambda *args: None)
+    monkeypatch.setattr(monitor, "_query_buffer", lambda *args: None)
+    monkeypatch.setattr(monitor, "_query_client_address", lambda *args: None)
+
+    info = monitor._get_session_info(
+        2, module.WTS_CONNECTSTATE_CLASS.WTSDisconnected, "RDP-Tcp#5"
+    )
+
+    assert not info.is_console_session
+    assert info.is_rdp_session

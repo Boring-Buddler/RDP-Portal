@@ -5,6 +5,7 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QDialog, QLabel, QLineEdit, QPushButton, QVBoxLayout
 
 from portal_app.services.session_control import logoff_admin_session, logoff_own_session
+from shared.name_resolution import unc_server_name
 from shared.session_identity import session_username
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,7 @@ class SessionLogoffDialog(QDialog):
             admin_label = QLabel("Windows-Administratorkonto auf dem Zielrechner")
             layout.addWidget(admin_label)
             self.admin_username = QLineEdit()
-            server = (status_target or machine_name).split(".", 1)[0]
+            server = unc_server_name(status_target or machine_name)
             self.admin_username.setPlaceholderText(fr"{server}\Administrator")
             layout.addWidget(self.admin_username)
             password_label = QLabel("Kennwort (wird nicht gespeichert)")

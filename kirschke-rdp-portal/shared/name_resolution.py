@@ -56,6 +56,27 @@ def _is_literal_address(value: str) -> bool:
     return True
 
 
+def unc_server_name(value: str | None) -> str:
+    r"""Die Serverangabe für einen UNC-Pfad aus einer Rechnerkennung.
+
+    Ein DNS-Name wird auf sein erstes Label gekürzt: Die Freigabe des Agenten
+    heißt ``\\PC07\RDP-Status``, und der Domänensuffix steht dabei nur im Weg.
+
+    Eine IP-Adresse muss dagegen unangetastet bleiben. Genau das ging schief:
+    ``192.168.2.10`` wurde auf dieselbe Weise gekürzt, übrig blieb ``192``, und
+    Windows beantwortete ``\\192\RDP-Status`` mit Fehler 67 -- der Netzwerkname
+    wurde nicht gefunden, weil es diesen Server nicht gibt. Der Assistent meldete
+    daraufhin "nicht eingerichtet" für eine Maschine, die über ihre IP durchaus
+    erreichbar war.
+    """
+    name = (value or "").strip().strip("\\")
+    if not name:
+        return ""
+    if _is_literal_address(name):
+        return name
+    return name.split(".", 1)[0]
+
+
 def _lookup(name: str) -> bool:
     """One bounded name lookup, on a thread that may outlive the answer."""
     result: list[bool] = [False]

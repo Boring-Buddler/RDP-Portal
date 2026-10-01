@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from portal_app.models.workstation import Workstation
+from portal_app.ui.design import apply_scaled_geometry
 from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 from shared.enums import ConnectionTargetMode
 from shared.validation import RDPProfileValidator, RDPValidationError
@@ -42,7 +43,7 @@ class WorkstationDialog(QDialog):
         self.prefill = dict(prefill or {})
         self.workstation: Workstation | None = None
         self.setWindowTitle("Maschine bearbeiten" if workstation else "Maschine hinzufügen")
-        self.setMinimumSize(620, 650)
+        apply_scaled_geometry(self, (620, 650))
         self._create_ui()
         self._load_values()
 

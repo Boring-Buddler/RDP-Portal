@@ -54,6 +54,7 @@ from portal_app.services.machine_discovery import (
     discover_remote_machine,
 )
 from portal_app.services.site_mapping import known_sites, site_for_address
+from portal_app.ui.design import apply_scaled_geometry
 from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 from portal_app.ui.widgets.table_cells import reset_rows
 
@@ -111,8 +112,7 @@ class MachineRegistrationWizard(QWizard):
         self.setWindowTitle(
             "Verbindungsassistent – Erstinstallation" if first_run else "Maschine registrieren"
         )
-        self.setMinimumSize(760, 600)
-        self.resize(900, 680)
+        apply_scaled_geometry(self, (760, 600), (900, 680))
         self.setOption(QWizard.NoBackButtonOnStartPage, True)
         self.setOption(QWizard.IndependentPages, False)
         self.addPage(_SourcePage(self))

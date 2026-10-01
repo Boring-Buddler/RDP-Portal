@@ -4,8 +4,126 @@ This module contains all design tokens, colors, typography, and styling
 constants as specified in the Kirschke_Corporate_Design_Masterprompt.
 """
 
-from PySide6.QtGui import QColor, QFont
+import re
+
+from PySide6.QtGui import QColor, QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication, QWidget
+
+# =============================================================================
+# Skalierung: Schriftgröße und Maße folgen der Windows-Einstellung
+# =============================================================================
+
+#: Die Punktgröße, für die dieses Design gezeichnet wurde. Jede feste Maßangabe
+#: im Portal ist an ihr gemessen, und der Skalierungsfaktor ist genau das
+#: Verhältnis der tatsächlichen Systemgröße zu dieser hier.
+REFERENCE_POINT_SIZE = 9.0
+
+#: Grenzen für die übernommene Systemgröße. Nach unten, weil eine
+#: Zwei-Punkt-Schrift das Fenster nicht benutzbarer macht; nach oben, weil das
+#: Portal sonst auf einem kleinen Bildschirm nicht mehr vollständig passt.
+MIN_POINT_SIZE = 7.0
+MAX_POINT_SIZE = 16.0
+
+_system_point_size: float | None = None
+
+
+def system_point_size() -> float:
+    """Die Schriftgröße, die Windows für Oberflächen vorgibt.
+
+    Absichtlich aus ``QFontDatabase`` und nicht aus ``QApplication.font()``:
+    Das Portal setzt seine eigene Schrift beim Start, und danach würde es hier
+    nur noch seine eigene Vorgabe wiederfinden statt der des Systems.
+
+    Einmal ermittelt und gemerkt. Die Antwort ändert sich innerhalb einer
+    Sitzung nicht, und sie wird beim Zeichnen jeder Karte gebraucht.
+    """
+    global _system_point_size
+    if _system_point_size is None:
+        size = QFontDatabase.systemFont(QFontDatabase.GeneralFont).pointSizeF()
+        if size <= 0:
+            size = REFERENCE_POINT_SIZE
+        _system_point_size = max(MIN_POINT_SIZE, min(MAX_POINT_SIZE, size))
+    return _system_point_size
+
+
+def scale_factor() -> float:
+    """Wie viel größer als vorgesehen die Oberfläche hier ausfallen muss.
+
+    Die reine Bildschirmauflösung steckt nicht darin: Qt rechnet die
+    Anzeigeskalierung (125 %, 150 %) schon selbst heraus. Was Qt *nicht* tut,
+    ist feste Pixelmaße mitwachsen zu lassen, wenn jemand allein die
+    Schriftgröße hochsetzt -- und dann stand der Text in Knöpfen und Karten
+    fester Höhe halb außerhalb.
+    """
+    return system_point_size() / REFERENCE_POINT_SIZE
+
+
+def scaled(pixels: float) -> int:
+    """Ein am 9-Punkt-Entwurf gemessenes Pixelmaß auf diese Anzeige umrechnen."""
+    return max(1, round(pixels * scale_factor()))
+
+
+def scaled_points(points: float) -> float:
+    """Eine am Entwurf gemessene Punktgröße auf die Systemgröße umrechnen."""
+    return round(points * scale_factor(), 1)
+
+
+def apply_scaled_geometry(
+    widget: QWidget,
+    minimum: tuple[int, int],
+    preferred: tuple[int, int] | None = None,
+) -> None:
+    """Ein Fenster skaliert aufziehen, aber nie größer als der Bildschirm.
+
+    Die übergebenen Maße sind am 9-Punkt-Entwurf gemessen und werden mitskaliert.
+    Entscheidend ist die zweite Hälfte: Ein Mindestmaß, das nicht auf den
+    Bildschirm passt, macht ein Fenster unbedienbar -- es lässt sich dann weder
+    kleiner ziehen noch vollständig sehen. Bei 150 % Anzeigeskalierung bleiben
+    von einem 1920 x 1080-Schirm 1280 x 720 logische Pixel übrig, und ein
+    Mindestmaß von 1080 x 720 passte dort nicht mehr hinein.
+    """
+    from PySide6.QtGui import QGuiApplication
+
+    screen = widget.screen() or QGuiApplication.primaryScreen()
+    available = screen.availableGeometry() if screen is not None else None
+    limit_width = int(available.width() * 0.95) if available else scaled(minimum[0])
+    limit_height = int(available.height() * 0.95) if available else scaled(minimum[1])
+    minimum_width = min(scaled(minimum[0]), limit_width)
+    minimum_height = min(scaled(minimum[1]), limit_height)
+    widget.setMinimumSize(minimum_width, minimum_height)
+    if preferred is None:
+        return
+    widget.resize(
+        max(minimum_width, min(scaled(preferred[0]), limit_width)),
+        max(minimum_height, min(scaled(preferred[1]), limit_height)),
+    )
+
+
+#: Maßangaben in Stylesheets, die mit der Schrift wachsen müssen. Höhen und
+#: Breiten stehen mit darin, weil eine größere Schrift in einem Feld fester
+#: Mindesthöhe genau das tut, was sie nicht soll: Sie wird abgeschnitten.
+_SCALABLE_CSS = re.compile(r"\b(font-size:\s*)(\d+(?:\.\d+)?)pt|\b(min-height|min-width):\s*(\d+)px")
+
+
+def scale_stylesheet(css: str) -> str:
+    """Absolute Maße in einem Qt-Stylesheet an die Systemschrift angleichen.
+
+    Das Portal beschreibt sein Aussehen zum großen Teil in Stylesheets, und dort
+    stehen Punktgrößen als feste Zahlen. Die überschreiben die Anwendungsschrift
+    -- wer in Windows eine größere Schrift eingestellt hat, bekam sie überall
+    außer dort, wo es zählt. Hier wird jede dieser Zahlen beim Setzen des
+    Stylesheets einmal umgerechnet, statt sie an dreißig Stellen einzeln zu
+    pflegen.
+    """
+    if scale_factor() == 1.0:
+        return css
+
+    def replace(match: re.Match) -> str:
+        if match.group(1):
+            return f"{match.group(1)}{scaled_points(float(match.group(2)))}pt"
+        return f"{match.group(3)}: {scaled(int(match.group(4)))}px"
+
+    return _SCALABLE_CSS.sub(replace, css)
 
 # =============================================================================
 # Brand Colors
@@ -111,7 +229,13 @@ class Colors:
 # =============================================================================
 
 class Typography:
-    """Typography based on the Windows/Qt system font and scalable point sizes."""
+    """Typography based on the Windows/Qt system font and scalable point sizes.
+
+    Die Konstanten sind die Größen des Entwurfs, gemessen an
+    :data:`REFERENCE_POINT_SIZE`. Sie bleiben stehen, weil Stylesheets sie als
+    Zahl brauchen; umgerechnet wird in :meth:`get_font` und in
+    :func:`scale_stylesheet`.
+    """
 
     # Font sizes
     FONT_SIZE_XS = 8
@@ -138,7 +262,10 @@ class Typography:
         """Create a font with specified size and weight."""
         application = QApplication.instance()
         font = QFont(application.font()) if application is not None else QFont()
-        font.setPointSize(size)
+        # Die Entwurfsgröße wird auf die Systemgröße umgerechnet, statt sie zu
+        # setzen: Sonst bekäme jede Schrift im Portal ihre 9 Punkt unabhängig
+        # davon, was in Windows unter "Größe von Text" eingestellt ist.
+        font.setPointSizeF(scaled_points(size))
         font.setWeight(weight)
         return font
 
@@ -180,7 +307,8 @@ class Typography:
     @classmethod
     def code(cls) -> QFont:
         """Code/monospace font."""
-        font = QFont("Consolas", cls.FONT_SIZE_SM, cls.FONT_WEIGHT_NORMAL)
+        font = QFont("Consolas", weight=cls.FONT_WEIGHT_NORMAL)
+        font.setPointSizeF(scaled_points(cls.FONT_SIZE_SM))
         return font
 
 
@@ -189,7 +317,13 @@ class Typography:
 # =============================================================================
 
 class Spacing:
-    """Spacing values in pixels."""
+    """Spacing values in pixels.
+
+    Die Zahlen sind am Entwurf gemessen; :meth:`px` rechnet sie auf diese
+    Anzeige um. Die Klassenattribute bleiben unskaliert, weil sie in
+    Stylesheets als Zahl eingesetzt werden und dort schon
+    :func:`scale_stylesheet` greift.
+    """
 
     NONE = 0
     XXS = 2
@@ -205,6 +339,11 @@ class Spacing:
     def get(cls, size: str) -> int:
         """Get spacing value by name."""
         return getattr(cls, size.upper(), cls.MD)
+
+    @classmethod
+    def px(cls, size: str | int) -> int:
+        """Ein Abstand des Entwurfs, auf diese Anzeige umgerechnet."""
+        return scaled(size if isinstance(size, int) else cls.get(size))
 
 
 # =============================================================================
@@ -509,6 +648,16 @@ class DesignSystem:
 # =============================================================================
 
 __all__ = [
+    # Skalierung
+    "MAX_POINT_SIZE",
+    "MIN_POINT_SIZE",
+    "REFERENCE_POINT_SIZE",
+    "apply_scaled_geometry",
+    "scale_factor",
+    "scale_stylesheet",
+    "scaled",
+    "scaled_points",
+    "system_point_size",
     # Color classes
     "BrandColors",
     "NeutralColors",

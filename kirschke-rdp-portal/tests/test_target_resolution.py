@@ -160,3 +160,29 @@ def test_a_share_written_with_the_ip_needs_no_lookup(monkeypatch):
     ws.agent_fallback_is_explicit = True
 
     assert ws.get_agent_status_target() == "192.168.20.210"
+
+
+# --- Der Servername für einen UNC-Pfad ----------------------------------------
+
+
+def test_a_dns_name_is_shortened_for_the_unc_path():
+    r"""Die Freigabe des Agenten heißt \PC07\RDP-Status, nicht \PC07.firma.de\..."""
+    assert name_resolution.unc_server_name("PC07.kirschke.local") == "PC07"
+    assert name_resolution.unc_server_name("PC07") == "PC07"
+
+
+def test_an_ip_address_survives_the_unc_path_intact():
+    r"""Der Bug: Aus 192.168.2.10 wurde \192\RDP-Status und Windows-Fehler 67.
+
+    Die Kürzung auf das erste Label ist für einen DNS-Namen richtig und für eine
+    IP-Adresse zerstörend. Der Verbindungsassistent meldete daraufhin "nicht
+    eingerichtet" für eine Maschine, die über ihre IP erreichbar war.
+    """
+    assert name_resolution.unc_server_name("192.168.2.10") == "192.168.2.10"
+    assert name_resolution.unc_server_name("10.0.0.1") == "10.0.0.1"
+
+
+def test_an_empty_identifier_yields_no_server_name():
+    assert name_resolution.unc_server_name("") == ""
+    assert name_resolution.unc_server_name(None) == ""
+    assert name_resolution.unc_server_name("   ") == ""

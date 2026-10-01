@@ -14,6 +14,7 @@ from portal_app.ui.widgets.workstation_cards import (
     CARD_HEIGHT,
     CARD_WIDTH,
     WorkstationCard,
+    card_width,
     offered_resolutions,
 )
 
@@ -43,8 +44,10 @@ def test_the_card_keeps_a_four_to_three_format():
 def test_the_card_does_not_grow_beyond_that(card):
     widget = card()
 
-    assert widget.maximumWidth() == CARD_WIDTH
-    assert widget.minimumWidth() == CARD_WIDTH
+    # Gegen die skalierte Breite geprueft, nicht gegen die Entwurfszahl: Auf
+    # einem System mit groesserer Schrift sind das verschiedene Werte.
+    assert widget.maximumWidth() == card_width()
+    assert widget.minimumWidth() == card_width()
 
 
 # --- Anzeige des gespeicherten Stands ----------------------------------------
@@ -94,7 +97,11 @@ def test_loading_a_machine_does_not_look_like_a_change(card, qtbot):
 
 # --- Aenderung meldet sich ---------------------------------------------------
 
-def test_choosing_a_resolution_reports_it(card, qtbot):
+def test_choosing_a_resolution_reports_it(card, qtbot, monkeypatch):
+    monkeypatch.setattr(
+        "portal_app.ui.widgets.workstation_cards.native_screen_size",
+        lambda: (1920, 1080),
+    )
     widget = card()
 
     with qtbot.waitSignal(widget.display_settings_changed) as blocker:

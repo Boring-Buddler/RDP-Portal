@@ -34,6 +34,7 @@ from shared.enums import (
     SessionState,
 )
 from shared.version import AGENT_VERSION
+from workstation_agent.claim_store import SessionClaimStore
 from workstation_agent.reservation_store import ReservationStore
 
 logger = logging.getLogger(__name__)
@@ -421,6 +422,10 @@ class WorkstationAgent:
         # nicht dem Statuskanal, weil sie auch in den Datei-Fallback muessen
         # und einen Neustart ueberleben sollen.
         self._reservation_store = ReservationStore()
+        # Wer sich unter welchem Windows-Konto aufgeschaltet hat. Aus demselben
+        # Grund hier und nicht im Statuskanal: Die Meldungen reisen im
+        # Datei-Fallback mit und sollen einen Neustart ueberstehen.
+        self._claim_store = SessionClaimStore()
 
         # Service control
         self._running = False
@@ -557,6 +562,7 @@ class WorkstationAgent:
                 self.config.live_status_reader,
                 logoff_handler=self._session_controller.handle,
                 reservation_handler=self._reservation_store.handle,
+                claim_handler=self._claim_store.handle,
             )
             self._status_server.start()
 
@@ -641,7 +647,12 @@ class WorkstationAgent:
             current_session_user=primary.full_username if primary else None,
             current_windows_session_id=primary.session_id if primary else None,
             rdp_sessions=[item.to_dict() for item in sessions],
-            reservations=self._reservation_store.current())
+            reservations=self._reservation_store.current(),
+            # Genau hier gebunden: Der Agent ist die einzige Stelle, die die
+            # gemeldete Aufschaltung und die Sitzung sieht, die daraus wurde.
+            session_claims=self._claim_store.bind_and_expire(
+                [item.to_dict() for item in sessions]
+            ))
 
     def _after_agent_logoff(self) -> None:
         """Publish the confirmed post-logoff state without waiting for the poll interval."""
@@ -706,6 +717,9 @@ class WorkstationAgent:
                 # Auch im Datei-Fallback, damit ein Portal ohne Pipe-Zugang
                 # dieselben Reservierungen sieht wie eines mit.
                 reservations=self._reservation_store.current(),
+                session_claims=self._claim_store.bind_and_expire(
+                    [session.to_dict() for session in self._last_rdp_sessions]
+                ),
             )
             directory = Path(self.config.status_directory).expanduser() if self.config.status_directory else None
             write_agent_snapshot(snapshot, directory)
