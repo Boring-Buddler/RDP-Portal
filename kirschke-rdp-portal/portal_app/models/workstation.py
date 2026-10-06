@@ -279,6 +279,16 @@ class Workstation:
 
         return self.get_rdp_profile().resolve_connection_target(resolvable)
 
+    def names_to_resolve(self) -> list[str]:
+        """Every name the two target methods may look up, for a prefetch."""
+        names = [self.fqdn or "", self.hostname or ""]
+        if self.agent_fallback_is_explicit:
+            configured = (self.agent_fallback_directory or "").strip()
+            match = re.match(r"^\\\\([^\\]+)\\", configured)
+            if match:
+                names.append(match.group(1))
+        return [name for name in names if name]
+
     def get_agent_status_target(self) -> str:
         """Return the SMB server identity authenticated for this agent channel.
 

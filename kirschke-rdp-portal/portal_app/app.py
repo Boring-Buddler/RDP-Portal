@@ -14,13 +14,14 @@ if __package__ in {None, ""}:
     if project_directory not in sys.path:
         sys.path.insert(0, project_directory)
 
-from PySide6.QtCore import QEvent
+from PySide6.QtCore import QEvent, QTimer
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from portal_app.ui.design import Colors, Typography
 from portal_app.ui.icons import kirschke_window_icon, set_windows_app_id
 from portal_app.ui.main_window import MainWindow
+from portal_app.ui.stall_watchdog import UiStallWatchdog
 from portal_app.version import PORTAL_VERSION
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,12 @@ class RDPPortalApp(QApplication):
             QMessageBox.critical(None, "Portal konnte nicht gestartet werden", str(exc))
             raise
         self.main_window.show()
+
+        # Erst mit laufender Ereignisschleife starten: Der Aufbau des Fensters
+        # davor ist kein Hänger, sondern der Programmstart.
+        self.stall_watchdog = UiStallWatchdog(parent=self)
+        QTimer.singleShot(0, self.stall_watchdog.start)
+        self.aboutToQuit.connect(self.stall_watchdog.stop)
 
         logger.info("RDP Workstation Portal started")
 

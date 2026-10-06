@@ -48,7 +48,7 @@ from portal_app.services.live_status_polling import AutomaticLiveStatusPoller
 from portal_app.services.local_identity import detect_initial_user
 from portal_app.services.local_store import LocalStore, StoreConflictError
 from portal_app.services.reservation_access import apply_reservations
-from portal_app.services.session_claims import SessionClaimReporter
+from portal_app.services.session_claims import BackgroundSessionClaimReporter
 from portal_app.services.windows_admin_auth import (
     check_windows_admin_authorization,
     test_password_fallback_allowed,
@@ -69,6 +69,7 @@ from portal_app.ui.widgets.workstation_detail import WorkstationDetailWidget
 from portal_app.ui.widgets.workstation_dialog import WorkstationDialog
 from portal_app.version import PORTAL_VERSION
 from shared.enums import EventResult, EventSource, EventType, ManualFlagType
+from shared.name_resolution import prefetch as prefetch_names
 from shared.name_resolution import unc_server_name
 from shared.session_identity import is_active_session, is_console_session, session_username
 
@@ -115,14 +116,26 @@ class MainWindow(QMainWindow):
         # Meldet dem Agenten jede vom Portal gestartete Verbindung und haelt
         # nach, was noch nicht angekommen ist. Wiederholt wird, weil das
         # Ausbleiben einer Meldung selbst eine Auskunft ist -- siehe
-        # portal_app.services.session_claims.
-        self._claim_reporter = SessionClaimReporter()
+        # portal_app.services.session_claims. Die Pipe-Aufrufe laufen im
+        # Hintergrund, weil eine abgeschaltete Maschine sonst bei jedem
+        # Statuslauf das Fenster sekundenlang anhielt.
+        self._claim_reporter = BackgroundSessionClaimReporter(parent=self)
         # Maschine und Konto, fuer die diese Sitzung bereits eine Aufschaltung
         # gemeldet hat. Siehe _learn_reported_account: Ohne das ginge bei jedem
         # Statuslauf erneut eine Pipe-Anfrage an dieselbe Maschine.
         self._reported_claims: set[tuple[str, str]] = set()
         self.fallback_scanner = FallbackScanner(parent=self)
         self.fallback_scanner.completed.connect(self._on_fallback_scan_completed)
+        # Letztes Ergebnis des Ordner-Scans. Eine Live-Antwort wendet es mit dem
+        # neuen Live-Stand erneut an, statt die Ordner noch einmal zu lesen --
+        # vorher lief dafuer pro Maschine und Statuslauf ein blockierender
+        # SMB-Scan im UI-Thread.
+        self._last_fallback_scans: object | None = None
+        # Buendelt die Live-Antworten eines Statuslaufs zu einer Aktualisierung.
+        self._live_apply_timer = QTimer(self)
+        self._live_apply_timer.setSingleShot(True)
+        self._live_apply_timer.setInterval(150)
+        self._live_apply_timer.timeout.connect(self._apply_live_results)
         self.share_reconnector = ShareReconnector(parent=self)
         self.share_reconnector.completed.connect(self._on_shares_reconnected)
         # Agent IDs a sweep has seen, so the settings table can offer an agent
@@ -142,6 +155,12 @@ class MainWindow(QMainWindow):
         # gezeigt, sobald ein Fenster da ist, an dem ein Dialog haengen kann.
         self._storage_fallback_notice = ""
         self._load_data()
+        # Alle Namen gleichzeitig nachschlagen, bevor der erste Statuslauf sie
+        # einzeln abfragt. Nacheinander kostete jeder nicht aufloesbare Name
+        # den Start bis zu zwei Sekunden.
+        prefetch_names(
+            name for item in self.workstations for name in item.names_to_resolve()
+        )
         self._create_ui()
         self._update_storage_status("Gemeinsamer Speicher bereit")
         self._connect_signals()
@@ -1173,7 +1192,8 @@ class MainWindow(QMainWindow):
             self._report_agent_status_failure(exc)
 
     def _apply_fallback_scans(self, scans: object, reservation_changed: bool) -> None:
-        changed = self.agent_status_service.apply_scans(self.workstations, scans)
+        self._last_fallback_scans = scans
+        changed =self.agent_status_service.apply_scans(self.workstations, scans)
         self.settings_view.set_agent_bridge_status(
             self.agent_status_service.last_match_count,
             self.agent_status_service.last_snapshot_count,
@@ -1270,7 +1290,7 @@ class MainWindow(QMainWindow):
             self.agent_status_service.accept_live_snapshot(workstation, snapshot, elapsed)
         except ValueError as exc:
             self.agent_status_service.record_live_failure(workstation, str(exc))
-        self._poll_agent_status()
+        self._schedule_live_apply()
 
     @Slot(str, object, str)
     def _on_live_status_failed(
@@ -1292,7 +1312,30 @@ class MainWindow(QMainWindow):
             except ValueError:
                 return
         self.agent_status_service.record_live_failure(workstation, message)
-        self._poll_agent_status()
+        self._schedule_live_apply()
+
+    def _schedule_live_apply(self) -> None:
+        """Apply live answers once per burst instead of once per machine."""
+        if not self._live_apply_timer.isActive():
+            self._live_apply_timer.start()
+
+    @Slot()
+    def _apply_live_results(self) -> None:
+        """Re-apply the last folder scan together with the new live answers.
+
+        Reads no folder: the file fallback is refreshed by the heartbeat in the
+        background. Only without any scan yet is one requested there.
+        """
+        if self._last_fallback_scans is None:
+            self._poll_agent_status(blocking=False)
+            return
+        reservation_changed = apply_reservations(
+            self.workstations, self.reservations, self.current_user.upn
+        )
+        try:
+            self._apply_fallback_scans(self._last_fallback_scans, reservation_changed)
+        except (OSError, ValueError) as exc:
+            self._report_agent_status_failure(exc)
 
     @Slot(int)
     def _set_status_refresh_interval(self, seconds: int) -> None:
@@ -2617,6 +2660,7 @@ class MainWindow(QMainWindow):
         self.agent_poll_timer.stop()
         self.live_status_poller.stop()
         self.fallback_scanner.stop()
+        self._claim_reporter.stop()
         # Its pool waits for a running reconnect on destruction, so a slow SMB
         # host would otherwise hold the closing portal open with no window left.
         self.share_reconnector.stop()

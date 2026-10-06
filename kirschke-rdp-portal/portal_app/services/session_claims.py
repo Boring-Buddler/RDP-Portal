@@ -26,8 +26,11 @@ die Vertrauensgrenze und für die Regel, die daraus folgt.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
@@ -67,6 +70,8 @@ class PendingClaim:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     attempts: int = 0
     last_error: str = ""
+    #: time.monotonic() des letzten Versuchs, für den Mindestabstand.
+    last_attempt_at: float = 0.0
 
 
 class SessionClaimReporter:
@@ -80,6 +85,10 @@ class SessionClaimReporter:
     keine Sitzung unter diesem Konto und die Meldung ist älter als
     :data:`UNCONFIRMED_MAX_AGE_SECONDS`.
     """
+
+    #: Mindestabstand zwischen zwei Wiederholungen derselben Meldung in
+    #: :meth:`flush`. Null heisst: bei jedem Aufruf versuchen.
+    retry_spacing_seconds = 0.0
 
     def __init__(self) -> None:
         self._pending: dict[tuple[str, str], PendingClaim] = {}
@@ -109,25 +118,46 @@ class SessionClaimReporter:
         self._pending[key] = entry
         return self._attempt(workstation, user, entry)
 
-    def _attempt(self, workstation: Workstation, user: User, entry: PendingClaim) -> str:
+    def _prepare(
+        self, workstation: Workstation, user: User, entry: PendingClaim
+    ) -> tuple[str, dict] | str:
+        """Ziel und Meldung festlegen. Gibt bei fehlendem Ziel den Grund zurück.
+
+        Liest das Workstation-Objekt und gehört deshalb in den UI-Thread.
+        """
         entry.attempts += 1
+        entry.last_attempt_at = time.monotonic()
         try:
             target = workstation.get_agent_status_target()
         except ValueError as exc:
             entry.last_error = str(exc)
             return f"Kein Agentenziel für {workstation.display_name}: {exc}"
+        return target, build_claim(user, entry.account)
+
+    def _record(self, display_name: str, entry: PendingClaim, error: str) -> None:
+        """Ergebnis eines Zustellversuchs festhalten."""
+        if not error:
+            self._pending.pop(self._key(entry.workstation_id, entry.account), None)
+            return
+        entry.last_error = error
+        logger.info(
+            "Aufschaltung für %s (Versuch %d) nicht zugestellt: %s",
+            display_name,
+            entry.attempts,
+            error,
+        )
+
+    def _attempt(self, workstation: Workstation, user: User, entry: PendingClaim) -> str:
+        prepared = self._prepare(workstation, user, entry)
+        if isinstance(prepared, str):
+            return prepared
+        target, claim = prepared
         try:
-            push_session_claim(target, build_claim(user, entry.account))
+            push_session_claim(target, claim)
         except Exception as exc:  # noqa: BLE001 - jede Pipe-Störung ist hier gleichwertig
-            entry.last_error = str(exc)
-            logger.info(
-                "Aufschaltung für %s (Versuch %d) nicht zugestellt: %s",
-                workstation.display_name,
-                entry.attempts,
-                exc,
-            )
+            self._record(workstation.display_name, entry, str(exc))
             return str(exc)
-        self._pending.pop(self._key(entry.workstation_id, entry.account), None)
+        self._record(workstation.display_name, entry, "")
         return ""
 
     def flush(self, workstations: list[Workstation], user: User) -> int:
@@ -141,6 +171,7 @@ class SessionClaimReporter:
             return 0
         machines = {item.workstation_id: item for item in workstations}
         now = datetime.now(UTC)
+        monotonic_now = time.monotonic()
         for key, entry in list(self._pending.items()):
             workstation = machines.get(entry.workstation_id)
             if workstation is None:
@@ -158,6 +189,11 @@ class SessionClaimReporter:
                     entry.last_error or "keiner",
                 )
                 del self._pending[key]
+                continue
+            if (
+                entry.attempts
+                and monotonic_now - entry.last_attempt_at < self.retry_spacing_seconds
+            ):
                 continue
             self._attempt(workstation, user, entry)
         return len(self._pending)
@@ -197,8 +233,114 @@ class SessionClaimReporter:
         return (now - entry.created_at).total_seconds() > UNCONFIRMED_MAX_AGE_SECONDS
 
 
+class _ClaimSignals(QObject):
+    finished = Signal(object, str)
+
+
+class _ClaimTask(QRunnable):
+    """Eine Meldung über die Pipe zustellen. Kennt nur Ziel und Meldung."""
+
+    def __init__(self, key: tuple[str, str], target: str, claim: dict) -> None:
+        super().__init__()
+        self.key = key
+        self.target = target
+        self.claim = claim
+        self.signals = _ClaimSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            push_session_claim(self.target, self.claim)
+        except Exception as exc:  # noqa: BLE001 - jede Pipe-Störung ist hier gleichwertig
+            self.signals.finished.emit(self.key, str(exc) or type(exc).__name__)
+        else:
+            self.signals.finished.emit(self.key, "")
+
+
+class _ClaimDelivery(QObject):
+    """Führt die Pipe-Aufrufe aus und meldet das Ergebnis im UI-Thread zurück."""
+
+    delivered = Signal(object, str)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.pool = QThreadPool(self)
+        # Eine Meldung nach der anderen: Es sind wenige, und eine gegen eine
+        # abgeschaltete Maschine soll nicht mehrere Threads binden.
+        self.pool.setMaxThreadCount(1)
+        self._tasks: dict[tuple[str, str], _ClaimTask] = {}
+        self.stopped = False
+
+    def start(self, key: tuple[str, str], target: str, claim: dict) -> None:
+        task = _ClaimTask(key, target, claim)
+        task.signals.finished.connect(self._on_finished)
+        self._tasks[key] = task
+        self.pool.start(task)
+
+    @Slot(object, str)
+    def _on_finished(self, key: tuple[str, str], error: str) -> None:
+        self._tasks.pop(key, None)
+        if not self.stopped:
+            self.delivered.emit(key, error)
+
+    def stop(self) -> None:
+        self.stopped = True
+        self.pool.clear()
+
+
+class BackgroundSessionClaimReporter(SessionClaimReporter):
+    """Wie :class:`SessionClaimReporter`, aber die Pipe läuft im Hintergrund.
+
+    Die Zustellung wartet auf ``WaitNamedPipe``, auf den SMB-Verbindungsaufbau
+    und auf die Antwort des Agenten -- gegen eine abgeschaltete Maschine
+    mehrere Sekunden. Im UI-Thread hing damit bei jedem Statuslauf das
+    Fenster. Hier bleibt nur die Buchführung im UI-Thread; der Pipe-Aufruf
+    selbst geht in einen eigenen Thread, und das Ergebnis kommt per Signal
+    zurück.
+
+    :meth:`report` gibt deshalb auch dann eine leere Zeichenkette zurück, wenn
+    die Meldung nur übergeben wurde. Ein Fehlschlag wird bei Eintreffen
+    protokolliert und im nächsten Statuslauf wiederholt.
+    """
+
+    retry_spacing_seconds = 5.0
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__()
+        self._in_flight: set[tuple[str, str]] = set()
+        self._display_names: dict[tuple[str, str], str] = {}
+        self._delivery = _ClaimDelivery(parent)
+        self._delivery.delivered.connect(self._on_delivered)
+
+    def _attempt(self, workstation: Workstation, user: User, entry: PendingClaim) -> str:
+        key = self._key(entry.workstation_id, entry.account)
+        if key in self._in_flight or self._delivery.stopped:
+            return ""
+        prepared = self._prepare(workstation, user, entry)
+        if isinstance(prepared, str):
+            return prepared
+        target, claim = prepared
+        self._in_flight.add(key)
+        self._display_names[key] = workstation.display_name
+        self._delivery.start(key, target, claim)
+        return ""
+
+    def _on_delivered(self, key: tuple[str, str], error: str) -> None:
+        self._in_flight.discard(key)
+        display_name = self._display_names.pop(key, "")
+        entry = self._pending.get(key)
+        if entry is None:
+            # Inzwischen erledigt oder aufgegeben.
+            return
+        self._record(display_name, entry, error)
+
+    def stop(self) -> None:
+        self._delivery.stop()
+
+
 __all__ = [
     "UNCONFIRMED_MAX_AGE_SECONDS",
+    "BackgroundSessionClaimReporter",
     "PendingClaim",
     "SessionClaimReporter",
     "build_claim",

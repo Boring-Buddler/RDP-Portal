@@ -50,6 +50,9 @@ def test_windowless_process_stops_blocking_but_late_window_is_recognised(monkeyp
     assert launcher.consume_finished_sessions() == []
     session.process.terminate.assert_not_called()
     windows.return_value = [123]
+    # Erkannt wird das späte Fenster mit der nächsten Aufzählung, also nach
+    # Ablauf der Frist, für die has_active_session das letzte Ergebnis behält.
+    monkeypatch.setattr("portal_app.rdp.launcher.time.monotonic", lambda: 33)
     assert launcher.has_active_session("A")
 
 

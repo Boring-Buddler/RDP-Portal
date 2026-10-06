@@ -13,6 +13,11 @@ from shared.schemas import RDPProfileSchema
 
 logger = logging.getLogger(__name__)
 
+#: Wie lange das Ergebnis einer Fensteraufzaehlung fuer has_active_session
+#: gilt. Jede Karte fragt bei jedem Neuzeichnen nach; ohne diese Frist lief pro
+#: Repaint ein EnumWindows samt Python-Rueckruf fuer jedes Fenster.
+ACTIVE_SESSION_CACHE_SECONDS = 1.0
+
 
 @dataclass
 class TrackedRDPSession:
@@ -47,6 +52,10 @@ class RDPSessionLauncher:
         self.generator = rdp_generator or RDPFileGenerator()
         self._active_sessions: dict[int, TrackedRDPSession] = {}
         self._finished_sessions: list[TrackedRDPSession] = []
+        # Workstation-IDs mit sichtbarem Fenster aus der letzten Aufzaehlung
+        # und deren Zeitpunkt. None heisst: beim naechsten Zugriff neu zaehlen.
+        self._active_ids: frozenset[str] | None = None
+        self._active_ids_at = 0.0
 
     def launch(
         self,
@@ -122,6 +131,7 @@ class RDPSessionLauncher:
                 process=process,
             )
             self._active_sessions[process.pid] = tracked
+            self._active_ids = None
 
             logger.info(f"Launched mstsc.exe with RDP file: {rdp_file}")
             return True, f"RDP-Verbindung zu {Path(rdp_file).name} gestartet"
@@ -164,13 +174,23 @@ class RDPSessionLauncher:
             if not session.window_missing_reported:
                 self._finished_sessions.append(session)
             del self._active_sessions[pid]
+        self._active_ids = frozenset(session.workstation_id for session in active)
+        self._active_ids_at = time.monotonic()
         return active
 
     def has_active_session(self, workstation_id: str) -> bool:
-        return any(
-            session.workstation_id == workstation_id
-            for session in self.get_active_sessions()
-        )
+        """Whether a portal-started RDP window for this machine is open.
+
+        Answers from the last enumeration while it is younger than
+        ``ACTIVE_SESSION_CACHE_SECONDS``; launching or closing a session
+        discards that answer at once.
+        """
+        if (
+            self._active_ids is None
+            or time.monotonic() - self._active_ids_at >= ACTIVE_SESSION_CACHE_SECONDS
+        ):
+            self.get_active_sessions()
+        return workstation_id in (self._active_ids or frozenset())
 
     def focus_session(self, workstation_id: str) -> bool:
         """Raise the RDP window this portal started for one machine.
@@ -225,6 +245,7 @@ class RDPSessionLauncher:
                 session.return_code = session.process.poll()
                 self._finished_sessions.append(session)
                 del self._active_sessions[pid]
+                self._active_ids = None
                 disconnected += 1
             except (OSError, subprocess.SubprocessError) as exc:
                 logger.warning("Could not close RDP process %s: %s", pid, exc)

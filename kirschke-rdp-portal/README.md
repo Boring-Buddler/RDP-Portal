@@ -47,6 +47,28 @@ SMB-Sitzung aber nicht - der Datei-Fallback und mit ihm der Live-Kanal (dessen
 Pipe-Ziel vom selben Server stammt) blieben tot, bis jemand den
 Einrichtungsdialog erneut durchlief.
 
+**Netzwerkzugriffe halten das Fenster nicht mehr an.** Eine Live-Antwort
+liest die Fallbackordner nicht mehr neu ein, sondern verwendet den letzten
+Ordner-Scan, den der Statustakt im Hintergrund erneuert. Die Antworten eines
+Statuslaufs werden zu einer Aktualisierung gebündelt. Aufschaltmeldungen gehen
+in einem eigenen Thread an den Agenten; eine nicht zugestellte Meldung wird
+frühestens nach 5 s erneut versucht. Ob ein vom Portal gestartetes RDP-Fenster
+noch offen ist, wird höchstens einmal pro Sekunde abgefragt – ein gerade
+geschlossenes Fenster kann also bis zu einer Sekunde nachwirken.
+
+Rechnernamen werden beim Start alle gleichzeitig nachgeschlagen. Ein Name ohne
+schnelle DNS-Antwort (150 ms) gilt vorerst als nicht auflösbar, und das Portal
+nimmt den nächsten Bezeichner, meist die IP; die Antwort wird im Hintergrund
+nachgereicht. Eine abgelaufene Antwort bleibt gültig, bis die neue da ist.
+Vorher kostete jeder nicht auflösbare Name den Start bis zu 2 s und im Betrieb
+alle 30 s erneut.
+
+**Hänger im Log:** Reagiert die Oberfläche länger als 200 ms nicht, steht im
+`portal.log` eine WARNING mit der Codestelle, an der sie hängt, und danach die
+Gesamtdauer. Die Zeile „UI-Wachhund aktiv“ bestätigt beim Start, dass die
+Überwachung läuft. Bei der Store-Version von Python liegt das Log unter
+`%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.13_…\LocalCache\Local\KirschkeRDPPortal\logs`.
+
 ### Lesekonto
 
 Das Portal liest Statusfreigaben und den Agent-Statuskanal als `PortalLeser`,
