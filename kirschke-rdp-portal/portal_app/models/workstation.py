@@ -6,9 +6,20 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from shared.enums import AgentStatus, ConnectionTargetMode, ManualFlagType, SessionState
-from shared.identity import ENTRA_DOMAIN, IdentityMatch, WindowsIdentity
+from shared.identity import (
+    IdentityMatch,
+    SharedWindowsIdentity,
+    WindowsIdentity,
+    account_names_session,
+    entra_rdp_username,
+)
 from shared.schemas import ManualFlagSchema, RDPProfileSchema, WorkstationSchema
-from shared.session_identity import is_active_session, session_username
+from shared.session_identity import (
+    claim_client_conflicts,
+    claim_matches_session_client,
+    is_active_session,
+    session_username,
+)
 from shared.validation import generate_test_entra_id, generate_test_upn
 
 
@@ -18,6 +29,18 @@ def as_windows_identity(value: WindowsIdentity | str | None) -> WindowsIdentity 
         return value
     identity = WindowsIdentity.from_names(down_level=value)
     return identity if identity.for_display() else None
+
+
+def _account_owns(account: WindowsIdentity, session: dict) -> bool:
+    """Ob ``session`` zu einem der eigenen Konten gehört, so weit das Portal es sagen kann.
+
+    Bei einem gemeinsam genutzten Konto reicht der Name nicht: Dort zählt die
+    Sitzung nur, wenn Windows diesen PC als ihren RDP-Client meldet. Siehe
+    :class:`shared.identity.SharedWindowsIdentity`.
+    """
+    if not account.matches(WindowsIdentity.from_session(session)):
+        return False
+    return not isinstance(account, SharedWindowsIdentity) or account.opened_from(session)
 
 
 #: One account, several, in either spelling, or none at all.
@@ -127,7 +150,7 @@ class Workstation:
     current_windows_session_id: int | None = None
     last_session_event_utc: datetime | None = None
 
-    # SharePoint metadata
+    # Concurrency metadata (kept for compatibility with stored inventories)
     etag: str | None = None
 
     # UI state
@@ -242,7 +265,30 @@ class Workstation:
             etag=schema.etag,
         )
 
-    def get_rdp_profile(self, default_username: str | None = None) -> RDPProfileSchema:
+    def rdp_account(
+        self, default_username: str | None = None, *, entra_user: bool = False
+    ) -> str | None:
+        """Das Konto für die .rdp-Datei, in der Schreibweise, die das Ziel braucht.
+
+        Ohne Entra-Webanmeldung -- und bei einer IP-Adresse gibt es keine --
+        nimmt ein Entra-Ziel ein Entra-Konto nur als ``AzureAD\\name@firma.de``.
+        Die bloße E-Mail-Adresse lehnte Windows mit "nicht zur Remoteanmeldung
+        autorisiert" ab, obwohl dasselbe Konto über normales RDP hineinkam.
+        Bisher stand das nur in einer Warnung mit "Trotzdem starten"; vor 0.9.1
+        fiel es nicht auf, weil Windows ohnehin gespeicherte Anmeldedaten nahm.
+
+        Ein Entra-Konto ist es, wenn die Maschine Entra-Sitzungen gemeldet hat
+        oder ``entra_user`` sagt, dass der Portal-Benutzer selbst mit einem
+        Entra-Konto angemeldet ist. Ein Name mit Domäne bleibt unverändert.
+        """
+        account = self.selected_login_account or self.username_hint or default_username
+        if account and not self.entra_sso_enabled and (entra_user or self.reports_entra_sessions()):
+            return entra_rdp_username(account, aad_auth=False)
+        return account
+
+    def get_rdp_profile(
+        self, default_username: str | None = None, *, entra_user: bool = False
+    ) -> RDPProfileSchema:
         """Get the RDP profile for this workstation."""
         return RDPProfileSchema(
             hostname=self.hostname,
@@ -252,7 +298,7 @@ class Workstation:
             display_name=self.display_name,
             site=self.site,
             description=self.description,
-            username_hint=self.selected_login_account or self.username_hint or default_username,
+            username_hint=self.rdp_account(default_username, entra_user=entra_user),
             entra_sso_enabled=self.entra_sso_enabled,
             trust_unverified_server=self.trust_unverified_server,
             gateway_hostname=self.gateway_hostname,
@@ -358,29 +404,6 @@ class Workstation:
             for item in self.reported_sessions() + self.agent_session_history
         )
 
-    def entra_spelling_warning(self, default_username: str | None = None) -> str | None:
-        """Offer explicit Entra authentication for a target with Entra evidence.
-
-        A bare UPN can also work without web authentication. Session history
-        establishes account usage, not the selected account's effective rights.
-        """
-        if self.entra_sso_enabled or not self.reports_entra_sessions():
-            return None
-        account = self.selected_login_account or self.username_hint or default_username
-        identity = WindowsIdentity.from_names(down_level=account)
-        if not identity.upn or identity.down_level:
-            return None
-        return (
-            f"{self.display_name} hat Windows-Sitzungen mit Entra-Konten gemeldet, ist im Portal "
-            "aber nicht als Entra-Ziel eingestellt. Der Kontoname "
-            f"„{identity.upn}“ wird ohne Entra-Webanmeldung übergeben. Auch diese Schreibweise "
-            "kann funktionieren. Die Meldung ‚nicht autorisiert‘ allein belegt weder ein "
-            "falsches Namensformat noch die Berechtigung des ausgewählten Kontos.\n\n"
-            f"Für ein Entra-Konto kannst du die Entra-Webanmeldung aktivieren oder explizit "
-            f"diesen Kontonamen verwenden: "
-            f"„{ENTRA_DOMAIN}\\{identity.upn}“."
-        )
-
     def can_choose_session(self) -> bool:
         # Eine fremde Reservierung steht hier bewusst nicht mehr: sie hat den
         # Rückweg auf die eigene laufende Sitzung versperrt. Siehe can_connect.
@@ -444,27 +467,43 @@ class Workstation:
     def session_claim(self, session: dict) -> dict | None:
         """Die gemeldete Aufschaltung zu einer Sitzung, falls es eine gibt.
 
-        Zuerst ueber Sitzungs-ID und Anmeldezeitpunkt, weil der Agent die
-        Meldung an genau die Sitzung bindet, die er zu ihr gefunden hat. Ist
-        sie noch nicht gebunden -- die Meldung kommt beim Starten von mstsc,
-        die Sitzung entsteht erst danach --, zaehlt der Kontoname.
+        Eine an eine *andere* Sitzung gebundene Meldung zaehlt nicht -- der
+        Agent bindet ueber Sitzungs-ID und Anmeldezeitpunkt. Noch nicht
+        gebundene Meldungen -- sie entstehen beim Start von mstsc, die Sitzung
+        erst danach -- zaehlen ueber den Kontonamen, in jeder Schreibweise, die
+        dasselbe Konto bezeichnet.
+
+        Passen mehrere, gilt die juengste. Auf einer Maschine mit einem
+        gemeinsamen Konto schaltet sich der Naechste auf *dieselbe* getrennte
+        Sitzung auf: gleiche ID, gleicher Anmeldezeitpunkt. Die Meldung des
+        Vorgaengers bleibt daran gebunden, und die Karte nannte bisher ihn
+        statt der Person, die jetzt davor sitzt.
         """
-        account = session_username(session).strip().casefold()
+        if not session_username(session).strip():
+            return None
         session_id = session.get("session_id")
         login_time = str(session.get("login_time") or "").strip()
-        fallback: dict | None = None
+        candidates: list[dict] = []
         for claim in self.agent_session_claims or []:
             if not isinstance(claim, dict):
                 continue
-            if str(claim.get("account") or "").strip().casefold() != account or not account:
+            if not account_names_session(claim.get("account"), session):
                 continue
             bound_id, bound_login = claim.get("session_id"), str(claim.get("login_time") or "").strip()
             if bound_id is not None and login_time and bound_login:
-                if bound_id == session_id and bound_login == login_time:
-                    return claim
+                if bound_id != session_id or bound_login != login_time:
+                    continue
+                if claim_client_conflicts(claim, session):
+                    continue  # von einem anderen Rechner übernommen
+            elif not claim_matches_session_client(claim, session):
+                # Noch nicht gebunden: nur, wenn die Sitzung vom meldenden
+                # Rechner aus aufgebaut wurde -- siehe claim_matches_session_client.
                 continue
-            fallback = fallback or claim
-        return fallback
+            candidates.append(claim)
+        if not candidates:
+            return None
+        # max() behaelt bei Gleichstand die zuerst gemeldete.
+        return max(candidates, key=lambda claim: str(claim.get("claimed_at_utc") or ""))
 
     def reports_session_claims(self) -> bool:
         """Ob der Agent dieser Maschine Aufschaltungen überhaupt meldet.
@@ -506,10 +545,24 @@ class Workstation:
         for item in self.reported_sessions():
             if not is_active_session(item):
                 continue
-            name = self.session_owner_display(item) or session_username(item).strip()
+            name = self.session_holder_label(item)
             if name:
                 names.setdefault(name.casefold(), name)
         return sorted(names.values(), key=str.casefold)
+
+    def session_holder_label(self, session: dict) -> str:
+        """Person und Windows-Konto einer Sitzung, so weit bekannt.
+
+        Nur die Person zu nennen, verbarg das Konto: Wer sich als
+        ``NB12KI\\Codex`` verbunden hatte, las auf der Karte nur seinen eigenen
+        Namen und nicht, unter welchem Konto die Sitzung läuft -- und daneben
+        stand im Dropdown ein ganz anderes. Ohne Meldung bleibt es beim Konto.
+        """
+        account = session_username(session).strip()
+        person = self.session_owner_display(session)
+        if person and account and person.casefold() != account.casefold():
+            return f"{person} als {account}"
+        return person or account
 
     def session_owner_display(self, session: dict) -> str | None:
         """Der Name des Menschen, der sich zu dieser Sitzung gemeldet hat."""
@@ -552,7 +605,7 @@ class Workstation:
             item
             for item in self.reported_sessions()
             if is_active_session(item)
-            and any(account.matches(WindowsIdentity.from_session(item)) for account in accounts)
+            and any(_account_owns(account, item) for account in accounts)
             and not self.claimed_by_other(item, user_upn)
         ]
 

@@ -227,11 +227,18 @@ def test_agent_detector_uses_submission_queue(tmp_path):
 
 def test_remote_commands_do_not_execute_in_pilot():
     agent = WorkstationAgent(AgentConfig(workstation_id="PILOT", log_file="", publish_local_status=False))
-    agent._graph_client = Mock()
     agent.command_handler = Mock()
     agent._check_admin_commands()
-    agent._graph_client.get_pending_commands.assert_not_called()
     agent.command_handler.execute_command.assert_not_called()
+
+
+def test_the_agent_has_no_cloud_channel_left():
+    """Seit 1.7.0 laufen alle Daten über die Statusfreigabe und die Pipe."""
+    import workstation_agent.service as service
+
+    assert not hasattr(AgentConfig(), "sharepoint_site_id")
+    assert not hasattr(service.WorkstationAgent, "_get_graph_client")
+    assert not hasattr(service.WorkstationAgent, "_update_status")
 
 
 @pytest.mark.parametrize("content", ["broken", "[]", '{"iterations":-1,"salt":"AA==","password_hash":"AA=="}'])

@@ -25,6 +25,7 @@ from portal_app.models.workstation import Workstation
 from portal_app.ui.design import scaled
 from portal_app.ui.machine_actions import CONSOLE_LOGOFF_HINT, describe_actions
 from portal_app.ui.widgets.flag_dialog import FlagDialog
+from portal_app.ui.widgets.flow_layout import FlowLayout
 from portal_app.ui.widgets.login_account_selector import LoginAccountSelector
 from shared.enums import ManualFlagType
 from shared.session_identity import is_console_session, session_username
@@ -66,43 +67,63 @@ class WorkstationDetailWidget(QWidget):
         self.back_btn = QPushButton("← Maschinen")
         self.back_btn.setObjectName("toolbarButton")
         self.back_btn.clicked.connect(self.back_requested)
-        header.addWidget(self.back_btn)
-        header.addStretch()
+        header.addWidget(self.back_btn, 0, Qt.AlignTop)
+        # Die Knopfgruppen brechen um, statt bei größerer Schrift gequetscht
+        # zu werden.
+        header_buttons = FlowLayout(spacing=10, align_right=True)
+        header.addLayout(header_buttons, 1)
         self.edit_btn = QPushButton("Daten bearbeiten")
         self.edit_btn.setObjectName("toolbarButton")
         self.edit_btn.clicked.connect(self._on_edit)
-        header.addWidget(self.edit_btn)
+        header_buttons.addWidget(self.edit_btn)
         self.diagnostics_btn = QPushButton("RDP-Diagnose")
         self.diagnostics_btn.setObjectName("toolbarButton")
         self.diagnostics_btn.clicked.connect(self._on_diagnostics)
-        header.addWidget(self.diagnostics_btn)
+        header_buttons.addWidget(self.diagnostics_btn)
         self.connect_btn = QPushButton("RDP verbinden")
         self.connect_btn.setObjectName("cardPrimaryButton")
         self.connect_btn.clicked.connect(self._on_connect)
-        header.addWidget(self.connect_btn)
+        header_buttons.addWidget(self.connect_btn)
         root.addLayout(header)
+
+        # Alles unter der Kopfzeile scrollt. Vorher standen Agentzeile,
+        # Kontoauswahl und Belegt-Hinweis fest darüber, und in einem kleinen
+        # Fenster mit größerer Schrift quetschte Qt sie, bis der Hinweistext
+        # unten abgeschnitten war.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setObjectName("detailScroll")
+        content = QWidget()
+        content.setObjectName("detailContent")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 8, 8)
+        content_layout.setSpacing(16)
+
         agent_row = QHBoxLayout()
         self.agent_assignment_label = QLabel()
         self.agent_assignment_label.setObjectName("cardMeta")
         self.agent_assignment_label.setWordWrap(True)
         agent_row.addWidget(self.agent_assignment_label, 1)
+        agent_buttons = FlowLayout(spacing=10, align_right=True)
+        agent_row.addLayout(agent_buttons)
         self.live_status_btn = QPushButton("Agent live abfragen")
         self.live_status_btn.setObjectName("toolbarButton")
         self.live_status_btn.clicked.connect(lambda: self.live_status_requested.emit(self.workstation) if self.workstation else None)
-        agent_row.addWidget(self.live_status_btn)
+        agent_buttons.addWidget(self.live_status_btn)
         self.agent_assignment_btn = QPushButton("Agent zuordnen …")
         self.agent_assignment_btn.setObjectName("toolbarButton")
         self.agent_assignment_btn.clicked.connect(self._on_agent_assignment)
-        agent_row.addWidget(self.agent_assignment_btn)
+        agent_buttons.addWidget(self.agent_assignment_btn)
         self.fallback_setup_btn = QPushButton("Datei-Fallback einrichten …")
         self.fallback_setup_btn.setObjectName("toolbarButton")
         self.fallback_setup_btn.clicked.connect(self._on_fallback_setup)
-        agent_row.addWidget(self.fallback_setup_btn)
-        root.addLayout(agent_row)
+        agent_buttons.addWidget(self.fallback_setup_btn)
+        content_layout.addLayout(agent_row)
         self.reservation_label = QLabel()
         self.reservation_label.setObjectName("cardStatus")
         self.reservation_label.setWordWrap(True)
-        root.addWidget(self.reservation_label)
+        content_layout.addWidget(self.reservation_label)
         # Sichtbar, solange die Maschine als fremd belegt gilt. Bei einem
         # Entra-Konto ist der gemeldete Name der Profilname, die Portaleinstellung
         # aber die UPN -- die beiden lassen sich nicht auseinander herleiten, und
@@ -120,11 +141,11 @@ class WorkstationDetailWidget(QWidget):
         )
         self.claim_btn.clicked.connect(self._on_claim)
         self.claim_row.addWidget(self.claim_btn)
-        root.addLayout(self.claim_row)
+        content_layout.addLayout(self.claim_row)
         self.account_selector = LoginAccountSelector(None, self.user, self)
         self.account_selector.account_selected.connect(self.account_selected)
         self.account_selector.add_requested.connect(self.account_add_requested)
-        root.addWidget(self.account_selector)
+        content_layout.addWidget(self.account_selector)
 
         self.session_warning = QFrame()
         self.session_warning.setObjectName("sessionWarning")
@@ -151,17 +172,7 @@ class WorkstationDetailWidget(QWidget):
         self.logoff_btn.clicked.connect(lambda: self.logoff_requested.emit(self.workstation) if self.workstation else None)
         warning_layout.addWidget(self.logoff_btn)
         self.session_warning.setVisible(False)
-        root.addWidget(self.session_warning)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setObjectName("detailScroll")
-        content = QWidget()
-        content.setObjectName("detailContent")
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 8, 8)
-        content_layout.setSpacing(16)
+        content_layout.addWidget(self.session_warning)
 
         overview = QGridLayout()
         overview.setHorizontalSpacing(16)
@@ -351,7 +362,9 @@ class WorkstationDetailWidget(QWidget):
         ws = self.workstation
         self.account_selector.set_workstation(ws, self.user)
         self._refresh_claim_row()
-        profile = ws.get_rdp_profile(self.user.get_rdp_username())
+        profile = ws.get_rdp_profile(
+            self.user.get_rdp_username(), entra_user=self.user.windows_account().is_entra
+        )
         if ws.entra_sso_enabled and not profile.effective_entra_sso_enabled():
             sso_status = "Webkonto deaktiviert (IP-Ziel)"
         elif profile.effective_entra_sso_enabled():

@@ -638,7 +638,7 @@ def test_main_window_reconnect_reaches_launcher_with_session_account(monkeypatch
     # der Stub die Speicher- und Auffrischwege.
     window = SimpleNamespace(current_user=MockUser.create_user(), _record_event=Mock(), _poll_rdp_sessions=Mock(),
                              _confirm_connection=Mock(return_value=(True, "")),
-                             _report_session_claim=Mock(),
+                             _report_session_claim=Mock(), _reported_claims=set(),
                              _fresh_reservation_block_reason=Mock(return_value=""),
                              _select_login_account=select_login_account,
                              _persist=Mock(), _refresh_workstation_views=Mock(), _saved_user=None)
@@ -655,11 +655,10 @@ def test_main_window_reconnect_reaches_launcher_with_session_account(monkeypatch
     assert window.current_user.own_accounts == ["AzureAD\\tester"]
     window._persist.assert_called_once()
     launcher.reset_mock()
-    # Zweiter Teil: die Sitzung gehoert dem Portal-Benutzer *nicht*. Dann korrigiert
-    # das Portal ein unpassend gewaehltes Konto auf das einzige gemeldete
-    # Sitzungskonto -- ohne zu fragen, weil es nichts zu waehlen gibt. Das im ersten
-    # Teil gelernte Konto muss dafuer weg, sonst waere die Sitzung eine eigene und
-    # die Kontoauswahl bliebe bewusst unangetastet.
+    # Zweiter Teil: die Sitzung gehoert dem Portal-Benutzer *nicht*. Frueher
+    # ersetzte das Portal das gewaehlte Konto dann still durch das Sitzungskonto
+    # -- wer sein eigenes Konto gewaehlt hatte, wurde unter einem fremden
+    # angemeldet. Jetzt gilt die Auswahl aus "Anmelden als" unveraendert.
     window.current_user.own_accounts = []
     ws.selected_login_account = "OTHER\\tester"
     chooser = Mock(return_value=("", False))
@@ -667,7 +666,8 @@ def test_main_window_reconnect_reaches_launcher_with_session_account(monkeypatch
     window._refresh_login_views = Mock()
     module.MainWindow.on_connect_requested(window, ws)
     chooser.assert_not_called()
-    assert launcher.call_args.args[0].username_hint == "AzureAD\\tester"
+    assert launcher.call_args.args[0].username_hint == "OTHER\\tester"
+    assert ws.selected_login_account == "OTHER\\tester"
 
 
 def test_a_claimed_account_stops_the_portal_from_overriding_the_choice(monkeypatch):
@@ -681,7 +681,7 @@ def test_a_claimed_account_stops_the_portal_from_overriding_the_choice(monkeypat
     window = SimpleNamespace(current_user=MockUser.create_user(), _record_event=Mock(),
                              _poll_rdp_sessions=Mock(), _refresh_login_views=Mock(),
                              _confirm_connection=Mock(return_value=(True, "")),
-                             _report_session_claim=Mock(),
+                             _report_session_claim=Mock(), _reported_claims=set(),
                              _fresh_reservation_block_reason=Mock(return_value=""),
                              _select_login_account=select_login_account,
                              _persist=Mock(), _refresh_workstation_views=Mock(), _saved_user=None)
@@ -697,7 +697,8 @@ def test_a_claimed_account_stops_the_portal_from_overriding_the_choice(monkeypat
     assert launcher.call_args.args[0].username_hint == "OTHER\\tester"
 
 
-def test_main_window_reconnect_asks_only_when_multiple_sessions(monkeypatch):
+def test_several_foreign_sessions_do_not_replace_the_chosen_account(monkeypatch):
+    """Auch bei mehreren Sitzungen wird nicht nach einem fremden Konto gefragt."""
     import portal_app.rdp as rdp
     import portal_app.ui.main_window as module
 
@@ -709,7 +710,7 @@ def test_main_window_reconnect_asks_only_when_multiple_sessions(monkeypatch):
     window = SimpleNamespace(current_user=MockUser.create_user(), _record_event=Mock(),
                              _poll_rdp_sessions=Mock(), _refresh_login_views=Mock(),
                              _confirm_connection=Mock(return_value=(True, "")),
-                             _report_session_claim=Mock(),
+                             _report_session_claim=Mock(), _reported_claims=set(),
                              _fresh_reservation_block_reason=Mock(return_value=""),
                              _select_login_account=select_login_account,
                              _persist=Mock(), _refresh_workstation_views=Mock(), _saved_user=None)
@@ -723,8 +724,9 @@ def test_main_window_reconnect_asks_only_when_multiple_sessions(monkeypatch):
 
     module.MainWindow.on_connect_requested(window, ws)
 
-    chooser.assert_called_once()
-    assert launcher.call_args.args[0].username_hint == "AzureAD\\tester"
+    chooser.assert_not_called()
+    window._confirm_connection.assert_called_once()
+    assert launcher.call_args.args[0].username_hint == "OTHER\\tester"
 
 
 def test_a_generated_portal_id_no_longer_blocks_the_logoff(native):

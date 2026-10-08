@@ -8,6 +8,7 @@ import re
 from PySide6.QtCore import QProcess, Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QWidget
 
+from portal_app.ui.design import scaled
 from shared.validation import RDPProfileValidator, RDPValidationError
 
 
@@ -27,12 +28,12 @@ class PingToolWidget(QFrame):
         self.target = QLineEdit()
         self.target.setObjectName("pingInput")
         self.target.setPlaceholderText("Hostname oder IP-Adresse")
-        self.target.setMinimumWidth(230)
+        self.target.setMinimumWidth(scaled(230))
         self.target.returnPressed.connect(self.start_ping)
         layout.addWidget(self.target)
         self.result = QLabel("Bereit")
         self.result.setObjectName("pingResult")
-        self.result.setMinimumWidth(110)
+        self.result.setMinimumWidth(scaled(110))
         self.result.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         layout.addWidget(self.result)
         self.button = QPushButton("Ping")

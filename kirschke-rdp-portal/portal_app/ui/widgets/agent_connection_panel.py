@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from portal_app.models.workstation import Workstation
+from portal_app.ui.design import scaled
 from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
 from portal_app.ui.widgets.table_cells import reset_rows
 
@@ -118,10 +119,16 @@ class AgentConnectionPanel(QFrame):
         self.table.setMinimumHeight(220)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(3, QHeaderView.Stretch)
-        for column, width in ((0, 230), (1, 230), (2, 130), (4, 110)):
+        # Textzellen kürzt die Tabelle selbst mit „…“; Auswahlfeld und Knopf
+        # nicht. Ihre Spalten und die Zeilenhöhe folgen deshalb dem Inhalt --
+        # mit festen Maßen fehlte bei größerer Schrift ihr Text.
+        for column, width in ((0, 230), (2, 130)):
             header.setSectionResizeMode(column, QHeaderView.Fixed)
-            self.table.setColumnWidth(column, width)
-        self.table.verticalHeader().setDefaultSectionSize(36)
+            self.table.setColumnWidth(column, scaled(width))
+        for column in (1, 4):
+            header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.verticalHeader().setMinimumSectionSize(scaled(36))
         layout.addWidget(self.table, 1)
         self.summary = QLabel()
         self.summary.setObjectName("detailMuted")

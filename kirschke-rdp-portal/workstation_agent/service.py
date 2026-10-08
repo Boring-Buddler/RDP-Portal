@@ -7,10 +7,11 @@ Features:
 - Runs as a Windows service
 - Monitors RDP sessions using WTS API
 - Detects session state changes (logon, logoff, disconnect, reconnect)
-- Submits session events to SharePoint via Graph API
-- Polls for admin commands and executes them
-- Updates workstation status in SharePoint
+- Publishes its status as a file in the local status share and, on request,
+  over the read-only named pipe -- everything stays on the local network
 - Handles manual flags
+
+Seit 1.7.0 gibt es keinen Weg mehr zu SharePoint oder Microsoft Graph.
 """
 
 import json
@@ -56,20 +57,6 @@ class AgentConfig:
     agent_version: str = os.getenv("AGENT_VERSION", AGENT_VERSION)
     poll_interval: int = 30  # environment is parsed safely in from_env
 
-    # Microsoft Entra ID settings
-    tenant_id: str = os.getenv("TENANT_ID", "")
-    client_id: str = os.getenv("AGENT_CLIENT_ID", "")
-    authority: str = os.getenv("AUTHORITY", "")
-    certificate_thumbprint: str = os.getenv("AGENT_CERT_THUMBPRINT", "")
-    certificate_store: str = os.getenv("AGENT_CERT_STORE", "My")
-
-    # SharePoint settings
-    sharepoint_site_id: str = os.getenv("SHAREPOINT_SITE_ID", "")
-    workstations_list: str = os.getenv("SHAREPOINT_WORKSTATIONS_LIST", "RDP_Workstations")
-    sessions_list: str = os.getenv("SHAREPOINT_SESSIONS_LIST", "RDP_SessionEvents")
-    commands_list: str = os.getenv("SHAREPOINT_COMMANDS_LIST", "RDP_AdminCommands")
-    access_rules_list: str = os.getenv("SHAREPOINT_ACCESS_RULES_LIST", "RDP_AccessRules")
-
     # Logging settings
     log_level: str = os.getenv("AGENT_LOG_LEVEL", "INFO")
     log_file: str = os.getenv("AGENT_LOG_FILE", "")
@@ -107,12 +94,6 @@ class AgentConfig:
                 logger.warning("Invalid %s in agent configuration; using %s", key, default)
                 return default
 
-        # Build authority if not set
-        tenant_id = configured_value("tenant_id", "TENANT_ID")
-        authority = configured_value("authority", "AUTHORITY")
-        if not authority and tenant_id:
-            authority = f"https://login.microsoftonline.com/{tenant_id}"
-
         # Set workstation ID from hostname if not set
         workstation_id = configured_value("workstation_id", "WORKSTATION_ID")
         if not workstation_id:
@@ -130,16 +111,6 @@ class AgentConfig:
             hostname=socket.gethostname(),
             agent_version=configured_value("agent_version", "AGENT_VERSION", AGENT_VERSION),
             poll_interval=configured_integer("poll_interval", "AGENT_POLL_INTERVAL", 30),
-            tenant_id=tenant_id,
-            client_id=configured_value("client_id", "AGENT_CLIENT_ID"),
-            authority=authority,
-            certificate_thumbprint=configured_value("certificate_thumbprint", "AGENT_CERT_THUMBPRINT"),
-            certificate_store=configured_value("certificate_store", "AGENT_CERT_STORE", "My"),
-            sharepoint_site_id=configured_value("sharepoint_site_id", "SHAREPOINT_SITE_ID"),
-            workstations_list=configured_value("workstations_list", "SHAREPOINT_WORKSTATIONS_LIST", "RDP_Workstations"),
-            sessions_list=configured_value("sessions_list", "SHAREPOINT_SESSIONS_LIST", "RDP_SessionEvents"),
-            commands_list=configured_value("commands_list", "SHAREPOINT_COMMANDS_LIST", "RDP_AdminCommands"),
-            access_rules_list=configured_value("access_rules_list", "SHAREPOINT_ACCESS_RULES_LIST", "RDP_AccessRules"),
             log_level=configured_value("log_level", "AGENT_LOG_LEVEL", "INFO"),
             log_file=log_file,
             publish_local_status=configured_value("publish_local_status", "AGENT_PUBLISH_LOCAL_STATUS", "true").lower() == "true",
@@ -150,21 +121,7 @@ class AgentConfig:
 
     def validate(self) -> bool:
         """Validate required configuration."""
-        # For Phase 1, we can run with minimal config
-        # For production, we need tenant_id, client_id, certificate_thumbprint
         return bool(self.workstation_id and self.hostname)
-
-    def has_graph_configuration(self) -> bool:
-        """Return whether the external status channel can be used."""
-        return all(
-            (
-                self.tenant_id,
-                self.client_id,
-                self.certificate_thumbprint,
-                self.sharepoint_site_id,
-            )
-        )
-
 
 # =============================================================================
 # Agent State
@@ -375,7 +332,7 @@ class CommandHandler:
             Tuple of (success, message)
         """
         # This command clears the manual flag on the workstation
-        # The actual flag clearing happens in SharePoint, so we just acknowledge
+        # The actual flag clearing happens in the portal, so we just acknowledge
         return True, "Manual flag cleared"
 
 
@@ -388,9 +345,7 @@ class WorkstationAgent:
 
     This class orchestrates all agent activities:
     - Monitoring RDP sessions
-    - Submitting events to SharePoint
-    - Executing admin commands
-    - Updating workstation status
+    - Publishing its status to the local status share and the named pipe
     """
 
     def __init__(self, config: AgentConfig | None = None):
@@ -413,7 +368,6 @@ class WorkstationAgent:
         self._wts_monitor = None
         self._event_detector = None
         self._event_queue = None
-        self._graph_client = None
         self._last_rdp_sessions = []
         self._session_history = None
         self._status_server = None
@@ -510,28 +464,6 @@ class WorkstationAgent:
             self._event_queue = EventQueue(event_config)
         return self._event_queue
 
-    def _get_graph_client(self):
-        """Get or create Graph client."""
-        if self._graph_client is None:
-            from workstation_agent.graph.client import (
-                AgentGraphClient,
-                AgentGraphConfig,
-            )
-            graph_config = AgentGraphConfig(
-                tenant_id=self.config.tenant_id,
-                client_id=self.config.client_id,
-                authority=self.config.authority,
-                certificate_thumbprint=self.config.certificate_thumbprint,
-                certificate_store=self.config.certificate_store,
-                sharepoint_site_id=self.config.sharepoint_site_id,
-                workstations_list=self.config.workstations_list,
-                sessions_list=self.config.sessions_list,
-                commands_list=self.config.commands_list,
-                access_rules_list=self.config.access_rules_list,
-            )
-            self._graph_client = AgentGraphClient(graph_config)
-        return self._graph_client
-
     def start(self) -> bool:
         """Start the agent.
 
@@ -566,12 +498,6 @@ class WorkstationAgent:
             )
             self._status_server.start()
 
-        # Run initial sync
-        if self.config.has_graph_configuration():
-            self._sync_with_portal()
-        else:
-            logger.info("Graph synchronization disabled: no complete external configuration")
-
         return True
 
     def stop(self) -> None:
@@ -595,9 +521,8 @@ class WorkstationAgent:
 
         This method should be called periodically to:
         - Detect session changes
-        - Submit events
         - Check for admin commands
-        - Update status
+        - Publish the status snapshot
         """
         if not self._running:
             return
@@ -614,19 +539,13 @@ class WorkstationAgent:
             # 1. Detect session changes and create events
             self._detect_session_changes()
 
-            # 2. Submit queued events to portal
-            self._submit_events()
-
-            # 3. Check for and execute admin commands
+            # 2. Check for and execute admin commands
             self._check_admin_commands()
 
-            # 4. Update workstation status
-            self._update_status()
-
-            # 5. Cleanup old events
+            # 3. Cleanup old events
             self._cleanup_old_events()
 
-            # 6. Publish the local test snapshot even without Graph credentials.
+            # 4. Publish the status snapshot to the local status share.
             self._publish_local_snapshot()
 
             logger.debug(f"Polling cycle completed: {self.config.workstation_id}")
@@ -740,106 +659,12 @@ class WorkstationAgent:
         except Exception as e:
             logger.error(f"Failed to detect session changes: {str(e)}")
 
-    def _submit_events(self) -> None:
-        """Submit queued events to the portal."""
-        if not self.config.has_graph_configuration():
-            return
-        try:
-            queue = self._get_event_queue()
-            unsent_events = queue.get_unsent_events()
-
-            if not unsent_events:
-                return
-
-            graph_client = self._get_graph_client()
-
-            # Authenticate if needed
-            if not graph_client.is_authenticated():
-                if not graph_client.authenticate():
-                    logger.warning("Graph authentication failed, will retry later")
-                    return
-
-            # Submit each event
-            for event in unsent_events:
-                try:
-                    schema_event = event.to_schema()
-                    if graph_client.create_session_event(schema_event):
-                        queue.mark_event_sent(event.event_id)
-                        logger.info(f"Event submitted: {event.event_id} ({event.event_type.value})")
-                    else:
-                        logger.warning(f"Failed to submit event: {event.event_id}")
-                except Exception as e:
-                    logger.error(f"Failed to submit event {event.event_id}: {str(e)}")
-                    self.state.increment_errors()
-
-        except Exception as e:
-            logger.error(f"Failed to submit events: {str(e)}")
-
     def _check_admin_commands(self) -> None:
         """Check for and execute pending admin commands."""
         # The pilot has no verified command authorization, durable claim or replay
-        # protection. Do not execute remote commands just because Graph is set up.
+        # protection, so no remote commands are executed.
         logger.debug("Remote admin commands are unavailable in the local pilot")
         return
-
-    def _update_status(self) -> None:
-        """Update workstation status in SharePoint."""
-        if not self.config.has_graph_configuration():
-            return
-        try:
-            graph_client = self._get_graph_client()
-
-            # Authenticate if needed
-            if not graph_client.is_authenticated():
-                if not graph_client.authenticate():
-                    logger.warning("Graph authentication failed, will retry later")
-                    return
-
-            # Update status
-            success = graph_client.update_workstation_status(
-                workstation_id=self.config.workstation_id,
-                agent_status=self.state.status,
-                current_session_state=self.state.current_session_state,
-                current_session_user=self.state.current_session_user,
-                current_windows_session_id=self.state.current_windows_session_id,
-                agent_version=self.config.agent_version,
-            )
-
-            if success:
-                self.state.last_status_update_time = datetime.now(UTC)
-                logger.debug("Workstation status updated")
-            else:
-                logger.warning("Failed to update workstation status")
-
-        except Exception as e:
-            logger.error(f"Failed to update status: {str(e)}")
-
-    def _sync_with_portal(self) -> None:
-        """Perform initial synchronization with the portal."""
-        try:
-            logger.info("Starting initial synchronization with portal...")
-
-            # Get workstation info from portal
-            graph_client = self._get_graph_client()
-
-            if graph_client.authenticate():
-                workstation = graph_client.get_workstation(self.config.workstation_id)
-
-                if workstation:
-                    # Update our state from portal
-                    self.state.manual_flag_type = workstation.manual_flag.flag_type
-                    self.state.current_session_state = workstation.current_session_state
-                    self.state.current_session_user = workstation.current_session_user
-                    self.state.current_windows_session_id = workstation.current_windows_session_id
-
-                    logger.info(f"Synchronized with portal: {self.config.workstation_id}")
-                else:
-                    logger.warning(f"Workstation not found in portal: {self.config.workstation_id}")
-            else:
-                logger.warning("Graph authentication failed during initial sync")
-
-        except Exception as e:
-            logger.error(f"Initial sync failed: {str(e)}")
 
     def _cleanup_old_events(self) -> None:
         """Clean up old events from the queue."""

@@ -1,31 +1,59 @@
 # RDP-Portal: kurzer Start in den Testbetrieb
 
-## 1. Client starten oder aktualisieren
+## 1. Client installieren oder aktualisieren
 
-Für den gemeinsamen SharePoint-Betrieb den Ordner **Client** aus dem Paket in den
-gemeinsam synchronisierten Programmordner übernehmen. Alle Benutzer starten die
-Datei `Kirschke-RDP-Portal.exe` dort. Den gesamten Client-Ordner zusammenlassen;
-Python ist auf den Arbeitsplatz-PCs nicht erforderlich.
+Das Portal auf jedem PC mit `Kirschke-RDP-Portal-Setup.exe` installieren. Python
+ist auf den Arbeitsplatz-PCs nicht erforderlich. **Die Portal-EXE nie in einen
+OneDrive- oder SharePoint-Ordner legen** – gemeinsame Daten laufen seit 0.9.0
+ausschließlich über das Netzwerk.
 
-Vor einem Update die Portale schließen. Programmdateien aktualisieren und den
-vorhandenen Ordner **state** beibehalten. Dort liegen die gemeinsamen Daten.
-Im geöffneten Portal muss die Version **0.8.2** stehen.
+Vor einem Update die Portale schließen. Im geöffneten Portal muss die Version
+**0.9.5** stehen. Der Agent muss auf jeder Zielmaschine auf **1.7.3** gebracht
+werden.
 
-Im Admin-Fenster übernimmt **Speichern** alle angezeigten Maschineneinstellungen
-nach `state\portal-state.json` direkt neben der EXE. Der Ordner wird automatisch
-angelegt. Beim ersten Start ohne diese Datei wird ein erreichbares bisheriges
-Inventar übernommen; die bisherigen Dateien bleiben erhalten. Vorhandene Daten
-in `state` haben Vorrang vor lokalen Altständen.
+Ohne weitere Einstellung führt jedes Portal seine Maschinen für sich in
+`state\portal-state.json` neben der EXE. Damit alle dieselben Maschinen sehen:
 
-Andere Portale prüfen den gemeinsamen Stand alle fünf Sekunden und laden ihn,
-sobald SharePoint die Datei synchronisiert hat. Ungespeicherte Maschinenänderungen
-werden dabei nicht verworfen. Persönliche Anmeldekonten und Benutzereinstellungen
-bleiben im Windows-Profil.
+1. Eine Netzwerkfreigabe mit Schreibrecht für alle Portalnutzer anlegen, z. B.
+   `\\SERVER\RDP-Portal`.
+2. Auf dem PC mit dem gepflegten Inventar **Admin → Gemeinsames Inventar
+   einrichten** wählen und die Freigabe eintragen. Der Stand dieses PCs wird
+   dorthin kopiert.
+3. Auf allen anderen PCs dasselbe tun. Sie übernehmen den Stand von der
+   Freigabe; ihr bisheriger eigener Stand bleibt unverändert liegen.
 
-Das ebenfalls enthaltene Setup installiert eine separate lokale Portal-Kopie.
-Deren `state`-Ordner wird nicht über den SharePoint-Programmordner geteilt.
+Andere Portale prüfen das gemeinsame Inventar alle fünf Sekunden und laden
+Änderungen nach. Ändern zwei Personen gleichzeitig dieselbe Maschine, wird die
+zweite Änderung mit „Paralleländerung erkannt“ abgelehnt statt überschrieben.
+Ist die Freigabe nicht erreichbar, startet das Portal im Notbetrieb mit dem
+zuletzt gelesenen Stand und sagt das. Persönliche Anmeldekonten und
+Benutzereinstellungen bleiben im Windows-Profil.
 
 Aus dem Quellcode: im Projektordner `python3.13 -m portal_app.app` ausführen.
+
+**Eigene Sitzung ohne Fenster:** Der Kartenrand bleibt durchgehend blau, das
+PC-Symbol neben dem Namen wird orange. Bisher war der Rand blau/orange
+gestrichelt. Die fremde Sitzung ohne Fenster bleibt violett/orange gestrichelt.
+
+**Anmelden als gilt.** Verbunden wird mit dem Konto aus dem Dropdown; das
+Portal ersetzt es nicht mehr still durch das Konto einer laufenden fremden
+Sitzung. Hat Windows für die Maschine Anmeldedaten eines anderen Kontos
+gespeichert, fragt das Portal vor dem Start, ob dieser Eintrag entfernt werden
+soll – sonst meldet Remotedesktop mit dem gespeicherten Konto an.
+
+**Entra-Konten:** Das Portal übergibt `becker@prof-kirschke.de` ohne
+Webanmeldung jetzt als `AzureAD\becker@prof-kirschke.de` – so, wie Windows es
+braucht. **„Belegt von …“** zeigt nur noch die Person, die wirklich von ihrem PC
+aus verbunden ist; dafür den Agenten auf 1.7.2 bringen.
+
+**Nichts mehr abgeschnitten.** Karten, Filter, Knöpfe und Rückfragen passen
+sich der Windows-Schriftgröße an; zu lange Namen enden mit „…“ und stehen voll
+im Tooltip. **„Belegt von …“ nennt Person und Konto**, etwa „Christian Becker
+als NB12KI\Codex“.
+
+**„Belegt von …“ nennt wieder die richtige Person**, auch wenn das Konto
+unterschiedlich geschrieben wird oder jemand eine getrennte Sitzung übernimmt.
+Dafür den Agenten mit aktualisieren.
 
 Die folgenden Update-Abschnitte dokumentieren ältere Versionen; für den aktuellen
 Speicherort gilt die Anleitung oben.
@@ -393,7 +421,16 @@ Anmeldung ab) und meldet die Sitzung danach ab, oder die administrative Abmeldun
 Konto arbeitet — etwa lokal statt über Entra — kann es unter
 *Einstellungen → Weitere eigene Windows-Konten* eintragen. Die Abmeldung
 akzeptiert dieses Konto dann als eigenes. Der Agent prüft unabhängig davon weiter,
-ob die Anfrage vom Rechner der Sitzung kommt.
+ob die Anfrage vom Rechner der Sitzung kommt. Seit 0.9.4 stehen diese Konten bei
+jeder Maschine unter „Anmelden als“. Ein gemeinsam genutztes Konto wie `.\RDPUser`
+dort anhaken: Dann gilt eine RDPUser-Sitzung nur als eigene, wenn sie von diesem
+PC aus aufgebaut wurde, und nicht mehr jede Kollegensitzung unter demselben Konto.
+
+**„Nicht zur Remoteanmeldung autorisiert“ trotz richtigem Konto.** Bis 0.9.3
+legte der Freigabedialog einen Windows-Eintrag für den ganzen Server an, und
+Remotedesktop meldete sich damit als `PortalLeser` an. 0.9.4 räumt diese
+Einträge beim Start auf und fragt vor dem Verbinden nach, falls noch einer da
+ist. Von Hand prüfen: `cmdkey /list` und nach `Domain:target=<Ziel>` suchen.
 
 **Abmeldung dauert jetzt länger, ohne zu scheitern.** Der Agent antwortet erst,
 wenn Windows die Sitzung vollständig abgebaut hat. Das dauert regelmäßig länger als
@@ -709,7 +746,9 @@ benutzereigenen Aufgaben und ersetzt die Konfiguration. Programmdateien liegen u
 `%ProgramData%\KirschkeRDPAgent`. Die neue Aufgabe heißt **Kirschke RDP Agent - Machine**,
 läuft als SYSTEM beim Hochfahren und wird sofort gestartet. Python ist nicht erforderlich.
 
-Das Setup prüft, ob eine aktuelle Online-Statusdatei geschrieben wird. Wenn der Agent
+Das Setup prüft, ob eine aktuelle Online-Statusdatei geschrieben wird. Scheitert
+das, nennt die Meldung den Grund, etwa einen anderen Rechnernamen in der Datei.
+Die Protokollfreigabe wird erst nach dieser Prüfung angelegt. Wenn der Agent
 bereits die JSON am gewünschten Ort aktualisiert, muss für die Portal-Pfadkorrektur
 der Agent nicht erneut installiert werden.
 

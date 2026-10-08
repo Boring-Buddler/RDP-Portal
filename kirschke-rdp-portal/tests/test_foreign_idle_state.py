@@ -18,6 +18,8 @@ from portal_app.models.workstation import Workstation
 from portal_app.ui.machine_actions import (
     MachineState,
     machine_state,
+    state_color,
+    state_glyph_color,
     state_is_dashed,
     state_secondary_color,
 )
@@ -94,18 +96,29 @@ def test_a_claimed_account_turns_the_machine_back_to_your_own(user):
 
 # --- Darstellung -------------------------------------------------------------
 
-def test_exactly_the_two_idle_states_are_drawn_dashed():
-    """Gestrichelt heißt überall: belegt, aber niemand verbunden."""
+def test_only_the_foreign_idle_state_is_drawn_dashed():
+    """Die eigene Sitzung ohne Fenster zeigt das am Symbol, nicht am Rand."""
     dashed = {state for state in MachineState if state_is_dashed(state)}
 
-    assert dashed == {MachineState.OWN_IDLE, MachineState.OCCUPIED_OTHER_IDLE}
+    assert dashed == {MachineState.OCCUPIED_OTHER_IDLE}
 
 
-def test_both_idle_states_share_the_same_second_dash():
-    """Die Grundfarbe sagt wer, der orange Strich sagt "Fenster zu"."""
+def test_only_your_own_idle_session_has_an_orange_glyph():
+    """Jeder andere Zustand zeichnet das Symbol in seiner Grundfarbe."""
+    from portal_app.ui.machine_actions import IDLE_DASH_COLOR
+
+    for state in MachineState:
+        if state == MachineState.OWN_IDLE:
+            assert state_glyph_color(state).rgb() == IDLE_DASH_COLOR.rgb()
+        else:
+            assert state_glyph_color(state) == state_color(state)
+
+
+def test_both_idle_states_share_the_same_orange():
+    """Die Grundfarbe sagt wer, Orange sagt "Fenster zu"."""
     from portal_app.ui.machine_actions import IDLE_DASH_COLOR, STATE_COLORS
 
-    own = state_secondary_color(MachineState.OWN_IDLE)
+    own = state_glyph_color(MachineState.OWN_IDLE)
     foreign = state_secondary_color(MachineState.OCCUPIED_OTHER_IDLE)
 
     assert own.rgb() == foreign.rgb() == IDLE_DASH_COLOR.rgb()

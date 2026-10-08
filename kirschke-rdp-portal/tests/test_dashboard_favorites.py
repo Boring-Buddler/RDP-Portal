@@ -1,5 +1,6 @@
 """Personal favorites and the two machine overview layouts."""
 
+import json
 from unittest.mock import Mock
 
 from PySide6.QtCore import QPoint, Qt
@@ -42,12 +43,45 @@ def test_personal_favorites_and_view_survive_reload(tmp_path):
     assert reopened.preferred_login_accounts == {}
 
 
+def test_shared_program_keeps_favorites_separate_on_each_client(
+    tmp_path, monkeypatch
+):
+    shared_state = tmp_path / "SharePoint" / "Client" / "state"
+    monkeypatch.setattr(
+        "portal_app.services.local_store.default_portal_directory",
+        lambda: shared_state,
+    )
+    user = MockUser.create_user()
+    client_a = tmp_path / "Client-A" / "LocalAppData"
+    client_b = tmp_path / "Client-B" / "LocalAppData"
+    monkeypatch.setenv("LOCALAPPDATA", str(client_a))
+    store_a = LocalStore()
+    store_a.save(machines(), user, [])
+    store_a.save_favorite("WS-1", True, user)
+
+    monkeypatch.setenv("LOCALAPPDATA", str(client_b))
+    store_b = LocalStore()
+    store_b.load([], user)
+    assert store_b.path == store_a.path
+    assert store_b.preferences_path != store_a.preferences_path
+    assert store_b.favorite_workstations == []
+    store_b.save_favorite("WS-2", True, user)
+
+    monkeypatch.setenv("LOCALAPPDATA", str(client_a))
+    reopened_a = LocalStore()
+    reopened_a.load([], user)
+    assert reopened_a.favorite_workstations == ["WS-1"]
+    assert "favorite_workstations" not in json.loads(
+        store_a.path.read_text(encoding="utf-8")
+    )
+
+
 def test_favorite_filter_and_view_switch_keep_machine_controls(qtbot):
     widget = WorkstationCardsWidget(machines(), MockUser.create_user())
     qtbot.addWidget(widget)
     widget.set_favorites(["WS-2"])
-    widget.favorites_filter.setChecked(True)
 
+    assert widget.favorites_filter.isChecked()
     assert [item.workstation.workstation_id for item in widget._cards] == ["WS-2"]
     assert isinstance(widget._cards[0], WorkstationCard)
     widget.set_machine_view("list")
@@ -57,6 +91,19 @@ def test_favorite_filter_and_view_switch_keep_machine_controls(qtbot):
     widget.favorites_filter.setChecked(False)
     assert len(widget._cards) == 2
     assert all(isinstance(item, WorkstationListRow) for item in widget._cards)
+
+
+def test_empty_favorites_start_with_a_way_to_show_all_machines(qtbot):
+    widget = WorkstationCardsWidget(machines(), MockUser.create_user())
+    qtbot.addWidget(widget)
+
+    assert widget.favorites_filter.isChecked()
+    assert widget._cards == []
+    assert "Favoritenfilter ausschalten" in widget.grid.itemAt(0).widget().text()
+    widget.favorites_filter.click()
+    assert [item.workstation.workstation_id for item in widget._cards] == [
+        "WS-1", "WS-2"
+    ]
 
 
 def test_account_popup_star_emits_preference_without_choosing_row(qtbot):
@@ -105,9 +152,15 @@ def test_dashboard_actions_persist_personal_choices(tmp_path, monkeypatch, qtbot
     window = MainWindow(automatic_live_status=False)
     qtbot.addWidget(window)
 
+    assert window.overview_view.favorites_filter.isChecked()
+    window.overview_view.favorites_filter.click()
     card = next(item for item in window.overview_view._cards
                 if item.workstation.workstation_id == "WS-1")
     card.favorite_button.click()
+    window.overview_view.favorites_filter.click()
+    assert [item.workstation.workstation_id for item in window.overview_view._cards] == [
+        "WS-1"
+    ]
     window.overview_view.list_button.click()
     row = next(item for item in window.overview_view._cards
                if item.workstation.workstation_id == "WS-1")

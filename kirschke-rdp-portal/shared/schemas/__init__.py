@@ -1,7 +1,7 @@
 """Pydantic schemas for Kirschke RDP Workstation Portal.
 
 These schemas define the data structures used for communication between
-the portal application, workstation agent, and SharePoint lists.
+the portal application, the workstation agent and the shared inventory file.
 """
 
 import ipaddress
@@ -282,7 +282,7 @@ class RDPProfileSchema(BaseSchema):
 # =============================================================================
 
 class SessionEventSchema(BaseSchema):
-    """Schema for session events stored in SharePoint."""
+    """Schema for session events in the portal event log."""
 
     event_id: str = Field(
         ...,
@@ -631,7 +631,7 @@ class WorkstationSchema(BaseSchema):
         description="Last session event timestamp"
     )
 
-    # SharePoint metadata
+    # Concurrency metadata (kept for compatibility with stored inventories)
     etag: str | None = Field(
         default=None,
         description="ETag for concurrency control"

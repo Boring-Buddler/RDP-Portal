@@ -12,7 +12,7 @@ requires-python = ">=3.12"
 authors = [
     {name = "Kirschke", email = "it@prof-kirschke.de"}
 ]
-keywords = ["rdp", "remote-desktop", "workstation", "management", "sharepoint"]
+keywords = ["rdp", "remote-desktop", "workstation", "management"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: System Administrators",
@@ -103,8 +103,6 @@ ignore = [
 # Console entry points: stdout is their interface, not a stray debug print.
 "portal_app/preflight.py" = ["T201"]
 "deployment/package_pilot.py" = ["T201"]
-# Unintegrated Phase 2 modules; see docs/phase2-status.md before changing.
-"portal_app/graph/client.py" = ["UP046"]
 # Test fixtures legitimately contain sample passwords.
 "tests/**" = ["S105", "S106"]
 
@@ -162,9 +160,6 @@ disallow_incomplete_defs = false
 [[tool.mypy.overrides]]
 module = [
     "portal_app.auth.*",
-    "portal_app.graph.*",
-    "workstation_agent.graph.*",
-    "workstation_agent.outbox.*",
     "workstation_agent.commands.*",
 ]
 ignore_errors = true
@@ -188,9 +183,6 @@ omit = [
     # Unintegrated and untested by design; docs/phase2-status.md records that.
     # Left out so the figure describes the code that actually runs in the pilot.
     "portal_app/auth/*",
-    "portal_app/graph/*",
-    "workstation_agent/graph/*",
-    "workstation_agent/outbox/*",
     "workstation_agent/commands/*",
 ]
 

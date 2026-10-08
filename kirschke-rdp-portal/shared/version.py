@@ -166,7 +166,57 @@ from __future__ import annotations
 # Maschine nach jeder Aktualisierung neu; eine Kachel merkt man sich aber ueber
 # ihren Platz. Ohne eigene Anordnung gilt jetzt der Name, und wie es um eine
 # Maschine steht, sagt weiterhin ihre Farbe.
-PORTAL_VERSION = "0.8.2"
+# 0.9.0: kein SharePoint und kein OneDrive mehr. Gemeinsame Daten laufen
+# ausschließlich über das Netzwerk: die Pipe und die Statusfreigaben der
+# Agenten und, neu, ein gemeinsames Inventar auf einer SMB-Freigabe (Admin →
+# Gemeinsames Inventar). Dort schreiben alle Portale direkt, unter einer
+# Byte-Sperre und mit Drei-Wege-Abgleich; eine gleichzeitige Änderung an
+# derselben Maschine wird abgelehnt statt überschrieben. Ist die Freigabe weg,
+# legt das Portal dort nichts an, sondern arbeitet sichtbar im Notbetrieb mit
+# der zuletzt gelesenen Kopie. Kein Ordner, den das Portal beschreibt, darf in
+# OneDrive oder einer synchronisierten SharePoint-Bibliothek liegen -- erkannt
+# über Umgebung, Registry, Sync-Roots und Cloud-Dateiattribute; eine portable
+# EXE dort legt ihren Stand im lokalen Profil ab. Der alte SharePoint-Ordner
+# und der Eintrag storage_directory werden nicht mehr gelesen, die
+# Graph-/SharePoint-Module sind entfernt. Außerdem prüft der Abgleich alle 5 s
+# im Hintergrund, weil schon ein stat auf einer Freigabe hängen kann.
+# 0.9.1: "Anmelden als" gilt. Bei einer fremden Sitzung ersetzte das Portal das
+# gewählte Konto still durch das Sitzungskonto; und hatte Windows für das Ziel
+# Anmeldedaten eines anderen Kontos gespeichert, nahm Remotedesktop diese. Das
+# Portal fragt jetzt vor dem Start, ob der gespeicherte Eintrag weg soll.
+# "Belegt von" ordnet Aufschaltmeldungen in jeder Schreibweise des Kontos zu,
+# die jüngste gewinnt, und die Nachmeldung läuft bei jeder neuen Verbindung.
+# Die eigene Sitzung ohne Fenster zeigt ein oranges PC-Symbol statt eines
+# gestrichelten Rands.
+# 0.9.2: kein Text wird mehr abgeschnitten. Karten werden so hoch wie ihr
+# Inhalt, lange Namen enden mit "…" und stehen im Tooltip, Filter und
+# Knopfzeilen brechen um, Admin und Maschinendetails scrollen, Rückfragen
+# werden so breit wie ihre Knöpfe, und Qt-Standardknöpfe sind deutsch.
+# "Belegt von" nennt Person und Windows-Konto ("… als NB12KI\Codex").
+# 0.9.3: Entra-Konten werden ohne Webanmeldung als AzureAD\name@firma.de
+# übergeben, sobald die Maschine Entra-Sitzungen meldet oder der Portal-Benutzer
+# selbst mit Entra angemeldet ist. Die bloße E-Mail-Adresse lehnte Windows mit
+# "nicht zur Remoteanmeldung autorisiert" ab, obwohl normales RDP ging; die
+# Warnung "Entra-Anmeldung fehlt" mit "Trotzdem starten" entfällt. Außerdem
+# tragen Aufschaltmeldungen den Namen des Portal-PCs und gelten nur für
+# Sitzungen, die von diesem PC aus aufgebaut wurden.
+# 0.9.4: der Freigabedialog legte für das Freigabekonto einen Windows-Eintrag
+# für den ganzen Server an ("Domain:target=192.168.2.66", PortalLeser). Den nahm
+# auch mstsc, und jede RDP-Verbindung zu diesem Rechner scheiterte mit "nicht
+# zur Remoteanmeldung autorisiert". Gemerkt wird das Konto jetzt unter einem
+# eigenen Portal-Eintrag; alte Einträge dieser Art entfernt das Portal beim
+# Start, vor dem Verbinden wird ein verbliebener gemeldet. Inventar- und
+# Protokollfreigabe verbindet das Portal deshalb beim Start selbst. Dazu: Die
+# eigenen Windows-Konten stehen bei jeder Maschine unter "Anmelden als", ohne
+# Entra-Profilnamen, mit denen keine Anmeldung möglich ist. Ein Konto lässt sich
+# als gemeinsam genutzt markieren (RDPUser); dessen Sitzung gilt nur als eigene,
+# wenn Windows diesen PC als RDP-Client meldet.
+# 0.9.5: die gebaute 0.9.4 startete nicht: CredEnumerate lädt für Zeitstempel
+# intern win32timezone nach, das PyInstaller nicht mitgepackt hatte. Das Modul
+# wird jetzt ausdrücklich importiert, und ein Fehler beim Aufräumen alter
+# Anmeldedaten verhindert den Start nie mehr. Betraf auch CredRead: Ein selbst
+# gespeichertes Lesekonto wurde in der EXE bisher still nicht gelesen.
+PORTAL_VERSION = "0.9.5"
 # 1.4.0: every reported session carries its account SID, so the portal no longer
 # has to resolve Entra names against a cache that may not know them.
 # 1.6.1 (agent setup): das Setup kann auf Wunsch zusätzlich die beschreibbare
@@ -212,6 +262,28 @@ PORTAL_VERSION = "0.8.2"
 # Maßgeblich ist jetzt der WinStation-Name (`RDP-Tcp#5` gegen `Console`): Er
 # gehört zur Sitzung, das Protokoll nur zur Verbindung. An echten WinStations
 # nachgemessen -- die Station `RDP-Tcp` meldet ohne Client ebenfalls 0.
-AGENT_VERSION = "1.6.5"
+# 1.7.0 (agent): der Graph-/SharePoint-Zweig ist entfernt -- Status-Upload,
+# Ereignisversand und Erstabgleich gegen SharePoint-Listen samt Zertifikats-
+# und Tenant-Einstellungen. Er war nie eingerichtet; der Agent meldet seinen
+# Stand wie bisher über die Statusfreigabe und die Pipe. Alte Einträge wie
+# sharepoint_site_id in agent-config.json werden ignoriert.
+# 1.7.1 (agent): eine Aufschaltmeldung findet ihre Sitzung in jeder
+# Schreibweise des Kontos -- "Rechenknecht" gehört zu "WORKSTATION\Rechenknecht".
+# Vorher nur bei wörtlich gleicher, und eine neue Meldung ersetzte die alte nur
+# dann; sonst blieb der Vorgänger an der Sitzung stehen.
+# 1.7.2 (agent): eine Aufschaltmeldung wird nur an eine Sitzung gebunden, die
+# vom meldenden Rechner aus aufgebaut wurde, und verfällt, wenn ein anderer
+# Rechner die Sitzung übernimmt. Vorher hängte sich die Meldung einer nie
+# zustande gekommenen Verbindung an die Sitzung eines Kollegen unter demselben
+# Konto -- die Maschine in München stand als "belegt von Christian Becker".
+# 1.7.3 (agent setup): die Statusprüfung am Ende der Einrichtung erkennt den
+# eigenen Rechner auch, wenn sein Name länger als 15 Zeichen ist. Der Agent
+# meldet den DNS-Namen ("Remote-Ettlingen"), das Setup verglich mit
+# %COMPUTERNAME%, dem auf 15 Zeichen gekürzten NetBIOS-Namen
+# ("REMOTE-ETTLINGE") -- und lehnte den laufenden Agenten jedes Mal ab. Weil
+# die Protokollfreigabe erst danach angelegt wird, fehlte sie dann ebenfalls.
+# Scheitert die Prüfung, nennt die Meldung jetzt, was nicht stimmte, und die
+# angezeigten Freigabepfade verwenden den DNS-Namen.
+AGENT_VERSION = "1.7.3"
 
 __all__ = ["AGENT_VERSION", "PORTAL_VERSION"]

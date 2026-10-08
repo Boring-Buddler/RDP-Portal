@@ -1,21 +1,108 @@
 # Kirschke RDP Workstation Portal
 
-**Version:** Portal 0.7.0 · Agent 1.5.1
+**Version:** Portal 0.9.5 · Agent 1.7.3
+
+**Diagramme:** [Programmaufbau und Signalkette](docs/programmaufbau-und-signalkette.md) ·
+[Anmeldung, Abmeldung und Statusmeldungen](docs/anmeldung-abmeldung-und-statusmeldungen.md)
+
+**Ausbauplanung:** [Priorisierter Verbesserungs- und Ausbauplan](docs/verbesserungsplan.md)
 
 ## Maschinenübersicht
 
 Der Stern auf einer Maschinenkarte oder in einer Listenzeile markiert einen
 persönlichen Favoriten. Mit **☆ Favoriten** links neben dem Standortfilter
-werden nur diese Maschinen angezeigt. Die Schaltflächen rechts neben der Suche
+werden beim Start nur diese Maschinen angezeigt. Ohne Favoriten lässt sich der
+Filter mit einem Klick ausschalten, um alle Maschinen zu sehen. Die
+Schaltflächen rechts neben der Suche
 wechseln zwischen Karten und kompakter Liste. Ansicht und Favoriten bleiben im
-persönlichen Windows-Profil gespeichert und ändern keine gemeinsamen
-Maschinendaten. Im Dropdown **Anmelden als** markiert der Stern rechts vom
+persönlichen Windows-Profil dieses PCs unter
+`%LOCALAPPDATA%\KirschkeRDPPortal\portal-preferences.json` gespeichert und
+ändern keine gemeinsamen Maschinendaten. Im Dropdown **Anmelden als** markiert der Stern rechts vom
 Kontonamen das bevorzugte Konto für diese Maschine; ein Klick darauf wählt es
 auch direkt aus. Die bisherige manuelle Kartenreihenfolge bleibt beim Wechsel
 der Ansicht erhalten.
 Die Maschinenübersicht zeigt einen kompakten Kopf: Zusammenfassung und
 **Aktualisieren** stehen neben dem Titel, der Agentstatus direkt über den
 Filtern.
+Läuft deine eigene Sitzung auf einer Maschine, ohne dass ein Portal-Fenster
+offen ist, bleibt der Kartenrand durchgehend blau und das **PC-Symbol wird
+orange**. Die fremde Sitzung ohne Fenster bleibt violett/orange gestrichelt.
+
+**Anmelden als gilt.** Verbunden wird mit genau dem Konto, das im Dropdown
+steht. Bisher ersetzte das Portal es bei einer fremden Sitzung still durch das
+Konto dieser Sitzung. Wer eine laufende Sitzung übernehmen will, wählt sie als
+**Angemeldet · …**. Hat Windows für das Ziel Anmeldedaten eines *anderen*
+Kontos gespeichert (`TERMSRV/<ziel>`), würde Remotedesktop diese nehmen; das
+Portal fragt dann vor dem Start, ob der gespeicherte Eintrag entfernt werden
+soll. Gelesen wird dabei nur der Kontoname, nie das Kennwort.
+
+**Kein Text wird mehr abgeschnitten, auch nicht bei größerer Windows-Schrift.**
+Karten werden so hoch wie ihr Inhalt, lange Namen enden mit „…“ und stehen voll
+im Tooltip, die Filterleiste und die Knopfzeilen in Admin und Maschinendetails
+brechen bei Platzmangel um, und Adminbereich und Maschinendetails scrollen
+unterhalb der Kopfzeile. Rückfragen werden so breit wie ihre Knöpfe; die
+Standardknöpfe heißen jetzt „Abbrechen“ statt „Cancel“. Geprüft wird das bei
+9 und 12 pt in einem 1280 × 720-Fenster (`tests/test_text_fit.py`).
+
+**Entra-Konten in der richtigen Schreibweise.** Ohne Entra-Webanmeldung – und
+bei einer IP-Adresse gibt es keine – braucht Remotedesktop ein Entra-Konto als
+`AzureAD\becker@prof-kirschke.de`. Das Portal schreibt eine bloße E-Mail-Adresse
+jetzt selbst so, sobald die Maschine Entra-Sitzungen meldet oder du selbst mit
+einem Entra-Konto angemeldet bist. Vorher lehnte Windows mit „nicht zur
+Remoteanmeldung autorisiert“ ab, obwohl normales RDP ging.
+
+**Aufschaltmeldungen gehören zum Rechner, von dem verbunden wurde.** Eine Meldung
+trägt den Namen des Portal-PCs und gilt nur für eine Sitzung, die Windows als von
+dort aufgebaut meldet. Übernimmt ein anderer Rechner die Sitzung, gilt sie nicht
+mehr. Vorher konnte sich die Meldung einer abgebrochenen Verbindung an die
+Sitzung eines Kollegen unter demselben Konto hängen. **Agent 1.7.2 verteilen.**
+
+**0.9.5 behebt den Startabbruch von 0.9.4** („No module named 'win32timezone'“).
+Ein Fehler beim Aufräumen alter Anmeldedaten verhindert den Start nicht mehr.
+
+**RDP scheitert nicht mehr am Freigabekonto.** Wer im Freigabedialog die
+Zugangsdaten speichern ließ, bekam einen Windows-Eintrag für den ganzen Server.
+Den nahm auch Remotedesktop: Es meldete sich als `PortalLeser` an, egal welches
+Konto gewählt war, und Windows lehnte mit „nicht zur Remoteanmeldung autorisiert“
+ab. Ab 0.9.4 merkt sich das Portal das Freigabekonto unter einem eigenen Eintrag
+(`KirschkeRDPPortal:Freigabe:<Server>`), den Remotedesktop nicht nutzt, und
+verbindet Inventar-, Protokoll- und Statusfreigaben beim Start selbst. Alte
+Einträge, die das Portal selbst für `PortalLeser` angelegt hatte, entfernt es beim
+Start. Findet es vor dem Verbinden trotzdem noch einen Server-Eintrag, sagt es das
+und bietet an, ihn zu entfernen.
+
+**Eigene Konten bei jeder Maschine.** Die Konten unter *Einstellungen → Weitere
+eigene Windows-Konten* stehen jetzt bei jeder Maschine unter „Anmelden als“.
+Entra-Profilnamen wie `AzureAD\ChristianBecker` bleiben draußen – mit ihnen ist
+keine Anmeldung möglich; dafür `AzureAD\name@firma.de` eintragen.
+
+**Gemeinsam genutzte Konten.** Ein Häkchen in derselben Liste markiert ein Konto,
+unter dem sich mehrere Menschen anmelden, etwa `.\RDPUser` auf den
+Rechenmaschinen. Dessen Sitzung gilt nur dann als eigene, wenn Windows diesen PC
+als RDP-Client meldet. Vorher zeigte jedes Portal die RDPUser-Sitzung eines
+Kollegen als eigene an. Eine getrennte Sitzung eines gemeinsamen Kontos hat
+keinen Client mehr und gilt deshalb als fremd belegt.
+
+**Agent-Setup auf Rechnern mit langem Namen.** Das Setup meldete auf einem
+Rechner wie `Remote-Ettlingen` „keinen aktuellen Online-Status“, obwohl der
+Agent lief. Windows kürzt `%COMPUTERNAME%` auf 15 Zeichen, der Agent meldet den
+vollen Namen. Dabei blieb auch die Freigabe `RDP-Protokoll` aus. Agent-Setup
+1.7.3 erkennt beide Schreibweisen, nennt bei einem Fehlschlag den Grund und zeigt
+Freigabepfade mit dem vollen Rechnernamen an. Betroffene Rechner einfach noch
+einmal einrichten.
+
+**Die Karte nennt Person und Konto:** „Belegt von Christian Becker als
+NB12KI\Codex“. Vorher stand dort nur die Person, die über das Portal verbunden
+hat, und nicht, unter welchem Windows-Konto die Sitzung läuft.
+
+**Wer eine Maschine belegt, steht wieder richtig auf der Karte.** Aufschaltmeldungen
+werden der Sitzung in jeder Schreibweise des Kontos zugeordnet
+(`Rechenknecht` = `WORKSTATION\Rechenknecht`), bei mehreren gilt die jüngste,
+und die Nachmeldung unter der vom Agenten gemeldeten Schreibweise läuft bei jeder
+neuen Verbindung. Vorher nannte die Karte oft das Konto statt der Person, hielt
+Portal-Verbindungen für „direkt verbunden“ oder nannte nach einer Übernahme noch
+den Vorgänger. **Der Agent muss dafür mit verteilt werden**; ein älterer Agent
+verwirft eine anders geschriebene Meldung nach 30 Minuten.
 
 ## Verbindungsassistent
 
@@ -93,16 +180,60 @@ die Agent-Zuordnung, die Quelle des letzten Status (Live-Kanal, Datei-Fallback
 oder keine Meldung) und den Fallbackordner. Die Zuordnung ist dort direkt
 umstellbar; **Alle Fallbacks jetzt verbinden** baut die SMB-Sitzungen neu auf.
 
-**Gemeinsame Maschineneinstellungen:** Alle Benutzer starten
-`Client/Kirschke-RDP-Portal.exe` aus demselben synchronisierten SharePoint-Ordner.
-Im Admin-Fenster schreibt **Speichern** alle angezeigten Maschineneinstellungen
-nach `state/portal-state.json` neben der EXE. Der Ordner wird automatisch angelegt.
-Der Pfad hängt weder vom Benutzernamen noch vom Arbeitsverzeichnis ab.
-Andere Portale laden die Änderungen nach der SharePoint-Synchronisierung automatisch.
+### Gemeinsame Daten nur über das Netzwerk
+
+Seit 0.9.0 gibt es keine SharePoint- oder OneDrive-Anbindung mehr. Gemeinsame
+Daten laufen ausschließlich über das Netzwerk: die Pipe und die Freigabe
+`\\PC\RDP-Status` jedes Agenten, optional ein Protokollordner und optional ein
+**gemeinsames Inventar** auf einer SMB-Freigabe.
+
+**Ohne gemeinsames Inventar** führt jedes Portal seine Maschinen für sich in
+`state\portal-state.json` neben der EXE (nach dem Setup im eigenen Profil).
+Reservierungen und Aufschaltungen laufen trotzdem über die Agenten und bleiben
+gemeinsam. Beim Update den `state`-Ordner beibehalten.
+
+**Gemeinsames Inventar:** Unter **Admin → Gemeinsames Inventar einrichten** eine
+Freigabe mit Schreibrecht eintragen, z. B. `\\SERVER\RDP-Portal`. Das Portal
+prüft vorher durch einen echten Schreibversuch. Liegt dort noch nichts, wird der
+eigene Stand hinkopiert; liegt dort schon ein Inventar, gilt dieses, und der
+eigene Stand bleibt unverändert liegen. Danach liegen Maschinen,
+Reservierungen, die Kontoliste und – ohne eigenen Protokollordner – das
+Ereignisprotokoll auf der Freigabe. Jedes Portal trägt die Freigabe für sich ein.
+
+- **Keine Konflikte:** Jeder Schreibvorgang hält eine Byte-Sperre auf der
+  Freigabe, liest den aktuellen Stand, führt ihn per Drei-Wege-Abgleich mit den
+  eigenen Änderungen zusammen und ersetzt die Datei atomar. Änderungen an
+  verschiedenen Maschinen kommen beide an; haben zwei Portale *dieselbe*
+  Maschine geändert, wird der zweite Schreibvorgang mit „Paralleländerung
+  erkannt“ abgelehnt statt still überschrieben. Liest gerade ein anderer PC die
+  Datei, wartet das Ersetzen bis zu 2 s.
+- **Änderungen anderer Portale** werden alle 5 s im Hintergrund erkannt und
+  nachgeladen; ein hängender Server hält das Fenster dabei nicht an.
+- **Freigabe nicht erreichbar:** Das Portal legt dort nichts an und schreibt
+  nichts hin. Es startet im **Notbetrieb** mit der lokal gemerkten Kopie des
+  zuletzt gelesenen Stands und sagt das beim Start und im Adminbereich.
+  Änderungen im Notbetrieb werden nicht geteilt und beim nächsten Start mit
+  erreichbarer Freigabe nicht übernommen.
+- **Wieder lokal führen** übernimmt den aktuellen gemeinsamen Stand als eigenen;
+  der vorherige eigene Stand bleibt als `portal-state.vorher.json` liegen, die
+  Freigabe wird nicht verändert.
+
+**Kein Ordner in OneDrive oder SharePoint:** Inventar, Protokollordner und
+Fallbackordner werden abgelehnt, wenn sie in einem synchronisierten Ordner
+liegen. Erkannt wird das über die OneDrive-Umgebungsvariablen, die OneDrive-Konten
+und eingebundenen SharePoint-Bibliotheken in der Registry, die Sync-Roots von
+Windows, die Cloud-Dateiattribute, OneDrive-Ordnernamen und WebDAV-Pfade. Wird
+die portable EXE aus einem solchen Ordner gestartet, legt sie ihren Stand unter
+`%LOCALAPPDATA%\KirschkeRDPPortal\daten` ab. Ein älterer Eintrag, der in
+OneDrive zeigt, wird ignoriert und beim Start gemeldet.
+
+**Migration von 0.8.x:** Der alte Standardordner in der SharePoint-Bibliothek
+und der Eintrag `storage_directory` in `storage-config.json` werden nicht mehr
+gelesen; ein Stand in `state\` neben der EXE gilt unverändert weiter. Wer
+gemeinsam arbeiten will, richtet einmal das gemeinsame Inventar ein – auf dem
+ersten PC wird dabei dessen Stand auf die Freigabe kopiert, alle weiteren
+übernehmen ihn. Der Agent 1.7.0 muss mitverteilt werden (Graph-Zweig entfernt).
 Persönliche Kontowahl und Benutzereinstellungen bleiben im jeweiligen Windows-Profil.
-Beim Update den vorhandenen `state`-Ordner beibehalten. Wenn dort noch kein Inventar
-liegt, übernimmt der erste Start ein erreichbares bisheriges Inventar; die alten
-Dateien bleiben erhalten. Ein vorhandener gemeinsamer Stand hat immer Vorrang.
 
 Unter **Maschinen → Details → Datei-Fallback einrichten …** erhält jede
 Maschine ihre eigene SMB-Freigabe. Das Portal speichert auf Wunsch nur die
@@ -138,7 +269,7 @@ Testpaket `dist/Kirschke-RDP-Testbetrieb.zip` einschließlich Kurzanleitung.
 
 Für den ersten Testbetrieb sind der [Prüfbericht und die Abnahmeliste](docs/code-review-testbetrieb.md)
 maßgeblich. Der aktive Programmstart verwendet lokale JSON-Dateien und optionale Agent-Statusdateien.
-Die vorhandenen Entra-/Graph-/Windows-Dienst-Module sind noch keine integrierte Betriebsvariante.
+Die vorhandenen Entra-/Windows-Dienst-Module sind noch keine integrierte Betriebsvariante.
 Remote-Adminbefehle und die bisherigen Dienstinstallationsschalter sind im Pilot deaktiviert.
 
 Das Maschinendashboard fragt den geschützten Agent-Statuskanal automatisch ab
@@ -169,8 +300,8 @@ Vorprüfung ohne RDP-Anmeldung oder Datenänderung:
 python -m portal_app.preflight --storage "C:\Pilot\RDP-Portal" --json
 ```
 
-Für parallele Schreibzugriffe denselben SMB-Ordner verwenden. OneDrive-Replikate bieten keine
-verteilte Transaktionssperre; dort zunächst nur eine schreibende Portalinstanz betreiben.
+Für gemeinsame Daten ausschließlich SMB-Freigaben verwenden; OneDrive- und
+SharePoint-Ordner lehnt das Portal ab (siehe oben).
 
 A Windows application for managing office workstations with RDP connections, session tracking, and admin functions.
 
@@ -185,7 +316,6 @@ kirschke-rdp-portal/
 │   │   ├── widgets/     # Reusable UI widgets
 │   │   └── design/      # Kirschke Corporate Design system
 │   ├── auth/            # Authentication (Phase 2)
-│   ├── graph/           # Microsoft Graph client (Phase 2)
 │   ├── services/       # Business services (Phase 2)
 │   └── rdp/             # RDP functionality
 │       ├── generator.py # RDP file generator
@@ -231,20 +361,17 @@ kirschke-rdp-portal/
 
 ## Features Planned
 
-### Phase 2: SharePoint and Entra Integration
+### Phase 2: Entra Integration
 - [ ] Microsoft Entra ID authentication (MSAL)
-- [ ] Microsoft Graph API client
-- [ ] SharePoint list integration
-- [ ] ETag concurrency control
-- [ ] Data synchronization
+- [x] Gemeinsames Inventar auf einer SMB-Freigabe mit Sperre und Drei-Wege-Abgleich
 - [ ] Launch event auditing
+
+SharePoint-Listen und Microsoft Graph sind seit 0.9.0 verworfen und entfernt.
 
 ### Phase 3: Windows Agent
 - [ ] Windows service
 - [x] WTS-API integration for session tracking
 - [x] Event detection (Logon, Reconnect, Disconnect, Logoff)
-- [ ] Local SQLite outbox for offline events
-- [ ] Idempotent synchronization
 
 ### Phase 4: Admin Actions
 - [ ] Admin command processing
@@ -321,7 +448,7 @@ langsamer und ist für den ersten Test nicht empfohlen.
 ## Optionaler Standalone-Agent für Sitzungsstatus
 
 Der Agent ist eine zweite, portable Windows-Anwendung ohne Python-Abhängigkeit. Er meldet den echten
-RDP-Sitzungszustand eines Ziel-PCs an den gemeinsamen Portalordner. Build, Installation und die Grenzen des
+RDP-Sitzungszustand eines Ziel-PCs über seine Statusfreigabe und die Pipe. Build, Installation und die Grenzen des
 benutzerbasierten Pilotbetriebs sind in [docs/agent-installation.md](docs/agent-installation.md) beschrieben.
 
 ```powershell
@@ -376,15 +503,8 @@ TENANT_ID=your-tenant-id
 PORTAL_CLIENT_ID=your-client-id
 AUTHORITY=https://login.microsoftonline.com/your-tenant-id
 
-# SharePoint
-SHAREPOINT_SITE_ID=your-site-id
-SHAREPOINT_WORKSTATIONS_LIST=RDP_Workstations
-SHAREPOINT_SESSIONS_LIST=RDP_SessionEvents
-SHAREPOINT_COMMANDS_LIST=RDP_AdminCommands
-
 # Agent
 AGENT_POLL_INTERVAL=30
-AGENT_CERT_THUMBPRINT=your-cert-thumbprint
 ```
 
 See `.env.example` for all available options.
@@ -419,6 +539,11 @@ The application uses the Kirschke Corporate Design system as specified in the pr
 - The agent's live status channel is restricted by SDDL to SYSTEM, local
   administrators and the read-only `PortalLeser` account; `PortalLeser` is denied
   interactive, remote-interactive, batch and service logon.
+- Share credentials are kept as generic Credential Manager entries named
+  `KirschkeRDPPortal:Freigabe:<server>`, never as a server-wide domain credential.
+  Windows applies a domain credential to every logon at that server, including
+  Remote Desktop; the portal removes such entries it created for `PortalLeser`
+  in earlier versions and warns before connecting if one remains.
 - Agent snapshots read from an SMB share are untrusted input and are bounded in
   file size, file count, list length and field length.
 - Signing out a session requires a fresh agent reply with matching session ID,
@@ -443,9 +568,13 @@ The application uses the Kirschke Corporate Design system as specified in the pr
   die eine andere Anwendung hält; eine bestehende Sitzung unter einem anderen
   Konto wird gemeldet, nicht ersetzt.
 - Admin actions require explicit confirmation and reasoning.
-- Roughly 5 700 lines of Entra/Graph/SharePoint code ship but are **not
-  integrated and untested**; one known defect makes the token cache inoperable.
-  See [docs/phase2-status.md](docs/phase2-status.md) before enabling any of it.
+- The Graph/SharePoint code is removed (0.9.0 / Agent 1.7.0); no data leaves
+  the local network. The remaining Entra login code is **not integrated and
+  untested**; see [docs/phase2-status.md](docs/phase2-status.md).
+- Kein Ordner, den das Portal beschreibt, darf in OneDrive oder SharePoint
+  liegen; das gemeinsame Inventar muss auf einer Netzwerkfreigabe liegen. Wer
+  darauf Schreibrecht hat, kann das Inventar aller Portale ändern – die
+  Freigabe deshalb nur für die Portalnutzer beschreibbar machen.
 
 ## Testing
 
@@ -500,8 +629,8 @@ no longer inherits `AGENT_STATUS_DIR` from Windows.
 ## Known Limitations (Phase 1)
 
 1. **No actual authentication** - Uses mock users for development
-2. **No SharePoint integration** - Uses mock data
-3. **Agent transport** - Statusdateien können über SMB oder einen synchronisierten Ordner gelesen werden. Vollständige Agent-Ereignisse werden noch nicht in das lokale Portal-Log übertragen.
+2. **Kein Cloudbetrieb** - SharePoint und Graph sind entfernt; gemeinsame Daten laufen nur über Netzwerkfreigaben und die Agenten.
+3. **Agent transport** - Statusdateien werden über SMB gelesen. Vollständige Agent-Ereignisse werden noch nicht in das lokale Portal-Log übertragen.
 4. **Local process monitoring only** - The portal detects the lifetime of RDP clients it started; closing mstsc.exe does not prove that the remote Windows session logged off
 5. **Remote admin commands disabled** - Das Portal kann eigene lokale RDP-Fenster schließen; ein entferntes Windows-Logoff über die Befehlswarteschlange ist im Pilot nicht freigegeben. Die Abmeldung über den geschützten Statuskanal ist freigegeben und geprüft.
 6. **Administrative Abmeldung bei lokalen Konten** - Die UAC-Remoteeinschränkung lässt die Prüfung für lokale Administratorkonten fehlschlagen, solange `LocalAccountTokenFilterPolicy` nicht gesetzt ist. Fehlerrichtung ist sicher (Ablehnung). Siehe [docs/no-ad-pilotbetrieb.md](docs/no-ad-pilotbetrieb.md).

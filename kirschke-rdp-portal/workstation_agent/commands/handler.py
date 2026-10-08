@@ -268,7 +268,7 @@ class AdminCommandHandler:
             CommandResult with execution outcome
         """
         # This command clears the manual flag on the workstation
-        # The actual flag clearing happens in SharePoint via the agent's status update
+        # The actual flag clearing happens in the portal via the agent's status update
         # This command is mainly for admin override
 
         return CommandResult(

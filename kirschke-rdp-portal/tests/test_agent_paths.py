@@ -51,7 +51,11 @@ def test_explicit_agent_folder_survives_restart_and_storage_save(tmp_path, monke
     store = LocalStore()
     target = tmp_path / "custom status"
     store.set_agent_status_directory(target)
-    store._save_directory_config(tmp_path / "inventory")
+    # Ein Eintrag aus der Zeit, als der Stand im SharePoint-Ordner lag, darf
+    # weder umleiten noch die Agenteneinstellung verdrängen.
+    config = json.loads(store.config_path.read_text(encoding="utf-8"))
+    config["storage_directory"] = str(tmp_path / "inventory")
+    store.config_path.write_text(json.dumps(config), encoding="utf-8")
     restored = LocalStore()
     assert restored.directory == tmp_path / "portal" / "state"
     assert restored.agent_status_directory == target
@@ -167,6 +171,7 @@ def test_new_json_updates_dashboard_details_report_and_restart(tmp_path, monkeyp
     monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
     window = MainWindow(automatic_live_status=False)
     qtbot.addWidget(window)
+    window.overview_view.favorites_filter.setChecked(False)
     window.on_workstation_selected(window.workstations[0])
     write_agent_snapshot(AgentSnapshot("PILOT", "target", "1", current_session_state=SessionState.CONNECTED, current_session_user="TARGET\\tester"), directory)
     window._poll_agent_status()
@@ -249,6 +254,7 @@ def test_nb05_assignment_updates_real_card_and_survives_restart(tmp_path, monkey
     monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
     window = MainWindow(automatic_live_status=False)
     qtbot.addWidget(window)
+    window.overview_view.favorites_filter.setChecked(False)
     assert window.agent_status_service.last_snapshot_count == 3
     assert window.agent_status_service.last_match_count == 0
     window.on_workstation_selected(window.workstations[0])

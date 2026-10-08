@@ -95,7 +95,7 @@ EXPECTED_COLORS = {
     MachineState.OCCUPIED_OTHER_IDLE: Colors.taken,
     MachineState.RESERVED: Colors.taken,
     # Deine Sitzung ist blau, mit oder ohne Fenster. Orange ist keine
-    # Grundfarbe mehr, sondern die zweite Strichfarbe fuer "Fenster zu".
+    # Grundfarbe mehr, sondern die Farbe des PC-Symbols fuer "Fenster zu".
     MachineState.OWN_IDLE: Colors.info,
 }
 

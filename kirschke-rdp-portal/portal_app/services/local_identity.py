@@ -50,6 +50,32 @@ def local_machine_names() -> set[str]:
     return {name for name in names if name}
 
 
+#: Wie lange local_client_names ein Ergebnis wiederverwendet. Die Namen ändern
+#: sich praktisch nie, eine Adresse schon -- etwa beim Wechsel ins VPN.
+CLIENT_NAMES_TTL_SECONDS = 300.0
+
+_client_names_cache: tuple[float, frozenset[str]] | None = None
+
+
+def local_client_names() -> frozenset[str]:
+    """``local_machine_names`` in der Form, in der sie mit Sitzungen verglichen werden.
+
+    Gepuffert, weil die Frage bei jedem Zeichnen einer Karte gestellt wird und
+    ``getaddrinfo`` dabei nicht jedes Mal laufen soll.
+    """
+    import time
+
+    from shared.session_identity import host_aliases
+
+    global _client_names_cache
+    now = time.monotonic()
+    if _client_names_cache is not None and now - _client_names_cache[0] < CLIENT_NAMES_TTL_SECONDS:
+        return _client_names_cache[1]
+    names = frozenset(alias for name in local_machine_names() for alias in host_aliases(name))
+    _client_names_cache = (now, names)
+    return names
+
+
 def _detect_identity() -> tuple[str, str | None]:
     r"""Return the ``DOMAIN\user`` name of this process and its SID when available.
 

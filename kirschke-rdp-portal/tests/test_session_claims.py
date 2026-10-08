@@ -20,6 +20,17 @@ from workstation_agent.claim_store import CLAIM_MAX_AGE_SECONDS, SessionClaimSto
 
 SHARED_ACCOUNT = "WORKSTATION\\Rechenknecht"
 
+#: Der Rechner, von dem aus das Portal in diesen Tests verbindet.
+PORTAL_PC = "NB-PORTAL"
+
+
+@pytest.fixture(autouse=True)
+def portal_pc(monkeypatch):
+    """Meldungen tragen den Namen dieses Rechners, Sitzungen ihren RDP-Client."""
+    monkeypatch.setattr(
+        "portal_app.services.session_claims.local_computer_name", lambda: PORTAL_PC
+    )
+
 
 def person(upn: str, display: str) -> MockUser:
     """Ein Portal-Benutzer, der das gemeinsame Konto als eigenes führt.
@@ -35,12 +46,17 @@ def person(upn: str, display: str) -> MockUser:
     return user
 
 
-def session(session_id: int = 3, login: str = "2026-09-16T08:00:00+00:00") -> dict:
+def session(
+    session_id: int = 3,
+    login: str = "2026-09-16T08:00:00+00:00",
+    client: str = PORTAL_PC,
+) -> dict:
     return {
         "session_id": session_id,
         "full_username": SHARED_ACCOUNT,
         "session_state": SessionState.CONNECTED.value,
         "login_time": login,
+        "client_name": client,
     }
 
 
@@ -161,9 +177,13 @@ def store(tmp_path):
 
 
 def test_the_agent_binds_a_claim_to_the_session_it_finds(store):
-    store.claim(build_claim(person("a@x.de", "Becker"), SHARED_ACCOUNT), "NB-Becker")
+    # Eine Meldung ohne eigenen Rechnernamen, wie von einem älteren Portal:
+    # Der Agent trägt den anfragenden Rechner ein.
+    store.claim(
+        build_claim(person("a@x.de", "Becker"), SHARED_ACCOUNT, client_name=""), "NB-Becker"
+    )
 
-    bound = store.bind_and_expire([session()])
+    bound = store.bind_and_expire([session(client="NB-Becker")])
 
     assert bound[0]["session_id"] == 3
     assert bound[0]["login_time"] == "2026-09-16T08:00:00+00:00"
@@ -429,7 +449,12 @@ def test_an_older_agent_leaves_the_question_open():
 
 
 def test_the_card_line_names_the_person_and_the_origin(qtbot):
-    """Der sichtbare Ertrag: Name statt gemeinsamem Konto, plus Herkunft."""
+    """Der sichtbare Ertrag: die Person, das Konto und die Herkunft.
+
+    Nur die Person zu nennen, verbarg, unter welchem Windows-Konto die Sitzung
+    läuft -- wer sich als gemeinsames Konto verbunden hatte, las nur seinen
+    eigenen Namen.
+    """
     from portal_app.ui.widgets.workstation_cards import WorkstationCard
 
     becker = person("a@x.de", "Becker")
@@ -437,7 +462,7 @@ def test_the_card_line_names_the_person_and_the_origin(qtbot):
     card = WorkstationCard(machine, person("b@x.de", "Kollege"))
     qtbot.addWidget(card)
 
-    assert card.session_label.text() == "Belegt von Becker · über Portal"
+    assert card.session_label.text() == f"Belegt von Becker als {SHARED_ACCOUNT} · über Portal"
 
 
 def test_without_a_report_the_card_falls_back_to_the_account(qtbot):
@@ -514,3 +539,134 @@ def test_the_new_person_gets_the_machine_after_a_handover(store):
     assert len(kept) == 1
     assert kept[0]["owner_display"] == "Kollege"
     assert kept[0]["session_id"] == 7
+
+
+# --- Schreibweisen und Übernahme ---------------------------------------------
+#
+# Die Meldung trägt die Schreibweise, mit der das Portal verbunden hat, die
+# Sitzung die von Windows. Wörtlich verglichen fand eine Meldung als
+# "Rechenknecht" die Sitzung "WORKSTATION\Rechenknecht" nie: Die Karte nannte
+# das Konto statt der Person und hielt die Sitzung für "direkt verbunden".
+
+BARE_ACCOUNT = "Rechenknecht"
+
+
+def test_the_agent_binds_a_claim_spelled_without_the_domain(store):
+    store.claim(build_claim(person("a@x.de", "Becker"), BARE_ACCOUNT))
+
+    kept = store.bind_and_expire([session(session_id=3)])
+
+    assert len(kept) == 1
+    assert kept[0]["session_id"] == 3
+
+
+def test_the_card_finds_an_unbound_claim_in_another_spelling():
+    becker = person("a@x.de", "Becker")
+    claim = build_claim(becker, BARE_ACCOUNT)
+    machine = workstation([claim])
+
+    assert machine.session_owner_display(session()) == "Becker"
+    assert machine.unreported_sessions() == []
+
+
+def test_a_new_claim_replaces_the_old_one_in_any_spelling(store):
+    """Pro Konto genau eine Meldung -- auch wenn der Nächste es anders schreibt."""
+    store.claim(build_claim(person("a@x.de", "Becker"), SHARED_ACCOUNT))
+    store.claim(build_claim(person("b@x.de", "Kollege"), BARE_ACCOUNT))
+
+    kept = store.bind_and_expire([session(session_id=3)])
+
+    assert [item["owner_display"] for item in kept] == ["Kollege"]
+
+
+def test_whoever_took_over_the_same_session_is_named():
+    """Übernahme einer getrennten Sitzung: gleiche ID, gleicher Anmeldezeitpunkt.
+
+    Die Meldung des Vorgängers bleibt an diese Sitzung gebunden. Ein älterer
+    Agent ersetzt sie nicht, wenn der Nächste das Konto anders schreibt -- dann
+    entscheidet das Portal nach der jüngsten Meldung.
+    """
+    becker, kollege = person("a@x.de", "Becker"), person("b@x.de", "Kollege")
+    old = claim_of(becker)
+    old["claimed_at_utc"] = "2026-09-16T08:00:00+00:00"
+    new = build_claim(kollege, BARE_ACCOUNT)
+    new["claimed_at_utc"] = "2026-09-16T12:00:00+00:00"
+    machine = workstation([old, new])
+
+    assert machine.session_owner_display(session()) == "Kollege"
+    assert machine_state(machine, becker) is MachineState.OCCUPIED_OTHER
+
+
+def test_a_report_in_another_spelling_is_not_given_up(reporter):
+    """Solange die Sitzung besteht, wird weiter gemeldet -- egal wie geschrieben."""
+    from portal_app.services.session_claims import UNCONFIRMED_MAX_AGE_SECONDS
+
+    agent, _pipe = reporter(failures=5)
+    becker = person("a@x.de", "Becker")
+    machine = reachable()
+    agent.report(machine, becker, BARE_ACCOUNT)
+    agent.pending[0].created_at -= timedelta(seconds=UNCONFIRMED_MAX_AGE_SECONDS + 60)
+
+    agent.flush([machine], becker)
+
+    assert len(agent.pending) == 1
+
+
+# --- Nur die Sitzung vom eigenen Rechner --------------------------------------
+#
+# Der gemeldete Fall: Eine Maschine in München stand als "belegt von Christian
+# Becker · über Portal", obwohl dort der RDP-User aus München saß. Beckers
+# Verbindung war nie zustande gekommen, und seine Meldung hatte sich an die
+# Sitzung gehängt, die unter demselben Konto schon lief.
+
+
+def test_the_agent_does_not_bind_a_claim_to_a_session_from_another_pc(store):
+    store.claim(build_claim(person("a@x.de", "Becker"), SHARED_ACCOUNT))
+
+    kept = store.bind_and_expire([session(session_id=3, client="MUC-PC07")])
+
+    assert len(kept) == 1
+    assert kept[0].get("session_id") is None  # bleibt ungebunden und läuft ab
+
+
+def test_the_card_ignores_a_claim_from_another_pc():
+    becker = person("a@x.de", "Becker")
+    machine = workstation([build_claim(becker, SHARED_ACCOUNT)])
+    machine.agent_sessions = [session(client="MUC-PC07")]
+
+    assert machine.session_owner_display(machine.agent_sessions[0]) is None
+    assert machine.session_people() == [SHARED_ACCOUNT]
+
+
+def test_a_claim_names_the_pc_it_came_from():
+    claim = build_claim(person("a@x.de", "Becker"), SHARED_ACCOUNT)
+
+    assert claim["client_name"] == PORTAL_PC
+
+
+def test_a_bound_claim_ends_when_another_pc_takes_the_session_over(store):
+    store.claim(build_claim(person("a@x.de", "Becker"), SHARED_ACCOUNT))
+    store.bind_and_expire([session(session_id=3)])
+
+    kept = store.bind_and_expire([session(session_id=3, client="MUC-PC07")])
+
+    assert kept == []
+
+
+def test_the_card_drops_a_bound_claim_once_another_pc_holds_the_session():
+    """Auch gegen einen älteren Agenten, der die Meldung noch gebunden hält."""
+    becker = person("a@x.de", "Becker")
+    machine = workstation([claim_of(becker)])
+    machine.agent_session_claims[0]["client_name"] = PORTAL_PC
+    machine.agent_sessions = [session(client="MUC-PC07")]
+
+    assert machine.session_owner_display(machine.agent_sessions[0]) is None
+
+
+def test_a_disconnected_session_without_a_client_keeps_its_claim():
+    becker = person("a@x.de", "Becker")
+    machine = workstation([claim_of(becker)])
+    machine.agent_session_claims[0]["client_name"] = PORTAL_PC
+    machine.agent_sessions = [session(client="")]
+
+    assert machine.session_owner_display(machine.agent_sessions[0]) == "Becker"

@@ -98,61 +98,59 @@ def test_a_non_entra_machine_keeps_the_account_exactly_as_configured():
     assert lines["username"] == UPN
 
 
-# --- detecting the misconfiguration behind the live failure ------------------
+# --- the live failure: plain UPN refused, same account fine over normal RDP --
+#
+# Remote-Ettlingen, IP target, no web sign-in: the portal passed
+# "becker@prof-kirschke.de", Windows answered "nicht zur Remoteanmeldung
+# autorisiert", and the same person got in over normal RDP. Before 0.9.1 this
+# never showed, because Windows silently used saved credentials instead.
 
 
-def test_entra_sessions_on_a_machine_not_marked_as_entra_are_flagged():
-    """The exact live case: the account is in the group, Windows still refuses."""
+def test_entra_sessions_on_the_machine_qualify_a_plain_upn():
     workstation = Workstation("W1", "NB05", "nb05", username_hint=UPN)
     workstation.agent_sessions = [ENTRA_SESSION]
 
-    warning = workstation.entra_spelling_warning()
-
-    assert warning is not None
-    assert QUALIFIED in warning
-    assert "nicht autorisiert" in warning
-
-
-def test_no_warning_once_the_machine_is_marked_as_an_entra_target():
-    workstation = Workstation(
-        "W1", "NB05", "nb05", username_hint=UPN, entra_sso_enabled=True
-    )
-    workstation.agent_sessions = [ENTRA_SESSION]
-
-    assert workstation.entra_spelling_warning() is None
+    assert rdp_lines(workstation)["username"] == QUALIFIED
 
 
 def test_an_idle_entra_machine_is_recognised_from_agent_history():
     workstation = Workstation("W1", "NB05", "nb05", username_hint=UPN)
     workstation.agent_session_history = [dict(ENTRA_SESSION, event="Nicht mehr gemeldet")]
-    assert workstation.entra_spelling_warning() is not None
+
+    assert rdp_lines(workstation)["username"] == QUALIFIED
 
 
-def test_no_warning_for_an_account_that_already_names_its_domain():
+def test_an_entra_portal_user_qualifies_a_plain_upn_without_machine_evidence():
+    """A fresh or silent agent reports nothing -- the user's own logon still tells."""
+    workstation = Workstation("W1", "NB05", "nb05", username_hint=UPN)
+
+    profile = workstation.get_rdp_profile(entra_user=True)
+
+    assert profile.effective_rdp_username() == QUALIFIED
+
+
+def test_an_account_that_names_its_domain_is_left_alone():
     workstation = Workstation(
-        "W1", "NB05", "nb05", username_hint="KIRSCHKE" + BACKSLASH + "mustermann"
+        "W1", "NB05", "nb05", username_hint="NB05" + BACKSLASH + "Codex"
     )
     workstation.agent_sessions = [ENTRA_SESSION]
 
-    assert workstation.entra_spelling_warning() is None
+    assert rdp_lines(workstation)["username"] == "NB05" + BACKSLASH + "Codex"
 
 
-def test_no_warning_when_the_machine_reports_no_entra_sessions():
+def test_without_any_entra_evidence_the_account_stays_as_configured():
     workstation = Workstation("W1", "NB05", "nb05", username_hint=UPN)
     workstation.agent_sessions = [
         dict(ENTRA_SESSION, full_username="NB05" + BACKSLASH + "local", sid="S-1-5-21-1-2-3-4")
     ]
 
     assert workstation.reports_entra_sessions() is False
-    assert workstation.entra_spelling_warning() is None
+    assert rdp_lines(workstation)["username"] == UPN
 
 
-def test_the_warning_follows_the_account_picked_for_this_machine():
-    workstation = Workstation("W1", "NB05", "nb05", username_hint=QUALIFIED)
+def test_the_choice_from_the_dropdown_is_what_gets_qualified():
+    workstation = Workstation("W1", "NB05", "nb05", username_hint="NB05" + BACKSLASH + "Codex")
     workstation.agent_sessions = [ENTRA_SESSION]
-
-    assert workstation.entra_spelling_warning() is None
-
     workstation.selected_login_account = UPN
 
-    assert workstation.entra_spelling_warning() is not None
+    assert rdp_lines(workstation)["username"] == QUALIFIED

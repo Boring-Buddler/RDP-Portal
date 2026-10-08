@@ -161,7 +161,8 @@ def test_local_store_removes_legacy_demo_machine_username(tmp_path):
     assert saved["workstations"][0]["username_hint"] is None
 
 
-def test_local_store_writes_and_moves_shared_status_and_event_log(tmp_path):
+def test_local_store_writes_and_moves_shared_status_and_event_log(tmp_path, monkeypatch):
+    monkeypatch.setattr("portal_app.services.local_store.is_network_location", lambda path: True)
     source = tmp_path / "source" / "portal-state.json"
     store = LocalStore(source)
     user = MockUser.create_user()
@@ -178,17 +179,16 @@ def test_local_store_writes_and_moves_shared_status_and_event_log(tmp_path):
         )
     )
 
-    target = tmp_path / "sharepoint" / "RDP-Portal"
-    store.relocate(target)
+    target = tmp_path / "freigabe" / "RDP-Portal"
+    assert store.use_shared_inventory(target) is False
 
     assert store.path == target / "portal-state.json"
     assert store.events_path == target / "portal-events.jsonl"
     assert store.path.exists()
     assert len(store.load_events()) == 1
-    assert not source.exists()
-    marker = json.loads((source.parent / "storage-location.json").read_text(encoding="utf-8"))
-    from shared.agent_paths import expand_directory
-    assert expand_directory(marker["storage_directory"]) == target
+    # Der eigene Stand bleibt als Rueckfallebene liegen.
+    assert source.exists()
+    assert not (source.parent / "storage-location.json").exists()
 
 
 def test_local_store_detects_external_shared_file_change(tmp_path):
@@ -202,7 +202,8 @@ def test_local_store_detects_external_shared_file_change(tmp_path):
     assert store.has_external_changes()
 
 
-def test_rdp_access_members_and_directory_cache_are_shared_and_moved(tmp_path):
+def test_rdp_access_members_and_directory_cache_are_shared_and_moved(tmp_path, monkeypatch):
+    monkeypatch.setattr("portal_app.services.local_store.is_network_location", lambda path: True)
     source = tmp_path / "source" / "portal-state.json"
     store = LocalStore(source)
     user = MockUser.create_user()
@@ -216,8 +217,8 @@ def test_rdp_access_members_and_directory_cache_are_shared_and_moved(tmp_path):
 
     loaded, _, _ = store.load([], user)
     assert loaded[0].rdp_access_users == ["KIRSCHKE\\mustermann"]
-    target = tmp_path / "sharepoint" / "RDP-Portal"
-    store.relocate(target)
+    target = tmp_path / "freigabe" / "RDP-Portal"
+    store.use_shared_inventory(target)
     assert store.directory_users_path == target / "portal-directory-users.json"
     assert store.load_directory_accounts() == ["KIRSCHKE\\mustermann", "user@firma.de"]
 

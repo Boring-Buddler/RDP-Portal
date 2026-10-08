@@ -1,6 +1,9 @@
-"""Atomic file replacement and cooperative locking for local/SMB pilot storage.
+"""Atomic file replacement and cooperative locking for local and SMB storage.
 
-Locks protect processes accessing the same filesystem, not OneDrive replicas.
+Die Sperre ist eine Byte-Sperre, die der SMB-Server für alle Clients
+durchsetzt; sie schützt damit auch Portale auf verschiedenen PCs, die dieselbe
+Freigabe beschreiben. Für OneDrive-Kopien gilt das nicht -- jede Kopie hätte
+ihre eigene Sperre --, deshalb lehnt :mod:`shared.sync_guard` solche Ordner ab.
 """
 
 from __future__ import annotations
@@ -11,6 +14,28 @@ import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
+
+#: Wie lange ein Ersetzen wiederholt wird, das an einem gerade lesenden Client
+#: scheitert. Ein Lesevorgang dauert Millisekunden.
+REPLACE_RETRY_SECONDS = 2.0
+
+
+def _replace_with_retry(source: str, target: Path) -> None:
+    """``os.replace``, das einen kurz offenen Leser auf der Freigabe abwartet.
+
+    Liest ein anderes Portal die Datei genau in diesem Moment, verweigert
+    Windows das Ersetzen mit einer Freigabeverletzung. Das ist kein Konflikt,
+    sondern ein Augenblick -- nach wenigen Millisekunden ist die Datei frei.
+    """
+    deadline = time.monotonic() + REPLACE_RETRY_SECONDS
+    while True:
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 def write_json_atomic(path: Path, data: object) -> None:
@@ -25,7 +50,7 @@ def write_json_atomic(path: Path, data: object) -> None:
             json.dump(data, stream, ensure_ascii=False, indent=2, allow_nan=False)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(name, path)
+        _replace_with_retry(name, path)
     finally:
         if name is not None:
             Path(name).unlink(missing_ok=True)

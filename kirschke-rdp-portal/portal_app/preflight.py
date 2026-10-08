@@ -47,7 +47,7 @@ def inspect_pilot(storage: Path | None = None) -> list[dict[str, str]]:
         add("Agent", "ok" if recent else "warning", f"{recent} aktuelle von {len(snapshots)} gültigen Statusdateien")
     except OSError as exc:
         add("Agent", "warning", str(exc))
-    add("Betriebsabnahme", "warning", "RDP-Anmeldung, Schreibrechte, SMB/OneDrive-Synchronisierung und Agent-Autostart auf den Test-PCs prüfen.")
+    add("Betriebsabnahme", "warning", "RDP-Anmeldung, Schreibrechte auf den Netzwerkfreigaben und Agent-Autostart auf den Test-PCs prüfen.")
     return checks
 
 

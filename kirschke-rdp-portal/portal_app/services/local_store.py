@@ -1,8 +1,24 @@
-"""Small JSON store used by the locally testable application build."""
+"""JSON-Ablage des Portals: eigener Stand lokal, gemeinsamer Stand auf einer Freigabe.
+
+Gemeinsame Daten laufen ausschließlich über das Netzwerk. Ohne Eintrag führt
+jedes Portal sein Inventar für sich (``state`` neben der EXE). Mit einem
+eingetragenen gemeinsamen Inventar liegen Maschinen, Reservierungen, die
+Kontoliste und -- ohne eigenen Protokollordner -- auch das Ereignisprotokoll
+auf einer SMB-Freigabe, die alle Portale direkt lesen und schreiben.
+OneDrive- und SharePoint-Ordner werden an jeder Stelle abgelehnt, siehe
+:mod:`shared.sync_guard`.
+
+Mehrere Portale schreiben dabei nie gegeneinander: Jeder Schreibvorgang hält
+eine Byte-Sperre auf der Freigabe, liest den aktuellen Stand, führt ihn per
+Drei-Wege-Abgleich mit den eigenen Änderungen zusammen und ersetzt die Datei
+atomar. Haben zwei Portale *denselben* Eintrag geändert, wird der zweite
+Schreibvorgang abgelehnt statt eine Fassung still zu überschreiben.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -15,14 +31,23 @@ from portal_app.models.workstation import Workstation
 from shared.agent_paths import (
     default_portal_directory,
     expand_directory,
-    legacy_portal_directory,
+    is_network_location,
     local_app_directory,
     portable_directory,
     resolve_agent_directory,
-    resolve_portal_storage,
 )
 from shared.file_io import file_lock, write_json_atomic
 from shared.schemas import SessionEventSchema, WorkstationSchema
+from shared.sync_guard import ensure_not_synced, synced_folder_reason
+
+logger = logging.getLogger(__name__)
+
+STATE_FILE = "portal-state.json"
+DIRECTORY_USERS_FILE = "portal-directory-users.json"
+EVENTS_FILE = "portal-events.jsonl"
+#: Lokale Kopie des zuletzt gelesenen gemeinsamen Inventars. Damit startet das
+#: Portal, wenn die Freigabe nicht erreichbar ist -- ohne sie anzufassen.
+INVENTORY_CACHE_FILE = "inventar-zuletzt-gelesen.json"
 
 #: Rotate the append-only event log once it passes this size.
 EVENT_LOG_MAX_BYTES = 4_000_000
@@ -41,15 +66,26 @@ class StoreReadError(OSError):
 
 
 class LocalStore:
-    """Persist test data without requiring SharePoint or Entra ID."""
+    """Eigener Stand lokal oder gemeinsames Inventar auf einer Netzwerkfreigabe."""
 
     def __init__(self, path: Path | None = None) -> None:
         self.config_path = self._config_path()
         self._uses_default_location = path is None
+        # Ein Hinweis fürs Fenster, wenn ein eingetragener Ordner verworfen
+        # wurde -- etwa weil er in OneDrive liegt.
+        self.configuration_notice = ""
+        # Fest beim Erzeugen bestimmt, und vor dem Speicherort, weil der aus der
+        # Einstellung folgt: Beide Dateien gehören zu diesem PC und dürfen nicht
+        # mitwandern, wenn der Stand auf eine Freigabe umzieht.
         if path is None:
-            path = self._configured_directory() / "portal-state.json"
+            self._agent_config_path = self.config_path
+            self._inventory_cache_path = self.config_path.parent / INVENTORY_CACHE_FILE
+            path = self._configured_directory() / STATE_FILE
+        else:
+            self._agent_config_path = path.with_name(f"{path.stem}-storage-config.json")
+            self._inventory_cache_path = path.with_name(f"{path.stem}-{INVENTORY_CACHE_FILE}")
         self.path = path
-        self.directory_users_path = self.path.parent / "portal-directory-users.json"
+        self.directory_users_path = self.path.parent / DIRECTORY_USERS_FILE
         self.preferences_path = (
             self.config_path.parent / "portal-preferences.json"
             if self._uses_default_location
@@ -76,17 +112,18 @@ class LocalStore:
 
     @staticmethod
     def local_directory() -> Path:
-        """The storage location on this PC itself.
+        """Der Notausgang auf diesem PC, wenn der eingestellte Ort nicht geht.
 
-        Used in two situations: as the regular location on a PC where the
-        synchronised library is not present at all, and as the emergency exit
-        when the configured location turns out to be unwritable.
-
-        %LOCALAPPDATA% is always a real local disk, never a network path --
-        which is the point. A fallback that could itself be unreachable would
-        only move the problem somewhere else.
+        %LOCALAPPDATA% ist immer eine lokale Platte und wird von OneDrive nie
+        synchronisiert -- genau darum geht es. Ein Ausweichort, der selbst
+        unerreichbar sein kann, verschöbe das Problem nur.
         """
         return local_app_directory() / "lokal"
+
+    @property
+    def inventory_cache_path(self) -> Path:
+        """Lokale Kopie des zuletzt gelesenen gemeinsamen Inventars."""
+        return self._inventory_cache_path
 
     def use_local_fallback(self) -> Path:
         """Move this store to the local directory and return where it now writes.
@@ -94,14 +131,23 @@ class LocalStore:
         Deliberately not silent for the caller: machines and reservations stop
         being shared with the other portals until the location is corrected, and
         that has to be said rather than discovered.
+
+        Ist ein gemeinsames Inventar eingetragen, beginnt der Notbetrieb mit dem
+        zuletzt von dort gelesenen Stand, damit die Maschinen nicht plötzlich
+        fehlen. Zurückgeschrieben wird davon nie etwas: Die Freigabe bleibt
+        unberührt, bis das Portal sie beim nächsten Start wieder erreicht.
         """
         directory = self.local_directory()
         directory.mkdir(parents=True, exist_ok=True)
-        self.path = directory / "portal-state.json"
-        self.directory_users_path = self.path.parent / "portal-directory-users.json"
+        self.path = directory / STATE_FILE
+        self.directory_users_path = self.path.parent / DIRECTORY_USERS_FILE
+        if self.inventory_directory is not None and self.inventory_cache_path.is_file():
+            shutil.copyfile(self.inventory_cache_path, self.path)
         self._state_signature = None
         self._events_signature = None
         self._directory_users_signature = None
+        self._baseline_workstations = {}
+        self._baseline_reservations = {}
         return directory
 
     @staticmethod
@@ -110,38 +156,129 @@ class LocalStore:
         return Path(local_data) / "KirschkeRDPPortal" / "storage-config.json"
 
     def _configured_directory(self) -> Path:
-        # Every portable client uses the state beside its executable. Old local
-        # settings may seed an empty inventory, but never redirect this location.
-        return self.default_directory()
+        """Das eingetragene gemeinsame Inventar, sonst der eigene Stand neben der EXE.
 
-    def _legacy_configured_directory(self) -> Path:
+        Der frühere Eintrag ``storage_directory`` wird bewusst nicht mehr
+        gelesen: Er zeigte in der Regel in einen SharePoint-Ordner.
+        """
         try:
-            config = json.loads(self.config_path.read_text(encoding="utf-8"))
-            location = config.get("storage_directory")
-            if location:
-                return resolve_portal_storage(location)
-        except (OSError, ValueError, TypeError, AttributeError):
-            pass
-        # If the local configuration was removed, a redirect marker in the
-        # folder this portal used to default to still makes a previous move
-        # recoverable.
-        marker = legacy_portal_directory() / "storage-location.json"
-        try:
-            location = json.loads(marker.read_text(encoding="utf-8")).get("storage_directory")
-            if location:
-                return resolve_portal_storage(location)
-        except (OSError, ValueError, TypeError, AttributeError):
-            pass
-        # Eine Installation, die ihren Stand bereits im frueheren Standardordner
-        # fuehrt, muss ihn dort weiter finden. Erkannt wird das an der Datei, nicht
-        # am Ordner: ein leerer Ordner beweist nichts, und angelegt wird er nie.
-        legacy = legacy_portal_directory()
-        try:
-            if (legacy / "portal-state.json").is_file():
-                return legacy
-        except OSError:
-            pass
-        return local_app_directory() / "daten"
+            configured = self.inventory_directory
+        except (OSError, ValueError) as exc:
+            # Eine unlesbare Einstellung darf den Start nicht verhindern.
+            logger.warning("Speichereinstellung nicht lesbar: %s", exc)
+            configured = None
+        return configured if configured is not None else self.default_directory()
+
+    def _configured_path(self, key: str, purpose: str) -> Path | None:
+        """Einen eingetragenen Ordner lesen und einen synchronisierten verwerfen."""
+        configured = self._read_directory_config().get(key)
+        if not isinstance(configured, str) or not configured.strip():
+            return None
+        directory = expand_directory(configured)
+        reason = synced_folder_reason(directory)
+        if reason:
+            logger.warning("%s %s wird ignoriert: %s", purpose, directory, reason)
+            self.configuration_notice = (
+                f"{purpose} war auf einen OneDrive- oder SharePoint-Ordner eingestellt "
+                f"und wird nicht verwendet:\n{directory}\n({reason})\n\n"
+                "Bitte im Adminbereich eine Netzwerkfreigabe eintragen."
+            )
+            return None
+        return directory
+
+    @staticmethod
+    def _validated_directory(directory: str | Path, purpose: str, *, network_only: bool) -> Path:
+        target = expand_directory(directory)
+        if not target.is_absolute() or re.search(r"%[^%]+%", str(target)):
+            raise ValueError(
+                "Bitte einen vollständigen Netzwerkpfad angeben."
+                if network_only
+                else "Bitte einen vollständigen lokalen oder Netzwerkpfad angeben."
+            )
+        if network_only and not is_network_location(target):
+            raise ValueError(
+                f"{purpose} muss auf einer Netzwerkfreigabe liegen, z. B. "
+                "\\\\SERVER\\RDP-Portal. Ein lokaler Ordner wäre nur auf diesem PC sichtbar."
+            )
+        ensure_not_synced(target, purpose)
+        return target
+
+    @property
+    def inventory_directory(self) -> Path | None:
+        """Der eingetragene Ordner des gemeinsamen Inventars, oder ``None``."""
+        return self._configured_path("inventory_directory", "Das gemeinsame Inventar")
+
+    @property
+    def uses_shared_inventory(self) -> bool:
+        inventory = self.inventory_directory
+        return inventory is not None and self.path.parent == inventory
+
+    def use_shared_inventory(self, directory: str | Path) -> bool:
+        """Auf das gemeinsame Inventar in ``directory`` umstellen.
+
+        Liegt dort schon ein Inventar, gilt es, und der eigene Stand bleibt
+        unverändert liegen. Sonst wird der eigene Stand dorthin kopiert -- unter
+        der Sperre, damit zwei Portale, die gleichzeitig einrichten, nicht
+        beide ihren Stand hineinschreiben. Gibt zurück, ob ein vorhandenes
+        Inventar übernommen wurde.
+        """
+        target = self._validated_directory(directory, "Das gemeinsame Inventar", network_only=True)
+        target.mkdir(parents=True, exist_ok=True)
+        target_state = target / STATE_FILE
+        with file_lock(target_state.with_suffix(".lock")):
+            adopted = target_state.exists()
+            if adopted:
+                self._read_state(target_state)
+            else:
+                pairs = [(self.path, target_state),
+                         (self.directory_users_path, target / DIRECTORY_USERS_FILE)]
+                if self.event_log_directory is None:
+                    pairs.append((self.events_path, target / EVENTS_FILE))
+                for source, destination in pairs:
+                    if source.is_file() and not destination.exists():
+                        shutil.copy2(source, destination)
+                        if destination.suffix == ".json":
+                            json.loads(destination.read_text(encoding="utf-8"))
+                if not target_state.exists():
+                    write_json_atomic(target_state, {"version": 4, "workstations": [], "reservations": []})
+            config = self._read_directory_config()
+            config["inventory_directory"] = portable_directory(target)
+            write_json_atomic(self.agent_config_path, config)
+        self._switch_to(target)
+        return adopted
+
+    def use_local_inventory(self) -> Path:
+        """Das gemeinsame Inventar verlassen und wieder den eigenen Stand führen.
+
+        Der aktuelle gemeinsame Stand wird als eigener übernommen, damit keine
+        Maschine verschwindet; der bisherige eigene Stand bleibt als
+        ``portal-state.vorher.json`` daneben liegen. Die Freigabe selbst wird
+        nicht verändert.
+        """
+        local = self.default_directory()
+        local.mkdir(parents=True, exist_ok=True)
+        local_state = local / STATE_FILE
+        if self.uses_shared_inventory and self.path.is_file():
+            data = self._read_state(self.path)
+            if local_state.exists():
+                shutil.copy2(local_state, local / "portal-state.vorher.json")
+            write_json_atomic(local_state, data)
+            if self.directory_users_path.is_file():
+                shutil.copy2(self.directory_users_path, local / DIRECTORY_USERS_FILE)
+        config = self._read_directory_config()
+        config.pop("inventory_directory", None)
+        write_json_atomic(self.agent_config_path, config)
+        self._switch_to(local)
+        return local
+
+    def _switch_to(self, directory: Path) -> None:
+        self.path = directory / STATE_FILE
+        self.directory_users_path = directory / DIRECTORY_USERS_FILE
+        self._state_signature = None
+        self._events_signature = None
+        self._directory_users_signature = None
+        self._baseline_workstations = {}
+        self._baseline_reservations = {}
 
     @property
     def directory(self) -> Path:
@@ -149,8 +286,7 @@ class LocalStore:
 
     @property
     def agent_config_path(self) -> Path:
-        return (self.config_path if self._uses_default_location else
-                self.path.with_name(f"{self.path.stem}-storage-config.json"))
+        return self._agent_config_path
 
     def _read_directory_config(self) -> dict:
         try:
@@ -165,22 +301,20 @@ class LocalStore:
 
         Wie die Agentenordner eine Einstellung dieses PCs: Der Pfad selbst ist
         gemeinsam, aber jedes Portal muss ihn für sich kennen und erreichen.
+        Ein Eintrag, der in OneDrive oder SharePoint zeigt, wird verworfen.
         """
-        configured = self._read_directory_config().get("event_log_directory")
-        return expand_directory(configured) if isinstance(configured, str) and configured.strip() else None
+        return self._configured_path("event_log_directory", "Der Protokollordner")
 
     @property
     def events_path(self) -> Path:
         """Wo das Ereignisprotokoll liegt.
 
-        Ohne Eintrag neben dem gemeinsamen Stand. Das genügt, solange alle
-        dieselbe EXE aus einem synchronisierten Ordner starten -- installiert
-        aber jeder lokal, liegt der Stand in seinem eigenen Profil und das
-        Protokoll damit auch. Ein eingetragener Ordner ist der Weg zu einem
-        gemeinsamen Protokoll, ohne den übrigen Stand zu teilen.
+        Ohne eigenen Protokollordner neben dem Stand -- beim gemeinsamen
+        Inventar also ebenfalls auf der Freigabe. Ein eingetragener Ordner ist
+        der Weg zu einem gemeinsamen Protokoll, ohne den übrigen Stand zu teilen.
         """
         directory = self.event_log_directory
-        return (directory or self.path.parent) / "portal-events.jsonl"
+        return (directory or self.path.parent) / EVENTS_FILE
 
     def set_event_log_directory(self, directory: str | Path | None) -> Path | None:
         """Den gemeinsamen Protokollordner eintragen oder mit ``None`` entfernen."""
@@ -190,9 +324,7 @@ class LocalStore:
             write_json_atomic(self.agent_config_path, config)
             self._events_signature = None
             return None
-        target = expand_directory(directory)
-        if not target.is_absolute() or re.search(r"%[^%]+%", str(target)):
-            raise ValueError("Bitte einen vollständigen lokalen oder Netzwerkpfad angeben.")
+        target = self._validated_directory(directory, "Der Protokollordner", network_only=False)
         config = self._read_directory_config()
         config["event_log_directory"] = portable_directory(target)
         write_json_atomic(self.agent_config_path, config)
@@ -237,9 +369,7 @@ class LocalStore:
         key = workstation_id.strip().casefold()
         if not key:
             raise ValueError("Die Maschinen-ID fehlt.")
-        target = expand_directory(directory)
-        if not target.is_absolute() or re.search(r"%[^%]+%", str(target)):
-            raise ValueError("Bitte einen vollständigen lokalen oder Netzwerkpfad angeben.")
+        target = self._validated_directory(directory, "Der Fallbackordner", network_only=False)
         config = self._read_directory_config()
         configured = config.get("workstation_agent_status_directories", {})
         configured = dict(configured) if isinstance(configured, dict) else {}
@@ -250,9 +380,7 @@ class LocalStore:
         return target
 
     def set_agent_status_directory(self, directory: str | Path) -> Path:
-        target = expand_directory(directory)
-        if not target.is_absolute() or re.search(r"%[^%]+%", str(target)):
-            raise ValueError("Bitte einen vollständigen lokalen oder Netzwerkpfad angeben.")
+        target = self._validated_directory(directory, "Der Agentenordner", network_only=False)
         config = self._read_directory_config()
         config["agent_status_directory"] = portable_directory(target)
         config["version"] = 1
@@ -306,6 +434,15 @@ class LocalStore:
     def _user_from_data(data: dict, fallback: MockUser) -> MockUser:
         if not isinstance(data, dict):
             return fallback
+        own_accounts = LocalStore._normalise_accounts(data.get("own_accounts", []))
+        own = {name.casefold() for name in own_accounts}
+        # Nur, was auch unter den eigenen Konten steht: Eine Markierung ohne
+        # Konto bewirkt nichts und tauchte sonst nach dem Entfernen wieder auf.
+        shared_accounts = [
+            name
+            for name in LocalStore._normalise_accounts(data.get("shared_accounts", []))
+            if name.casefold() in own
+        ]
         return MockUser(
             object_id=data.get("object_id", fallback.object_id),
             upn=data.get("upn", fallback.upn),
@@ -316,7 +453,8 @@ class LocalStore:
             rdp_domain=data.get("rdp_domain"),
             windows_identity=fallback.windows_identity,
             windows_sid=fallback.windows_sid,
-            own_accounts=LocalStore._normalise_accounts(data.get("own_accounts", [])),
+            own_accounts=own_accounts,
+            shared_accounts=shared_accounts,
         )
 
     @staticmethod
@@ -333,6 +471,7 @@ class LocalStore:
             # unpersisted on purpose; these claimed extra accounts are the one part
             # of the identity picture the person maintains themselves.
             "own_accounts": list(user.own_accounts),
+            "shared_accounts": list(user.shared_accounts),
         }
 
     def _load_preferences(self, fallback: MockUser, legacy_data: dict | None = None) -> MockUser:
@@ -565,6 +704,40 @@ class LocalStore:
         """Whether the event log changed since it was last read."""
         return self._signature(self.events_path) != self._events_signature
 
+    def change_probe_paths(self) -> tuple[Path, Path, Path]:
+        """Die Dateien, deren Signaturen :meth:`changes_from` erwartet.
+
+        Auf einer Freigabe kann schon ein ``stat`` hängen. Die Signaturen
+        werden deshalb im Hintergrund ermittelt (:func:`file_signatures`) und
+        hier nur noch verglichen.
+        """
+        return self.path, self.directory_users_path, self.events_path
+
+    def changes_from(
+        self,
+        paths: tuple[Path, Path, Path],
+        signatures: tuple[tuple[int, int] | None, ...],
+    ) -> tuple[bool, bool]:
+        """(Inventar geändert, Protokoll geändert) aus vorab ermittelten Signaturen.
+
+        Gehört die Messung zu Pfaden, die inzwischen nicht mehr gelten, sagt
+        sie nichts und zählt als "unverändert".
+        """
+        if paths != self.change_probe_paths():
+            return False, False
+        state, users, events = signatures
+        return (
+            state != self._state_signature or users != self._directory_users_signature,
+            events != self._events_signature,
+        )
+
+    def _remember_inventory(self, data: dict) -> None:
+        """Den gemeinsamen Stand lokal festhalten, für einen Start ohne Freigabe."""
+        try:
+            write_json_atomic(self.inventory_cache_path, data)
+        except OSError as exc:
+            logger.warning("Lokale Kopie des Inventars nicht geschrieben: %s", exc)
+
     @staticmethod
     def _normalise_accounts(accounts: list[str]) -> list[str]:
         """Return unique, non-empty directory accounts in a stable order."""
@@ -589,37 +762,18 @@ class LocalStore:
         return result
 
     def save_directory_accounts(self, accounts: list[str]) -> list[str]:
-        """Merge discovered/manual accounts into the shared selectable-user cache."""
-        existing = self.load_directory_accounts()
-        merged = self._normalise_accounts(existing + accounts)
-        self._write_json(self.directory_users_path, {"version": 1, "accounts": merged})
+        """Merge discovered/manual accounts into the shared selectable-user cache.
+
+        Unter der Sperre gelesen und geschrieben: Liegt die Liste auf der
+        gemeinsamen Freigabe, ginge sonst ein Konto verloren, das ein anderes
+        Portal im selben Augenblick ergänzt.
+        """
+        with file_lock(self.directory_users_path.with_suffix(".lock")):
+            existing = self.load_directory_accounts()
+            merged = self._normalise_accounts(existing + accounts)
+            self._write_json(self.directory_users_path, {"version": 1, "accounts": merged})
         self._directory_users_signature = self._signature(self.directory_users_path)
         return merged
-
-    def _save_directory_config(self, directory: Path | None = None) -> None:
-        if not self._uses_default_location:
-            return
-        config = self._read_directory_config()
-        config.update(storage_directory=portable_directory(directory or self.directory), version=1)
-        write_json_atomic(self.config_path, config)
-
-    @staticmethod
-    def _write_redirect_marker(previous_directory: Path, new_directory: Path) -> None:
-        """Leave a small, human-readable recovery pointer at the old location."""
-        marker = previous_directory / "storage-location.json"
-        temporary = marker.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(
-                {
-                    "storage_directory": portable_directory(new_directory),
-                    "message": "RDP-Portal-Dateien wurden in diesen Ordner verschoben.",
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        temporary.replace(marker)
 
     def load(
         self,
@@ -629,17 +783,25 @@ class LocalStore:
         migrate: bool = True,
     ) -> tuple[list[Workstation], MockUser, list[Reservation]]:
         source = self.path
+        shared = self.uses_shared_inventory
+        if shared and not source.is_file():
+            # Nicht erreichbar oder entfernt -- beides heisst: nichts anlegen.
+            # Ein leeres oder veraltetes Inventar auf der Freigabe wuerde bei
+            # allen anderen Portalen die Maschinen verschwinden lassen.
+            reachable = source.parent.is_dir()
+            raise StoreReadError(
+                f"Das gemeinsame Inventar {source} "
+                + ("fehlt auf der Freigabe." if reachable else "ist nicht erreichbar.")
+            )
         if (not source.exists() and self._uses_default_location
                 and self._state_signature is None and not self._baseline_workstations
                 and not self._baseline_reservations):
-            for directory in (
-                self._legacy_configured_directory(),
-                local_app_directory() / "daten",
-                self.local_directory(),
-            ):
-                legacy = directory / "portal-state.json"
-                if legacy != source and legacy.is_file():
-                    source = legacy
+            # Ein Stand aus einem frueheren Notbetrieb oder einer portablen EXE
+            # in einem Cloud-Ordner -- beide liegen im lokalen Profil.
+            for directory in (local_app_directory() / "daten", self.local_directory()):
+                previous = directory / STATE_FILE
+                if previous != source and previous.is_file():
+                    source = previous
                     break
         if not source.exists():
             if self._state_signature is not None or self._baseline_workstations or self._baseline_reservations:
@@ -679,6 +841,8 @@ class LocalStore:
             reservations = [Reservation.from_dict(item) for item in data.get("reservations", [])]
             self._set_baseline(data)
             self._remember_signatures()
+            if shared:
+                self._remember_inventory(data)
             if removed_legacy_placeholders and migrate and source == self.path:
                 self.save(workstations, user, reservations, theme_mode=self.theme_mode)
             else:
@@ -723,6 +887,8 @@ class LocalStore:
                 ):
                     raise StoreConflictError("Der Reservierungszeitraum wurde zwischenzeitlich belegt.")
             self._write_json(self.path, data)
+        if self.uses_shared_inventory:
+            self._remember_inventory(data)
         self._save_preferences(user, theme_mode)
         # Only the local input was seen by this caller. Remembering merged remote
         # records here would interpret its next save as deleting unseen records.
@@ -800,46 +966,10 @@ class LocalStore:
         self.events_path.touch(exist_ok=True)
         self._remember_signatures()
 
-    def relocate(self, directory: Path, move_files: bool = True) -> None:
-        """Switch storage folders and copy-verify existing state and event files first.
 
-        Holds the state lock for the whole copy-and-remove so a second portal
-        instance cannot write into the folder that is being moved away.
-        """
-        previous_directory = self.directory
-        target_directory = directory.expanduser().resolve()
-        target_directory.mkdir(parents=True, exist_ok=True)
-        target_state = target_directory / "portal-state.json"
-        target_events = target_directory / "portal-events.jsonl"
-        target_directory_users = target_directory / "portal-directory-users.json"
-        if target_directory == self.directory:
-            self._save_directory_config()
-            return
-        with file_lock(self.path.with_suffix(".lock")):
-            # Ein eingetragener Protokollordner wird nicht mitverschoben: Er
-            # ist bewusst vom Stand getrennt, und ein gemeinsames Protokoll
-            # gehoert nicht in den Ordner eines einzelnen Portals.
-            movable = [(self.path, target_state), (self.directory_users_path, target_directory_users)]
-            if self.event_log_directory is None:
-                movable.insert(1, (self.events_path, target_events))
-            pairs = [(source, target) for source, target in movable if source.exists()]
-            for _, target in pairs:
-                if target.exists():
-                    raise FileExistsError(f"Zieldatei existiert bereits: {target.name}")
-            for source, target in pairs:
-                shutil.copy2(source, target)
-                if source.suffix == ".json":
-                    json.loads(target.read_text(encoding="utf-8"))
-            # The reference is written before the original files are removed.  If
-            # it cannot be written, the original data remains intact.
-            self._save_directory_config(target_directory)
-            self._write_redirect_marker(previous_directory, target_directory)
-            if move_files:
-                for source, _ in pairs:
-                    source.unlink()
-        self.path = target_state
-        self.directory_users_path = target_directory_users
-        self._remember_signatures()
+def file_signatures(paths: tuple[Path, ...]) -> tuple[tuple[int, int] | None, ...]:
+    """Signaturen mehrerer Dateien. Blockiert auf einer langsamen Freigabe."""
+    return tuple(LocalStore._signature(path) for path in paths)
 
 
-__all__ = ["LocalStore"]
+__all__ = ["LocalStore", "StoreConflictError", "StoreReadError", "file_signatures"]

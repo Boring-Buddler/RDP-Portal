@@ -18,26 +18,18 @@ def portable_directory(value: str | Path) -> str:
     return str(directory)
 
 
-def resolve_portal_storage(value: str | Path) -> Path:
-    """Recover a copied profile path only when this profile has actual portal data.
+def is_network_location(value: str | Path) -> bool:
+    """Ob ein Pfad auf einer Netzwerkfreigabe liegt: UNC oder verbundenes Laufwerk."""
+    text = str(expand_directory(value))
+    if text.startswith("\\\\"):
+        return True
+    drive = Path(text).drive
+    if sys.platform != "win32" or not drive:
+        return False
+    import ctypes
 
-    Never create a guessed mirror of a shared library. Explicit reachable paths
-    stay intact; a missing path can only migrate to an existing inventory.
-    """
-    directory = expand_directory(value)
-    profile = Path(os.environ.get("USERPROFILE") or Path.home())
-    try:
-        if directory.exists() or not directory.is_relative_to(profile.parent):
-            return directory
-        relative = directory.relative_to(profile.parent)
-        if len(relative.parts) < 2 or relative.parts[0].casefold() == profile.name.casefold():
-            return directory
-        candidate = profile.joinpath(*relative.parts[1:])
-        if (candidate / "portal-state.json").is_file():
-            return candidate
-    except OSError:
-        pass
-    return directory
+    drive_remote = 4
+    return int(ctypes.windll.kernel32.GetDriveTypeW(drive + "\\")) == drive_remote
 
 
 def local_app_directory() -> Path:
@@ -51,17 +43,12 @@ def is_private_program_location(directory: str | Path) -> bool:
 
     Gebraucht, damit das Portal nicht das Falsche behauptet. Das Setup
     installiert nach ``%LOCALAPPDATA%\\Programs\\KirschkeRDPPortal``, und der
-    gemeinsame Stand liegt neben der EXE -- also mitten im eigenen Profil.
-    Die Anzeige versprach dort trotzdem eine "Verteilung nach
-    SharePoint-Synchronisierung": Sie verglich gegen
-    ``%LOCALAPPDATA%\\KirschkeRDPPortal`` und traf den Installationspfad damit
-    nie. Wer dem Text folgte, wartete auf eine Synchronisierung, die es nicht
-    gibt.
+    eigene Stand liegt neben der EXE -- also mitten im eigenen Profil.
 
     Geprüft wird gegen die Profilordner selbst und nicht gegen einen einzelnen
     Programmordner darin: Wo die EXE unterhalb davon liegt, ist für diese Frage
     gleichgültig. OneDrive nimmt weder ``%LOCALAPPDATA%`` noch ``%APPDATA%``
-    mit, ein synchronisierter Ordner liegt immer woanders.
+    mit.
     """
     try:
         target = expand_directory(directory).resolve()
@@ -79,27 +66,6 @@ def is_private_program_location(directory: str | Path) -> bool:
     return False
 
 
-def legacy_portal_directory() -> Path:
-    """The SharePoint folder the portal used to default to.
-
-    It is no longer assumed and never created. The path guessed at a
-    synchronised document library, which is fine on the PC it was written for and
-    wrong everywhere else: on a machine without that library the portal tried to
-    create the chain and was refused partway up, and on a machine where the
-    library existed but a folder inside it was not writable it was refused there.
-    Creating it where it did not belong would have been worse still -- a
-    look-alike that never syncs, with everyone believing they share a state that
-    in truth exists once per machine.
-
-    It stays here for one purpose: an installation that already keeps its state
-    there must keep finding it. See ``LocalStore._configured_directory``.
-    """
-    return (Path(os.environ.get("USERPROFILE") or Path.home())
-            / "Prof. Dr.-Ing. Dieter Kirschke GmbH & Co. KG"
-            / "IB Kirschke - Dokumente" / "90" / "_K.I. Strategie"
-            / "Testprogramme" / "RDP-Portal")
-
-
 def portal_program_directory() -> Path:
     """Use the EXE's location, never the working directory or PyInstaller temp."""
     if getattr(sys, "frozen", False):
@@ -108,8 +74,20 @@ def portal_program_directory() -> Path:
 
 
 def default_portal_directory() -> Path:
-    """Portable shared inventory in state beside the portal executable."""
-    return portal_program_directory() / "state"
+    """Der eigene Stand: ``state`` neben der EXE, nie in einem Cloud-Ordner.
+
+    Nach einer Installation per Setup liegt die EXE im lokalen Profil, und
+    ``state`` daneben ist privat. Wird die portable EXE dagegen aus einem
+    OneDrive- oder SharePoint-Ordner gestartet, landete der Stand -- samt
+    Sperr-, Temporär- und Protokolldateien, die das Portal im Sekundentakt
+    schreibt -- mitten in der Synchronisierung. Dann gilt der lokale Ordner.
+    """
+    from shared.sync_guard import is_synced_folder
+
+    program = portal_program_directory()
+    if is_synced_folder(program):
+        return local_app_directory() / "daten"
+    return program / "state"
 
 
 def default_agent_directory() -> Path:

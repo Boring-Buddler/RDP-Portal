@@ -109,23 +109,21 @@ def test_executable_location_wins_over_working_directory_and_temp_bundle(tmp_pat
     assert portal_program_directory() == tmp_path / "SharePoint"
 
 
-def test_legacy_machine_inventory_seeds_state_without_redirecting_or_deleting(tmp_path, monkeypatch):
+def test_a_former_sharepoint_storage_setting_is_ignored(tmp_path, monkeypatch):
+    """Der alte Eintrag zeigte in einen SharePoint-Ordner. Er wird nicht mehr gelesen."""
     legacy = LocalStore(tmp_path / "old" / "portal-state.json")
     user = MockUser.create_user()
     legacy.save([Workstation("OLD", "Existing machine", "pc-old")], user, [])
+    before = legacy.path.read_bytes()
     config = LocalStore._config_path()
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(json.dumps({"storage_directory": str(legacy.directory)}), encoding="utf-8")
     store = LocalStore()
     machines, loaded_user, reservations = store.load([], user)
-    assert machines[0].workstation_id == "OLD"
+    assert machines == []
     assert store.directory == tmp_path / "portal" / "state"
-    store.save(machines, loaded_user, reservations)
-    assert legacy.path.exists()
-    assert store.path.exists()
-    # Once state exists, another profile's legacy inventory cannot replace it.
-    legacy.save([Workstation("OTHER", "Other", "other")], user, [])
-    assert LocalStore().load([], user)[0][0].workstation_id == "OLD"
+    store.save([Workstation("NEW", "New", "pc-new")], loaded_user, reservations)
+    assert legacy.path.read_bytes() == before
     store.path.unlink()
     with pytest.raises(StoreReadError):
         store.load([], user)

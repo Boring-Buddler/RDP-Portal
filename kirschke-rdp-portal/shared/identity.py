@@ -187,6 +187,72 @@ class WindowsIdentity:
         return IdentityMatch.NO
 
 
+@dataclass(frozen=True)
+class SharedWindowsIdentity(WindowsIdentity):
+    r"""Ein Konto, unter dem sich mehrere Menschen anmelden -- etwa ``.\RDPUser``.
+
+    Auf so einem Konto sagt der Name nichts darüber, wer davor sitzt: Die
+    Sitzung eines Kollegen heißt genauso wie die eigene. Eigen ist eine Sitzung
+    deshalb nur, wenn Windows *diesen* PC als ihren RDP-Client meldet -- dieselbe
+    Bezeugung, mit der der Agent eine Abmeldung erlaubt. ``clients`` sind die
+    Namen und Adressen, unter denen dieser PC dort erscheint, vorbereitet mit
+    :func:`shared.session_identity.host_aliases`.
+
+    Eine getrennte Sitzung hat keinen Client mehr und gilt damit als fremd. Das
+    ist Absicht: Auf einem gemeinsamen Konto lässt sich dann nicht mehr sagen,
+    wessen Sitzung es ist.
+    """
+
+    clients: frozenset[str] = frozenset()
+
+    def opened_from(self, session: Mapping[str, Any]) -> bool:
+        """Ob Windows einen der eigenen Rechnernamen als Client der Sitzung meldet."""
+        from shared.session_identity import host_aliases
+
+        reported = host_aliases(session.get("client_name")) | host_aliases(
+            session.get("client_address")
+        )
+        return bool(reported & self.clients)
+
+
+def is_entra_profile_name(account: Any) -> bool:
+    r"""Ob ``account`` der Entra-*Profilname* ist, etwa ``AzureAD\ChristianBecker``.
+
+    So zeigt Windows ein Entra-Konto in Gruppen und Sitzungen an. Anmelden kann
+    man sich damit nicht -- Remotedesktop braucht ``AzureAD\name@firma.de`` --,
+    und aus dem Profilnamen lässt sich die UPN nicht ableiten.
+    """
+    identity = WindowsIdentity.from_names(down_level=account)
+    return bool(identity.is_entra and not identity.upn)
+
+
+def account_names_session(account: Any, session: Mapping[str, Any]) -> bool:
+    r"""Ob ein gemeldeter Kontoname die Sitzung bezeichnet, als Anzeigehinweis.
+
+    Eine Aufschaltmeldung traegt die Schreibweise, mit der das Portal verbunden
+    hat -- ``Rechenknecht``, ``WORKSTATION\Rechenknecht`` oder eine UPN. Der
+    Agent meldet die Sitzung als ``DOMAIN\user``. Ein woertlicher Vergleich
+    fand die Sitzung zur Meldung deshalb oft nie, und die Karte nannte das
+    Konto statt der Person. Verglichen werden hier alle Schreibweisen, die
+    dasselbe Konto bezeichnen -- ohne SID, weil die Meldung keine traegt. Das
+    reicht fuer eine Beschriftung und fuer nichts, was etwas erlaubt.
+    """
+    claimed = WindowsIdentity.from_names(down_level=account)
+    if not claimed.comparable_names():
+        return False
+    reported = WindowsIdentity.from_names(
+        down_level=session_username(session), upn=session.get("upn")
+    )
+    return bool(claimed.comparable_names() & reported.comparable_names())
+
+
+def same_account_name(first: Any, second: Any) -> bool:
+    """Ob zwei Kontonamen dasselbe Konto bezeichnen, nur nach dem Namen."""
+    left = WindowsIdentity.from_names(down_level=first).comparable_names()
+    right = WindowsIdentity.from_names(down_level=second).comparable_names()
+    return bool(left & right)
+
+
 def entra_rdp_username(account: str | None, *, aad_auth: bool = False) -> str | None:
     r"""Apply the Entra naming rule to one configured account name.
 
@@ -210,6 +276,10 @@ __all__ = [
     "ENTRA_DOMAIN",
     "ENTRA_SID_PREFIX",
     "IdentityMatch",
+    "SharedWindowsIdentity",
     "WindowsIdentity",
+    "account_names_session",
     "entra_rdp_username",
+    "is_entra_profile_name",
+    "same_account_name",
 ]

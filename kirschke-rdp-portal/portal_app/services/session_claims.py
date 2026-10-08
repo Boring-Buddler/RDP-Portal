@@ -26,6 +26,8 @@ die Vertrauensgrenze und für die Regel, die daraus folgt.
 from __future__ import annotations
 
 import logging
+import os
+import socket
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -34,7 +36,8 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
-from shared.session_identity import is_active_session, session_username
+from shared.identity import account_names_session, same_account_name
+from shared.session_identity import is_active_session
 from shared.status_pipe import push_session_claim
 
 logger = logging.getLogger(__name__)
@@ -46,17 +49,28 @@ logger = logging.getLogger(__name__)
 UNCONFIRMED_MAX_AGE_SECONDS = 900
 
 
-def build_claim(user: User, account: str) -> dict:
+def local_computer_name() -> str:
+    """Der Name, unter dem Windows diesen Rechner als RDP-Client meldet."""
+    return (os.environ.get("COMPUTERNAME") or socket.gethostname() or "").strip()
+
+
+def build_claim(user: User, account: str, client_name: str | None = None) -> dict:
     """Die Meldung selbst: Welcher Mensch verbindet sich unter welchem Konto.
 
     ``owner_display`` ist das, was auf den Karten der Kollegen steht, deshalb
     lieber ein Anzeigename als eine UPN. Verglichen wird trotzdem immer über
     ``owner_upn``, weil ein Anzeigename nicht eindeutig sein muss.
+
+    ``client_name`` ist dieser Rechner. Nur eine Sitzung, die Windows als von
+    hier aufgebaut meldet, bekommt die Meldung -- sonst hängte sie sich an die
+    Sitzung eines Kollegen unter demselben Konto, wenn die eigene Verbindung
+    nie zustande kam.
     """
     return {
         "account": account.strip(),
         "owner_upn": user.upn.strip(),
         "owner_display": (user.display_name or user.upn).strip(),
+        "client_name": (client_name if client_name is not None else local_computer_name()),
         "claimed_at_utc": datetime.now(UTC).isoformat(),
     }
 
@@ -205,11 +219,10 @@ class SessionClaimReporter:
         Das ist der bessere Beweis als die Bestätigung des Schreibvorgangs: Er
         gilt auch dann, wenn die Antwort des Agenten unterwegs verloren ging.
         """
-        account = entry.account.strip().casefold()
         for claim in workstation.agent_session_claims or []:
             if not isinstance(claim, dict):
                 continue
-            same_account = str(claim.get("account") or "").strip().casefold() == account
+            same_account = same_account_name(claim.get("account"), entry.account)
             same_person = (
                 str(claim.get("owner_upn") or "").strip().casefold()
                 == user.upn.strip().casefold()
@@ -226,9 +239,8 @@ class SessionClaimReporter:
         versucht, egal wie lange -- dort sitzt jemand, und genau das soll ja
         sichtbar werden. Erst ohne Sitzung läuft die Frist.
         """
-        account = entry.account.strip().casefold()
         for item in workstation.reported_sessions():
-            if is_active_session(item) and session_username(item).strip().casefold() == account:
+            if is_active_session(item) and account_names_session(entry.account, item):
                 return False
         return (now - entry.created_at).total_seconds() > UNCONFIRMED_MAX_AGE_SECONDS
 

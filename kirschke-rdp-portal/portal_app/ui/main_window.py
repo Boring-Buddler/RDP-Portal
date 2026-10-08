@@ -46,9 +46,15 @@ from portal_app.services.directory_users import discover_windows_domain_accounts
 from portal_app.services.fallback_scanning import FallbackScanner, ShareReconnector
 from portal_app.services.live_status_polling import AutomaticLiveStatusPoller
 from portal_app.services.local_identity import detect_initial_user
-from portal_app.services.local_store import LocalStore, StoreConflictError
+from portal_app.services.local_store import (
+    LocalStore,
+    StoreConflictError,
+    StoreReadError,
+    file_signatures,
+)
 from portal_app.services.reservation_access import apply_reservations
 from portal_app.services.session_claims import BackgroundSessionClaimReporter
+from portal_app.services.store_watch import StoreChangeProbe
 from portal_app.services.windows_admin_auth import (
     check_windows_admin_authorization,
     test_password_fallback_allowed,
@@ -71,9 +77,141 @@ from portal_app.version import PORTAL_VERSION
 from shared.enums import EventResult, EventSource, EventType, ManualFlagType
 from shared.name_resolution import prefetch as prefetch_names
 from shared.name_resolution import unc_server_name
+from shared.schemas import RDPProfileSchema
 from shared.session_identity import is_active_session, is_console_session, session_username
 
 logger = logging.getLogger(__name__)
+
+
+def rdp_profile(workstation: Workstation, user: MockUser) -> RDPProfileSchema:
+    """Das RDP-Profil für diesen Portal-Benutzer.
+
+    Ist der Benutzer selbst mit einem Entra-Konto angemeldet, gilt eine bloße
+    E-Mail-Adresse als Entra-Konto und bekommt die Schreibweise, die das Ziel
+    ohne Webanmeldung braucht -- siehe ``Workstation.rdp_account``.
+    """
+    return workstation.get_rdp_profile(
+        user.get_rdp_username(), entra_user=user.windows_account().is_entra
+    )
+
+
+def _saved_credentials_allow_launch(
+    parent: QWidget, profile: RDPProfileSchema, target: str
+) -> bool:
+    """Gespeicherte Windows-Anmeldedaten für ein anderes Konto vorher klären.
+
+    Hat Windows für das Ziel Anmeldedaten gespeichert, meldet mstsc mit ihnen
+    an und übergeht das Konto aus der .rdp-Datei. Die Auswahl unter "Anmelden
+    als" lief damit ins Leere, ohne dass irgendwo stand, warum. Entfernt wird
+    der Eintrag nur auf ausdrückliche Bestätigung; das Kennwort sieht das
+    Portal dabei nie.
+
+    Gibt zurück, ob gestartet werden soll.
+    """
+    from portal_app.services import rdp_diagnostics
+    from shared.identity import same_account_name
+
+    chosen = profile.effective_rdp_username()
+    if not _server_credentials_allow_launch(parent, chosen, target):
+        return False
+    if not chosen:
+        return True
+    saved = rdp_diagnostics.saved_rdp_credential_user(target)
+    if not saved or same_account_name(saved, chosen):
+        return True
+    question = QMessageBox(parent)
+    question.setIcon(QMessageBox.Warning)
+    question.setWindowTitle("Gespeicherte Anmeldung für ein anderes Konto")
+    question.setText(
+        f"Windows hat für {target} Anmeldedaten von „{saved}“ gespeichert. "
+        f"Damit meldet Remotedesktop dich als „{saved}“ an und nicht als das "
+        f"gewählte Konto „{chosen}“."
+    )
+    question.setInformativeText(
+        "Wird der gespeicherte Eintrag entfernt, fragt Windows beim Start das "
+        f"Kennwort für „{chosen}“ ab."
+    )
+    remove = question.addButton("Eintrag entfernen und verbinden", QMessageBox.AcceptRole)
+    keep = question.addButton("Gespeichertes Konto nutzen", QMessageBox.DestructiveRole)
+    question.addButton(QMessageBox.Cancel)
+    question.setDefaultButton(remove)
+    question.exec()
+    clicked = question.clickedButton()
+    if clicked is keep:
+        return True
+    if clicked is not remove:
+        return False
+    success, detail = rdp_diagnostics.clear_saved_rdp_credentials(target)
+    if not success:
+        QMessageBox.warning(parent, "Eintrag nicht entfernt", detail)
+        return False
+    logger.info("Gespeicherte RDP-Anmeldedaten für %s entfernt", target)
+    return True
+
+
+def _server_credentials_allow_launch(parent: QWidget, chosen: str | None, target: str) -> bool:
+    r"""Einen Windows-Eintrag für den ganzen Server vor dem Start klären.
+
+    So ein Eintrag (``Domain:target=<Ziel>``) entsteht beim Speichern der
+    Zugangsdaten einer Dateifreigabe, und mstsc nimmt ihn genauso wie einen
+    RDP-Eintrag. Lautet er auf das Lesekonto ``PortalLeser``, scheitert jede
+    Verbindung mit "nicht zur Remoteanmeldung autorisiert": Das Agent-Setup
+    verbietet diesem Konto die Remoteanmeldung. Dann gibt es nichts zu
+    behalten, nur zu entfernen -- die Freigaben verbindet das Portal mit
+    seinem eigenen Eintrag.
+    """
+    from portal_app.services import rdp_diagnostics
+    from portal_app.services.reader_account import DEFAULT_READER_ACCOUNT
+    from shared.identity import same_account_name
+
+    saved = rdp_diagnostics.saved_server_credential_user(target)
+    if not saved:
+        return True
+    reader = saved.rsplit("\\", 1)[-1].casefold() == DEFAULT_READER_ACCOUNT.casefold()
+    if not reader and (not chosen or same_account_name(saved, chosen)):
+        return True
+    question = QMessageBox(parent)
+    question.setIcon(QMessageBox.Warning)
+    question.setWindowTitle("Gespeicherte Anmeldung für den ganzen Server")
+    if reader:
+        question.setText(
+            f"Windows hat für {target} das Lesekonto „{saved}“ gespeichert, "
+            "vermutlich beim Verbinden einer Statusfreigabe. Remotedesktop meldet "
+            "sich damit an statt mit dem gewählten Konto – und dieses Konto darf "
+            "sich nie per Remotedesktop anmelden."
+        )
+        question.setInformativeText(
+            "Wird der Eintrag entfernt, fragt Windows beim Start nach dem Kennwort "
+            "des gewählten Kontos. Die Freigaben verbindet das Portal weiterhin "
+            "selbst."
+        )
+    else:
+        question.setText(
+            f"Windows hat für {target} Anmeldedaten von „{saved}“ gespeichert. "
+            f"Damit meldet Remotedesktop dich als „{saved}“ an und nicht als das "
+            f"gewählte Konto „{chosen}“."
+        )
+        question.setInformativeText(
+            "Der Eintrag gilt für den ganzen Rechner, also auch für Dateifreigaben "
+            "dort. Wird er entfernt, fragt Windows beim Start das Kennwort für "
+            f"„{chosen}“ ab."
+        )
+    remove = question.addButton("Eintrag entfernen und verbinden", QMessageBox.AcceptRole)
+    keep = None if reader else question.addButton("Gespeichertes Konto nutzen", QMessageBox.DestructiveRole)
+    question.addButton(QMessageBox.Cancel)
+    question.setDefaultButton(remove)
+    question.exec()
+    clicked = question.clickedButton()
+    if keep is not None and clicked is keep:
+        return True
+    if clicked is not remove:
+        return False
+    success, detail = rdp_diagnostics.clear_saved_server_credentials(target)
+    if not success:
+        QMessageBox.warning(parent, "Eintrag nicht entfernt", detail)
+        return False
+    logger.info("Gespeicherte Server-Anmeldedaten für %s entfernt", target)
+    return True
 
 
 class MainWindow(QMainWindow):
@@ -81,6 +219,10 @@ class MainWindow(QMainWindow):
 
     workstation_selected = Signal(Workstation)
     refresh_requested = Signal()
+
+    #: Server, deren alter Anmeldeeintrag beim Start entfernt wurde. Siehe
+    #: _prepare_shared_folders.
+    _retired_credential_servers: tuple[str, ...] = ()
 
     PAGE_MACHINES = 0
     PAGE_CALENDAR = 1
@@ -137,6 +279,10 @@ class MainWindow(QMainWindow):
         self._live_apply_timer.setInterval(150)
         self._live_apply_timer.timeout.connect(self._apply_live_results)
         self.share_reconnector = ShareReconnector(parent=self)
+        # Prueft das gemeinsame Inventar auf Aenderungen, ohne dass ein
+        # haengender SMB-Server den UI-Thread anhaelt.
+        self.store_probe = StoreChangeProbe(parent=self)
+        self.store_probe.completed.connect(self._on_store_probe)
         self.share_reconnector.completed.connect(self._on_shares_reconnected)
         # Agent IDs a sweep has seen, so the settings table can offer an agent
         # before any machine claims it.
@@ -184,7 +330,9 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda: self._run_status_update_cycle(force=True))
         self.shared_store_sync_timer = QTimer(self)
         self.shared_store_sync_timer.setInterval(5000)
-        self.shared_store_sync_timer.timeout.connect(self._sync_shared_store)
+        self.shared_store_sync_timer.timeout.connect(
+            lambda: self._sync_shared_store(blocking=False)
+        )
         self.shared_store_sync_timer.start()
         if self._automatic_live_status_enabled:
             # Both of these reach the network on their own, which is exactly what
@@ -219,9 +367,64 @@ class MainWindow(QMainWindow):
         """
         apply_scaled_geometry(self, (1080, 720), (1360, 860))
 
+    def _prepare_shared_folders(self) -> None:
+        """Inventar- und Protokollfreigabe verbinden, bevor das Portal sie liest.
+
+        Bis 0.9.3 hat das Windows still erledigt -- mit dem Server-Eintrag, den
+        der Freigabedialog anlegte. Derselbe Eintrag hat aber Remotedesktop auf
+        das Lesekonto umgelenkt; siehe ``credential_payload``. Ohne ihn muss das
+        Portal die Verbindung selbst aufbauen, und zwar vor dem ersten Lesen:
+        Sonst landete es beim Start im Notbetrieb mit der lokalen Kopie.
+        """
+        from portal_app.services.share_connection import (
+            connect_status_share,
+            retire_legacy_server_credentials,
+        )
+
+        try:
+            retired = retire_legacy_server_credentials()
+        except Exception as exc:  # noqa: BLE001 - Aufraeumen darf den Start nie verhindern
+            # Genau das ist in 0.9.4 passiert: Ein fehlendes Modul in der
+            # gebauten EXE beendete das Portal vor dem ersten Fenster.
+            logger.warning("Alte Server-Anmeldedaten nicht geprüft: %s", exc)
+            retired = []
+        if retired:
+            logger.info(
+                "Alte Server-Anmeldedaten des Lesekontos entfernt: %s", ", ".join(retired)
+            )
+        # Auch der Live-Kanal ritt auf diesem Eintrag mit: Die Pipe meldet sich
+        # mit der SMB-Sitzung an, die zum Server schon besteht. Deshalb wird die
+        # Statusfreigabe dieser Server beim Start mit verbunden.
+        self._retired_credential_servers = tuple(retired)
+        try:
+            folders = (self.store.inventory_directory, self.store.event_log_directory)
+        except (OSError, ValueError) as exc:
+            logger.warning("Speichereinstellung nicht lesbar: %s", exc)
+            return
+        for folder in folders:
+            if folder is not None and str(folder).startswith("\\\\"):
+                try:
+                    _, message = connect_status_share(str(folder))
+                except Exception as exc:  # noqa: BLE001 - dann gilt der Notbetrieb, kein Absturz
+                    message = f"nicht verbunden ({type(exc).__name__}: {exc})"
+                logger.info("Freigabe %s: %s", folder, message)
+
     def _load_data(self) -> None:
-        fallback = []  # A new pilot must not offer fictitious targets as real PCs.
-        self.workstations, self.current_user, self.reservations = self.store.load(fallback, self.current_user)
+        fallback: list[Workstation] = []  # A new pilot must not offer fictitious targets as real PCs.
+        if self._automatic_live_status_enabled:
+            self._prepare_shared_folders()
+        try:
+            loaded = self.store.load(fallback, self.current_user)
+        except StoreReadError as exc:
+            if self.store.inventory_directory is None:
+                raise
+            loaded = self._load_without_shared_inventory(exc, fallback)
+        self.workstations, self.current_user, self.reservations = loaded
+        if self.store.configuration_notice:
+            self._storage_fallback_notice = "\n\n".join(
+                part for part in (self._storage_fallback_notice, self.store.configuration_notice)
+                if part
+            )
         self._apply_local_agent_fallbacks()
         self.session_events = self.store.load_events()
         self.directory_accounts = self.store.load_directory_accounts()
@@ -240,14 +443,29 @@ class MainWindow(QMainWindow):
             # arbeiten; ohne Portal nicht.
             logger.warning("Ereignisprotokoll nicht nutzbar: %s", exc)
 
+    def _load_without_shared_inventory(
+        self, exc: Exception, fallback: list[Workstation]
+    ) -> tuple[list[Workstation], MockUser, list[Reservation]]:
+        """Starten, obwohl die Freigabe des gemeinsamen Inventars nicht geht.
+
+        Das Portal legt dort nichts an und schreibt dort nichts hin: Ein leeres
+        oder veraltetes Inventar auf der Freigabe liesse bei allen anderen die
+        Maschinen verschwinden. Gearbeitet wird lokal mit dem zuletzt gelesenen
+        Stand, und das wird gesagt.
+        """
+        logger.warning("Gemeinsames Inventar nicht nutzbar: %s", exc)
+        local = self.store.use_local_fallback()
+        self._storage_fallback_notice = (
+            f"{exc}\n\nDas Portal arbeitet vorerst lokal unter:\n{local}\n"
+            "mit dem zuletzt gelesenen Stand des gemeinsamen Inventars.\n\n"
+            "Änderungen an Maschinen und Reservierungen werden dabei NICHT mit den "
+            "anderen Portalen geteilt und beim nächsten Start mit erreichbarer "
+            "Freigabe nicht übernommen. Die Freigabe selbst bleibt unverändert."
+        )
+        return self.store.load(fallback, self.current_user)
+
     def _save_initial_state(self) -> None:
         """Write the first state file, and survive a storage location that is gone.
-
-        The default location sits inside the synchronised SharePoint folder. On a
-        PC where that folder does not exist, creating it walks all the way up to
-        C:/Users and is refused there -- which ended the portal with an unhandled
-        traceback before any window appeared, on a machine that was otherwise
-        perfectly able to run it.
 
         Falling back to a local folder keeps the portal usable. It also stops the
         state from being shared, so the reason is reported rather than left for
@@ -276,8 +494,8 @@ class MainWindow(QMainWindow):
             f"Der eingestellte Speicherort ist auf diesem PC nicht erreichbar:\n{intended}\n\n"
             f"Das Portal arbeitet vorerst lokal unter:\n{local}\n\n"
             "Maschinen und Reservierungen werden dabei NICHT mit den anderen "
-            "Portalen geteilt. Den Ordner state neben der Portal-EXE wieder verfügbar "
-            "machen und das Portal neu starten."
+            "Portalen geteilt. Den Speicherort wieder verfügbar machen und das "
+            "Portal neu starten."
         )
 
     def _show_storage_fallback_notice(self) -> None:
@@ -410,7 +628,9 @@ class MainWindow(QMainWindow):
         self.session_log_view.set_events(self.session_events)
         self.stack.addWidget(self.session_log_view)
         self.admin_view = AdministrationWidget(self.workstations, self)
-        self.admin_view.set_storage_directory(str(self.store.directory))
+        self.admin_view.set_storage_directory(
+            str(self.store.directory), self.store.uses_shared_inventory
+        )
         self.admin_view.set_directory_mode(self.directory_mode)
         self.stack.addWidget(self.admin_view)
         self.settings_view = SettingsWidget(
@@ -444,6 +664,8 @@ class MainWindow(QMainWindow):
         self.overview_view.set_machine_view(self.store.machine_view)
         self.admin_view.event_log_directory_requested.connect(self._setup_event_log_directory)
         self.admin_view.event_log_directory_cleared.connect(self._clear_event_log_directory)
+        self.admin_view.inventory_directory_requested.connect(self._setup_inventory_directory)
+        self.admin_view.inventory_directory_cleared.connect(self._clear_inventory_directory)
         self._refresh_event_log_location()
         self.admin_view.add_requested.connect(self._add_workstation)
         self.admin_view.edit_requested.connect(self._edit_workstation)
@@ -771,6 +993,8 @@ class MainWindow(QMainWindow):
     def _reconnect_status_shares(self) -> None:
         """Ask Windows to re-establish the SMB session of every status share."""
         paths = self._configured_fallback_paths()
+        for server in self._retired_credential_servers:
+            paths.setdefault(f"server:{server}", rf"\\{server}\RDP-Status")
         if not paths:
             self._refresh_agent_panel()
             return
@@ -2016,6 +2240,78 @@ class MainWindow(QMainWindow):
         )
 
     @Slot()
+    def _setup_inventory_directory(self) -> None:
+        """Das gemeinsame Inventar auf einer Netzwerkfreigabe einrichten.
+
+        Wie beim Protokoll wird vorher wirklich geschrieben: Ohne Schreibrecht
+        fiele das sonst erst beim ersten Speichern auf.
+        """
+        from portal_app.services.share_connection import connect_status_share
+        from portal_app.ui.widgets.share_setup_dialog import ShareSetupDialog
+
+        if self._pending_save or self._has_unsaved_machine_settings():
+            QMessageBox.information(
+                self,
+                "Erst speichern",
+                "Bitte zuerst die offenen Maschineneinstellungen speichern oder "
+                "verwerfen. Sonst ginge nicht eindeutig hervor, welcher Stand auf "
+                "die Freigabe kommt.",
+            )
+            return
+        current = str(self.store.inventory_directory or "")
+        dialog = ShareSetupDialog(
+            current,
+            self,
+            suggested_path=current or r"\\SERVER\RDP-Portal",
+            suggested_username="",
+            workstation_name="das gemeinsame Inventar",
+            require_write=True,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        target = dialog.connected_path
+        connect_status_share(target)
+        try:
+            adopted = self.store.use_shared_inventory(target)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Gemeinsames Inventar nicht eingerichtet", str(exc))
+            return
+        self.on_refresh()
+        QMessageBox.information(
+            self,
+            "Gemeinsames Inventar aktiv",
+            (
+                f"Auf der Freigabe lag bereits ein Inventar:\n{target}\n\nDieses gilt "
+                "jetzt. Der bisherige eigene Stand bleibt unverändert auf diesem PC liegen."
+                if adopted
+                else f"Die eigenen Maschinen und Reservierungen liegen jetzt unter\n{target}\n\n"
+                "Alle Portale, die diese Freigabe eintragen, arbeiten mit demselben Stand."
+            ),
+        )
+
+    @Slot()
+    def _clear_inventory_directory(self) -> None:
+        """Das gemeinsame Inventar verlassen und wieder lokal führen."""
+        answer = QMessageBox.question(
+            self,
+            "Inventar wieder lokal führen",
+            "Der aktuelle gemeinsame Stand wird als eigener übernommen und ab dann "
+            "nur noch auf diesem PC geführt. Änderungen anderer Portale kommen "
+            "nicht mehr an.\n\nDie gemeinsame Datei auf der Freigabe bleibt "
+            "unverändert erhalten.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            self.store.use_local_inventory()
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Einstellung nicht gespeichert", str(exc))
+            return
+        self.on_refresh()
+
+    @Slot()
     def _clear_event_log_directory(self) -> None:
         """Das Protokoll wieder lokal führen."""
         answer = QMessageBox.question(
@@ -2126,7 +2422,7 @@ class MainWindow(QMainWindow):
             event_type=event_type,
             workstation_id=workstation.workstation_id,
             workstation_hostname=workstation.hostname or workstation.fqdn,
-            session_user_upn=workstation.get_rdp_profile(self.current_user.get_rdp_username()).username_hint,
+            session_user_upn=rdp_profile(workstation, self.current_user).username_hint,
             actor_entra_object_id=self.current_user.object_id,
             actor_upn=self.current_user.upn,
             result=result,
@@ -2163,33 +2459,12 @@ class MainWindow(QMainWindow):
                 "versuche es nach 30 Sekunden erneut; ein Prozess ohne Fenster blockiert dann nicht mehr.",
             )
             return
-        owned_sessions = workstation.owned_sessions(
-            self.current_user.windows_accounts(), self.current_user.upn
-        )
-        if (
-            workstation.has_active_session()
-            and not workstation.matching_sessions(self.current_user.get_rdp_username())
-            and not owned_sessions
-        ):
-            if not workstation.can_choose_session():
-                QMessageBox.warning(self, "Sitzung nicht verfügbar", "Kein eindeutig gemeldetes Sitzungskonto oder die Maschine ist gesperrt.")
-                return
-            session_accounts = workstation.session_accounts()
-            if len(session_accounts) == 1:
-                # There is nothing meaningful to choose. Passing the reported
-                # account only pre-fills mstsc; Windows still authenticates it.
-                account = session_accounts[0]
-            else:
-                account, accepted = QInputDialog.getItem(self, "Bestehende Sitzung öffnen",
-                    "Wähle das Konto der bestehenden Sitzung. Windows fragt dessen Anmeldung ab.\n"
-                    "Der angezeigte Windows-Name kann von deiner E-Mail-Adresse abweichen.",
-                    session_accounts, 0, False)
-                if not accepted:
-                    return
-            # Über _select_login_account, damit die Wahl in der Benutzerdatei
-            # landet. Nur ins Modell geschrieben überlebte sie den nächsten
-            # Abgleich des gemeinsamen Stands nicht.
-            self._select_login_account(workstation, account)
+        # Das Konto aus "Anmelden als" gilt unverändert. Früher wurde es hier bei
+        # einer fremden Sitzung still durch das Sitzungskonto ersetzt -- wer
+        # sein eigenes Konto gewählt hatte, landete unter dem eines anderen.
+        # Wer die laufende Sitzung übernehmen will, wählt sie im Dropdown
+        # ("Angemeldet · …"); dass eine fremde Sitzung getrennt wird, sagt die
+        # Warnung in _confirm_connection.
         if not workstation.enabled or workstation.is_blocked():
             # Nach der Rückfrage bleiben nur die Gründe übrig, die eine Person
             # nicht überstimmen kann: im Portal deaktiviert oder von jemandem
@@ -2203,29 +2478,8 @@ class MainWindow(QMainWindow):
         proceed, confirmed_reason = self._confirm_connection(workstation)
         if not proceed:
             return
-        spelling_warning = workstation.entra_spelling_warning(
-            self.current_user.get_rdp_username()
-        )
-        if spelling_warning:
-            question = QMessageBox(self)
-            question.setIcon(QMessageBox.Warning)
-            question.setWindowTitle("Entra-Anmeldung fehlt")
-            question.setText(spelling_warning)
-            enable = question.addButton("Entra-Anmeldung aktivieren", QMessageBox.AcceptRole)
-            question.addButton("Trotzdem starten", QMessageBox.DestructiveRole)
-            question.addButton(QMessageBox.Cancel)
-            question.setDefaultButton(enable)
-            question.exec()
-            clicked = question.clickedButton()
-            if clicked is None or question.buttonRole(clicked) == QMessageBox.RejectRole:
-                return
-            if clicked == enable:
-                workstation.entra_sso_enabled = True
-                self._commit_workstation(workstation)
-                self._persist()
-                self._refresh_workstation_views()
         try:
-            profile = workstation.get_rdp_profile(self.current_user.get_rdp_username())
+            profile = rdp_profile(workstation, self.current_user)
             target, _ = profile.resolve_connection_target()
             if profile.entra_sso_enabled and not profile.effective_entra_sso_enabled():
                 answer = QMessageBox.question(
@@ -2265,7 +2519,7 @@ class MainWindow(QMainWindow):
                     self._commit_workstation(workstation)
                     self._persist()
                     self._refresh_workstation_views()
-                    profile = workstation.get_rdp_profile(self.current_user.get_rdp_username())
+                    profile = rdp_profile(workstation, self.current_user)
                 elif confirmation.clickedButton() != show_warning:
                     return
             # Zwischen der Rückfrage und diesem Punkt können Dialoge lange offen
@@ -2275,6 +2529,8 @@ class MainWindow(QMainWindow):
                 proceed, confirmed_reason = self._confirm_connection(workstation)
                 if not proceed:
                     return
+            if not _saved_credentials_allow_launch(self, profile, target):
+                return
             success, message = launch_rdp_session(
                 profile,
                 workstation.workstation_id,
@@ -2283,6 +2539,14 @@ class MainWindow(QMainWindow):
             if success:
                 self._record_event(workstation, EventType.LAUNCH_REQUESTED, EventResult.SUCCESS)
                 self._report_session_claim(workstation, profile.username_hint)
+                # Neue Verbindung, neue Nachmeldung: _learn_reported_account
+                # meldet die Aufschaltung unter der Schreibweise des Agenten
+                # nach, bisher aber nur einmal pro Programmlauf. Ab der zweiten
+                # Verbindung blieb die Meldung des Vorgängers an der Sitzung.
+                self._reported_claims -= {
+                    key for key in self._reported_claims
+                    if key[0] == workstation.workstation_id
+                }
                 # Remember which Windows account this person connects as, so the
                 # resulting session is recognised as theirs next time instead of
                 # showing up as somebody else's and locking them out.
@@ -2450,7 +2714,7 @@ class MainWindow(QMainWindow):
         )
 
         try:
-            profile = workstation.get_rdp_profile(self.current_user.get_rdp_username())
+            profile = rdp_profile(workstation, self.current_user)
             result = run_rdp_diagnostics(profile)
         except Exception as exc:
             logger.exception("RDP diagnostics failed")
@@ -2516,7 +2780,9 @@ class MainWindow(QMainWindow):
         self._saved_user = deepcopy(self.current_user)
         self.calendar_view.reservations = list(self.reservations)
         self.session_log_view.set_events(self.session_events)
-        self.admin_view.set_storage_directory(str(self.store.directory))
+        self.admin_view.set_storage_directory(
+            str(self.store.directory), self.store.uses_shared_inventory
+        )
         self._update_storage_status("Gemeinsame Änderungen übernommen")
         self.calendar_view.set_user(self.current_user)
         self.settings_view.set_user(self.current_user)
@@ -2542,19 +2808,38 @@ class MainWindow(QMainWindow):
             else:
                 self._show_machines()
 
-    def _sync_shared_store(self) -> None:
-        """Reload an updated OneDrive/SharePoint mirror after another portal saves.
+    def _sync_shared_store(self, *, blocking: bool = True) -> None:
+        """Nachladen, nachdem ein anderes Portal das gemeinsame Inventar geändert hat.
 
         Ein gemeinsames Ereignisprotokoll wächst ständig -- jeder Kollege
         schreibt hinein. Das allein darf keinen vollständigen Neuaufbau des
         Inventars auslösen; es genügt, die neuen Einträge nachzuladen.
+
+        Der Takt übergibt ``blocking=False``: Die Signaturen werden dann im
+        Hintergrund ermittelt, weil schon ein ``stat`` auf einer Freigabe hängen
+        kann. Ein direkter Aufruf prüft sofort.
         """
         if self._pending_save or self._has_unsaved_machine_settings():
             return
-        if self.store.has_external_changes():
+        paths = self.store.change_probe_paths()
+        if not blocking:
+            self.store_probe.request(paths)
+            return
+        self._on_store_probe(paths, file_signatures(paths))
+
+    @Slot(object, object)
+    def _on_store_probe(
+        self,
+        paths: tuple[Path, Path, Path],
+        signatures: tuple[tuple[int, int] | None, ...],
+    ) -> None:
+        if self._pending_save or self._has_unsaved_machine_settings():
+            return
+        inventory_changed, events_changed = self.store.changes_from(paths, signatures)
+        if inventory_changed:
             self.on_refresh()
             return
-        if self.store.has_new_events():
+        if events_changed:
             self._reload_events()
 
     def _reload_events(self) -> None:
@@ -2595,7 +2880,7 @@ class MainWindow(QMainWindow):
         return False
 
     def _update_storage_status(self, action: str) -> None:
-        """Expose the shared storage state without claiming OneDrive server delivery."""
+        """Zeigen, wo der Stand liegt und mit wem er geteilt wird."""
         if not hasattr(self, "admin_view"):
             return
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -2606,19 +2891,27 @@ class MainWindow(QMainWindow):
         # Portal nicht wissen, und eine Zusage, die es nicht halten kann, hat
         # hier schon einmal jemanden auf eine Verteilung warten lassen, die nie
         # kam. Siehe shared.agent_paths.is_private_program_location.
-        if is_private_program_location(self.store.directory):
+        inventory = self.store.inventory_directory
+        if self.store.uses_shared_inventory:
+            location = (
+                "Gemeinsames Inventar auf der Netzwerkfreigabe · alle Portale mit "
+                "diesem Eintrag sehen dieselben Maschinen und Reservierungen"
+            )
+        elif inventory is not None:
+            location = (
+                f"NOTBETRIEB · Das gemeinsame Inventar {inventory} ist nicht "
+                "erreichbar. Änderungen hier werden nicht geteilt."
+            )
+        elif is_private_program_location(self.store.directory):
             location = (
                 "Lokale Installation · Maschinen und Protokoll gelten nur für dich auf "
                 "diesem PC. Reservierungen und Aufschaltungen laufen über die Agenten "
                 "und bleiben gemeinsam."
             )
         elif str(self.store.directory).startswith("\\\\"):
-            location = "Netzwerkpfad · gemeinsam für alle, die ihn erreichen"
+            location = "Netzwerkpfad · gemeinsam für alle, die die Portal-EXE von dort starten"
         else:
-            location = (
-                "state neben der Portal-EXE · gemeinsam, sofern dieser Ordner "
-                "synchronisiert wird"
-            )
+            location = "Eigener Stand auf diesem PC · nicht geteilt"
         self.admin_view.set_storage_status(
             f"{action} · {timestamp}\n{self.store.directory}\n{location}"
         )
@@ -2661,6 +2954,7 @@ class MainWindow(QMainWindow):
         self.live_status_poller.stop()
         self.fallback_scanner.stop()
         self._claim_reporter.stop()
+        self.store_probe.stop()
         # Its pool waits for a running reconnect on destruction, so a slow SMB
         # host would otherwise hold the closing portal open with no window left.
         self.share_reconnector.stop()
@@ -2735,7 +3029,7 @@ class MainWindow(QMainWindow):
             QPushButton#cardPrimaryButton:disabled { background: #e8ecef; color: #87939c; border-color: #d8dfe4; }
             QPushButton#dangerButton { background: #fff4f3; color: #953f43; border: 1px solid #e0b6b8; border-radius: 7px; padding: 8px 12px; }
             QScrollArea#machineScroll, QWidget#gridHost, QScrollArea#detailScroll, QWidget#detailContent { background: transparent; }
-            QScrollArea#settingsScroll, QWidget#settingsContent { background: transparent; }
+            QScrollArea#settingsScroll, QWidget#settingsContent, QScrollArea#adminScroll, QWidget#adminContent { background: transparent; }
             QScrollBar:vertical { background: transparent; width: 12px; margin: 4px 0; }
             QScrollBar::handle:vertical { background: #9db0bd; border-radius: 5px; min-height: 36px; }
             QScrollBar::handle:vertical:hover { background: #6f8b9e; }
@@ -2816,6 +3110,12 @@ class MainWindow(QMainWindow):
             QDialog QTabWidget::pane { background: #ffffff; border: 1px solid #d4dde3; border-radius: 7px; }
             QDialog QTabBar::tab { background: #eaf0f3; padding: 9px 16px; border: 1px solid #d4dde3; }
             QDialog QTabBar::tab:selected { background: #ffffff; color: #315e80; }
+            QDialog QListWidget { background: #ffffff; color: #17212b; border: 1px solid #cbd6dd; border-radius: 7px; selection-background-color: #d9e8f1; selection-color: #17212b; }
+            QDialog QListWidget::item { padding: 6px 9px; }
+            QDialog QListWidget::item:hover { background: #edf4f8; }
+            QDialog QListWidget::indicator { width: 14px; height: 14px; border: 1px solid #7f96a6; border-radius: 3px; background: #ffffff; margin-right: 6px; }
+            QDialog QListWidget::indicator:checked { background: #4f7897; border-color: #37627f; }
+            QDialog QListWidget::indicator:hover { border-color: #4f7897; }
             QWizard#machineRegistrationWizard, QWizard#machineRegistrationWizard > QWidget,
             QWizard#machineRegistrationWizard QFrame, QWizardPage#machineWizardPage { background: #f7f9fa; color: #263844; }
             QWizard QLabel, QWizard QCheckBox, QWizard QRadioButton { color: #263844; }
@@ -2892,6 +3192,9 @@ class MainWindow(QMainWindow):
             QDialog QListWidget { background: #1a2a35; color: #f0f5f8; border: 1px solid #456172; border-radius: 7px; selection-background-color: #3a6884; selection-color: #ffffff; }
             QDialog QListWidget::item { padding: 6px 9px; }
             QDialog QListWidget::item:hover { background: #263f4e; }
+            QDialog QListWidget::indicator { width: 14px; height: 14px; border: 1px solid #8fa6b5; border-radius: 3px; background: #22343f; margin-right: 6px; }
+            QDialog QListWidget::indicator:checked { background: #5b91b1; border-color: #9ac3da; }
+            QDialog QListWidget::indicator:hover { border-color: #9ac3da; }
             QScrollBar::handle:vertical { background: #557386; }
             QScrollBar::handle:vertical:hover { background: #83abc2; }
             QFrame#filterBar { background: #1c2d38; border: 1px solid #3d5868; border-radius: 8px; }

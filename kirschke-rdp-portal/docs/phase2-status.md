@@ -1,11 +1,14 @@
 # Status der nicht integrierten Cloud-Module (Phase 2)
 
-Stand: 16.09.2026. Gilt für Portal 0.6.1 / Agent 1.5.0.
+Stand: 06.10.2026. Gilt für Portal 0.9.0 / Agent 1.7.0.
 
 ## Worum es geht
 
-Rund 5 700 Zeilen Entra-, Graph- und SharePoint-Code liegen im Repository, sind
-aber **kein Bestandteil des laufenden Pilotbetriebs**. Sie werden vom aktiven
+Der Graph- und SharePoint-Code ist mit 0.9.0 / Agent 1.7.0 **entfernt**
+(`portal_app/graph`, `workstation_agent/graph`, `workstation_agent/outbox`):
+Gemeinsame Daten laufen ausschließlich über Netzwerkfreigaben und die Agenten.
+Übrig sind der Entra-Anmeldecode und die Befehlsverarbeitung des Agenten. Sie
+sind **kein Bestandteil des laufenden Pilotbetriebs**. Sie werden vom aktiven
 Programmstart nicht erreicht und haben **keine Tests**. Diese Seite hält fest,
 welche Module das sind, was an ihnen nachweislich defekt ist und wie damit
 umzugehen ist — damit niemand sie für einsatzbereit hält.
@@ -15,12 +18,6 @@ umzugehen ist — damit niemand sie für einsatzbereit hält.
 | Modul | Zeilen | Status |
 | --- | --- | --- |
 | `portal_app/auth/entra_auth.py` | 700 | nicht integriert, **defekt** (siehe unten) |
-| `portal_app/graph/client.py` | 913 | nicht integriert, ungetestet |
-| `portal_app/graph/sharepoint.py` | 1 254 | nicht integriert, ungetestet |
-| `portal_app/graph/mock_graph.py` | 99 | Testdouble ohne Test |
-| `workstation_agent/graph/client.py` | 1 045 | nicht integriert, ungetestet |
-| `workstation_agent/graph/sharepoint.py` | 338 | nicht integriert, ungetestet |
-| `workstation_agent/outbox/handler.py` | 641 | nicht integriert, ungetestet |
 | `workstation_agent/commands/handler.py` | 472 | **unerreichbar**, siehe Remote-Befehle |
 
 ## Bekannter Defekt: Der Entra-Token-Cache ist nicht lauffähig
@@ -51,8 +48,8 @@ mit Tests neu aufzusetzen.
 * **Der Device-Flow hat keine Oberfläche.** Verifizierungs-URL und Code gehen
   jetzt ins Log statt nach stdout — ein fensterloses Portal hat keine Konsole.
   Für den echten Betrieb braucht der Code einen Dialog.
-* **Keine Prüfung gegen echte Graph-Antworten.** Die Konverter in
-  `sharepoint.py` sind nie gegen eine reale Liste gelaufen.
+* **Keine Prüfung gegen echte Graph-Antworten.** Die Benutzerabfrage in
+  `entra_auth.py` ist nie gegen ein echtes Konto gelaufen.
 
 ## Remote-Adminbefehle
 

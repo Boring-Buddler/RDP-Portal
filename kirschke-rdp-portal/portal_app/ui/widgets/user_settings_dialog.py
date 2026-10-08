@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -58,8 +60,12 @@ class UserSettingsDialog(QDialog):
         root.addWidget(own_title)
         own_note = QLabel(
             "Sitzungen dieser Konten gelten im Portal als deine eigenen, statt als "
-            "fremde Belegung. Konten, mit denen du dich über das Portal verbindest, "
+            "fremde Belegung, und die Konten stehen bei jeder Maschine unter "
+            "„Anmelden als“. Konten, mit denen du dich über das Portal verbindest, "
             "werden automatisch ergänzt.\n"
+            "Ein Häkchen markiert ein gemeinsam genutztes Konto wie RDPUser: Dessen "
+            "Sitzung gilt nur dann als deine, wenn sie von diesem PC aus aufgebaut "
+            "wurde – sonst sitzt dort vermutlich ein Kollege.\n"
             "Das ändert nur die Anzeige: Windows fragt weiterhin das Kennwort ab, "
             "und der Agent prüft jede Abmeldung eigenständig."
         )
@@ -68,7 +74,12 @@ class UserSettingsDialog(QDialog):
         root.addWidget(own_note)
         self.own_accounts = QListWidget()
         self.own_accounts.setMinimumHeight(90)
-        self.own_accounts.addItems(user.own_accounts)
+        self.own_accounts.setToolTip(
+            "Häkchen = gemeinsam genutztes Konto: Dessen Sitzungen zählen nur als "
+            "deine, wenn sie von diesem PC aus aufgebaut wurden."
+        )
+        for account in user.own_accounts:
+            self._add_list_item(account, shared=user.is_shared_account(account))
         root.addWidget(self.own_accounts)
         own_row = QHBoxLayout()
         own_row.setSpacing(8)
@@ -111,6 +122,20 @@ class UserSettingsDialog(QDialog):
             for row in range(self.own_accounts.count())
         ]
 
+    def listed_shared_accounts(self) -> list[str]:
+        """Die Konten in der Liste, die als gemeinsam genutzt angehakt sind."""
+        return [
+            self.own_accounts.item(row).text()
+            for row in range(self.own_accounts.count())
+            if self.own_accounts.item(row).checkState() == Qt.Checked
+        ]
+
+    def _add_list_item(self, account: str, *, shared: bool = False) -> None:
+        item = QListWidgetItem(account)
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        item.setCheckState(Qt.Checked if shared else Qt.Unchecked)
+        self.own_accounts.addItem(item)
+
     def _add_account(self) -> None:
         value = self.new_account.text().strip()
         if not value:
@@ -126,7 +151,7 @@ class UserSettingsDialog(QDialog):
             self.account_error.setText(f"{account} steht bereits in der Liste.")
             self.account_error.setVisible(True)
             return
-        self.own_accounts.addItem(account)
+        self._add_list_item(account)
         self.new_account.clear()
         self.account_error.setVisible(False)
 
@@ -142,6 +167,7 @@ class UserSettingsDialog(QDialog):
         self.user.rdp_username = self.rdp_username.text().strip() or None
         self.user.rdp_domain = self.rdp_domain.text().strip() or None
         self.user.own_accounts = self.listed_accounts()
+        self.user.shared_accounts = self.listed_shared_accounts()
         self.accept()
 
 

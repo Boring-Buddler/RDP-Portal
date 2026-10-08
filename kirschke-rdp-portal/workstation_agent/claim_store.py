@@ -50,7 +50,12 @@ from typing import Any
 
 from shared.agent_snapshot import validate_session_claims
 from shared.file_io import write_json_atomic
-from shared.session_identity import is_active_session, session_username
+from shared.identity import account_names_session, same_account_name
+from shared.session_identity import (
+    claim_client_conflicts,
+    claim_matches_session_client,
+    is_active_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +183,10 @@ class SessionClaimStore:
         Pro Windows-Konto wird genau eine geführt: Eine neue Meldung ersetzt die
         alte, weil die Frage "wer sitzt gerade davor" nur eine gültige Antwort
         hat und die jüngste Meldung die beste ist, die der Agent hat.
+
+        "Dasselbe Konto" heißt in jeder Schreibweise: ``Rechenknecht`` und
+        ``WORKSTATION\\Rechenknecht`` sind eins. Vorher zählte nur die wörtlich
+        gleiche, und die Meldung des Vorgängers blieb neben der neuen stehen.
         """
         checked = validate_session_claims([claim])
         if not checked:
@@ -186,7 +195,6 @@ class SessionClaimStore:
         record["claimed_at_utc"] = datetime.now(UTC).isoformat()
         if client_computer and not record.get("client_name"):
             record["client_name"] = client_computer[:256]
-        key = str(record["account"]).strip().casefold()
         with self._lock:
             # Erst den gespeicherten Stand holen: Sonst ersetzt die erste
             # Meldung nach einem Neustart nicht die alte, sondern alle.
@@ -194,7 +202,7 @@ class SessionClaimStore:
             self._claims = [
                 item
                 for item in self._claims
-                if str(item.get("account") or "").strip().casefold() != key
+                if not same_account_name(item.get("account"), record["account"])
             ]
             self._claims.append(record)
             self._persist()
@@ -213,20 +221,35 @@ class SessionClaimStore:
         soll die Maschine nicht dauerhaft jemandem zuschreiben.
         """
         moment = now or datetime.now(UTC)
-        active: dict[str, dict[str, Any]] = {}
-        for item in sessions:
-            if not is_active_session(item):
-                continue
-            name = session_username(item).strip().casefold()
-            if name:
-                active.setdefault(name, item)
+        active = [item for item in sessions if is_active_session(item)]
         kept: list[dict[str, Any]] = []
         with self._lock:
             self._load_unlocked()
             for record in self._claims:
-                key = str(record.get("account") or "").strip().casefold()
-                session = active.get(key)
+                # Die Meldung trägt die Schreibweise des Portals, die Sitzung
+                # die von Windows. Wörtlich verglichen fand eine Meldung als
+                # "Rechenknecht" die Sitzung "WORKSTATION\Rechenknecht" nie.
+                matching = [
+                    item for item in active
+                    if account_names_session(record.get("account"), item)
+                ]
                 bound = record.get("session_id") is not None
+                # Gebunden wird nur an eine Sitzung, die vom meldenden Rechner
+                # aus aufgebaut wurde. Kam die eigene Verbindung nie zustande,
+                # hängte sich die Meldung sonst an die Sitzung eines Kollegen
+                # unter demselben Konto -- und die Karte nannte den Falschen.
+                fresh = [
+                    item for item in matching
+                    if claim_matches_session_client(record, item)
+                ]
+                session = next(
+                    (
+                        item for item in matching
+                        if _is_same_session(record, item)
+                        and not claim_client_conflicts(record, item)
+                    ),
+                    fresh[0] if fresh and not bound else None,
+                )
                 if bound and not _is_same_session(record, session):
                     # Gebunden, aber die Sitzung ist weg oder es ist eine andere
                     # unter demselben Konto. Genau darauf kommt es auf einer

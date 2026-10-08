@@ -174,5 +174,6 @@ def test_a_reported_person_is_named_instead_of_the_account():
         "login_time": "2026-09-16T08:00:00+00:00",
     }]
 
-    assert occupant_names(workstation, user()) == ["Kollege Meier"]
+    # Die Person zuerst, dazu das Konto, unter dem ihre Sitzung läuft.
+    assert occupant_names(workstation, user()) == [f"Kollege Meier als {OTHER}"]
     assert "Kollege Meier" in connection_warning(workstation, user())

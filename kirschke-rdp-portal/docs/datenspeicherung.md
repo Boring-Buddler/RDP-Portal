@@ -5,18 +5,23 @@ zählen — was teilen sich alle, und was hat jeder für sich.
 
 ## Die kurze Antwort
 
-Es gibt **zwei** Ablagen, und die Trennung ist Absicht.
+Es gibt **zwei** Ablagen, und die Trennung ist Absicht. Gemeinsame Daten laufen
+ausschließlich über das Netzwerk; OneDrive- und SharePoint-Ordner lehnt das
+Portal überall ab ([sync_guard.py](../shared/sync_guard.py)).
 
 | | Gemeinsam | Persönlich |
 |---|---|---|
-| Ort | `<Ordner der Portal-EXE>\state\` | `%LOCALAPPDATA%\KirschkeRDPPortal\` |
-| Gilt für | alle, die dieselbe EXE starten | einen Windows-Benutzer auf einem PC |
+| Ort | eingetragene Netzwerkfreigabe (**Admin → Gemeinsames Inventar**), sonst `<Ordner der Portal-EXE>\state\` | `%LOCALAPPDATA%\KirschkeRDPPortal\` |
+| Gilt für | alle Portale mit derselben Freigabe | einen Windows-Benutzer auf einem PC |
 | Inhalt | Maschinen, Reservierungen, Ereignisprotokoll | Kontowahl, Design, Intervall, eigene Konten |
 | Bei Parallelbetrieb | zusammengeführt, nie blind überschrieben | von niemand anderem angefasst |
 
 ## Gemeinsame Ablage
 
-Alles im Ordner `state` neben der Portal-EXE ([`default_portal_directory`](../shared/agent_paths.py)):
+Alles auf der eingetragenen Freigabe des gemeinsamen Inventars – ohne Eintrag im
+Ordner `state` neben der Portal-EXE ([`default_portal_directory`](../shared/agent_paths.py)).
+Liegt die EXE selbst in einem OneDrive- oder SharePoint-Ordner, weicht der Stand
+nach `%LOCALAPPDATA%\KirschkeRDPPortal\daten` aus:
 
 | Datei | Inhalt |
 |---|---|
@@ -30,11 +35,13 @@ Alles im Ordner `state` neben der Portal-EXE ([`default_portal_directory`](../sh
 **Nein.** `LocalStore.save()` ([local_store.py](../portal_app/services/local_store.py)) macht bei
 jedem Schreibvorgang Folgendes:
 
-1. Schreibsperre auf die Lock-Datei nehmen.
+1. Schreibsperre auf die Lock-Datei nehmen. Das ist eine Byte-Sperre, die der SMB-Server
+   für alle Clients durchsetzt – sie gilt also auch zwischen verschiedenen PCs.
 2. Den Stand auf der Platte **neu einlesen** — er kann sich seit dem Laden geändert haben.
 3. **Drei-Wege-Merge pro Datensatz** gegen die Baseline, also gegen den Stand, den dieses
    Portal zuletzt gesehen hat.
-4. Atomar schreiben (erst in eine Temp-Datei, dann ersetzen).
+4. Atomar schreiben (erst in eine Temp-Datei, dann ersetzen). Hält ein anderer PC die Datei
+   gerade zum Lesen offen, wird das Ersetzen bis zu 2 s wiederholt.
 
 Daraus folgt:
 
@@ -46,14 +53,21 @@ Daraus folgt:
   verwaister Eintrag.
 
 Zusätzlich gleicht jedes Portal alle 5 Sekunden ab, sobald sich die Dateien verändert haben
-(`_sync_shared_store`), sodass fremde Änderungen von selbst erscheinen.
+(`_sync_shared_store`), sodass fremde Änderungen von selbst erscheinen. Die Prüfung läuft im
+Hintergrund, weil schon ein `stat` auf einer Freigabe hängen kann.
 
-### Die Einschränkung, die man kennen muss
+### Wenn die Freigabe nicht erreichbar ist
 
-Der Ordner `state` liegt **neben der EXE**. Gemeinsam ist er nur, wenn alle dieselbe Kopie
-starten — etwa von einem Netzlaufwerk oder aus einem SharePoint-synchronisierten Ordner.
-Hat jeder seine eigene lokale Kopie, hat auch jeder seinen eigenen „gemeinsamen“ Stand, und
-die Verteilung hängt allein an der Synchronisierung.
+Dann legt das Portal dort **nichts** an und schreibt dort nichts hin – ein leeres oder
+veraltetes Inventar auf der Freigabe ließe bei allen anderen die Maschinen verschwinden.
+Es startet im Notbetrieb unter `%LOCALAPPDATA%\KirschkeRDPPortal\lokal` mit der Kopie
+`inventar-zuletzt-gelesen.json`, die es bei jedem erfolgreichen Lesen und Schreiben
+anlegt. Änderungen im Notbetrieb werden nicht geteilt und später nicht übernommen.
+
+### Ohne gemeinsames Inventar
+
+Der Ordner `state` liegt **neben der EXE**, nach dem Setup also im eigenen Profil. Dann hat
+jeder seinen eigenen Stand.
 
 **Reservierungen sind davon unabhängig.** Sie liegen zusätzlich beim Agenten jeder Maschine
 ([reservation_store.py](../workstation_agent/reservation_store.py)) und reisen mit jedem
@@ -91,14 +105,17 @@ Unter `%LOCALAPPDATA%\KirschkeRDPPortal\` — pro Windows-Benutzer und pro PC:
 
 | Datei | Inhalt |
 |---|---|
-| `portal-preferences.json` | Kontowahl je Maschine, Design (hell/dunkel/System), Statusintervall, eigene Windows-Konten, Identität |
-| `storage-config.json` | Agent-Statusordner (auch je Maschine) und der gemeinsame Protokollordner |
+| `portal-preferences.json` | Maschinenfavoriten, bevorzugte Konten und Kontowahl je Maschine, Karten-/Listenansicht, Design (hell/dunkel/System), Statusintervall, eigene Windows-Konten samt Markierung „gemeinsam genutzt“, Identität |
+| `storage-config.json` | Agent-Statusordner (auch je Maschine), der gemeinsame Protokollordner und die Freigabe des gemeinsamen Inventars |
+| `inventar-zuletzt-gelesen.json` | Kopie des zuletzt gelesenen gemeinsamen Inventars, für den Notbetrieb |
 | `logs\portal.log` | Protokoll, rotiert bei 5 MB |
-| `lokal\` | Notablage, falls der gemeinsame Ordner nicht beschreibbar ist |
+| `lokal\` | Notablage, falls der gemeinsame Ordner nicht erreichbar oder beschreibbar ist |
 
 Diese Datei wird von keinem anderen Portal gelesen oder geschrieben. Zwei Personen am selben
-Portal, aber an verschiedenen PCs, sehen dieselben Maschinen und verschiedene Kontowahlen —
+Portal, aber an verschiedenen PCs, sehen dieselben Maschinen und verschiedene Kontowahlen –
 so ist es gemeint.
+Auch mit gemeinsamem Inventar bleiben die Favoriten auf diesem PC; sie werden nicht
+auf der Freigabe gespeichert.
 
 Was daraus folgt:
 
@@ -132,6 +149,10 @@ und wer sie hält, ist nur über den Windows-Kontonamen erschlossen. Meldet ein 
 überhaupt keine Aufschaltungen (Version vor 1.6.0), steht auf der Karte nichts dazu — die
 Frage ist dann offen und nicht mit Nein beantwortet.
 
+Eine Meldung trägt die Schreibweise, mit der das Portal verbunden hat; der Agent meldet die
+Sitzung als `DOMÄNE\konto`. Zugeordnet wird deshalb über alle Schreibweisen desselben Kontos,
+nicht wörtlich. Pro Konto führt der Agent genau eine Meldung, die jüngste.
+
 ### Ein Statusordner oder viele?
 
 Der Statusordner ist **je Maschine** einstellbar (Maschinendetails → Fallback einrichten).
@@ -149,3 +170,9 @@ NB13KI gehört.
 Keines dieser Dateien enthält ein Kennwort. Das Lesekonto der Statusfreigaben liegt im
 Windows-Anmeldeinformationsspeicher (Credential Manager), und für die RDP-Anmeldung selbst
 fragt Windows.
+
+Dort legt das Portal nur eigene, generische Einträge an:
+`KirschkeRDPPortal:Freigabekonto` für das Lesekonto und seit 0.9.4
+`KirschkeRDPPortal:Freigabe:<Server>` für ein im Freigabedialog gemerktes Konto.
+Einen Eintrag für den ganzen Server (`Domain:target=<Server>`) legt es nicht mehr an:
+Den nutzt Windows für jede Anmeldung an diesem Rechner, auch für Remotedesktop.

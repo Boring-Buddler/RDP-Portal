@@ -19,13 +19,14 @@ Zustand                 Farbe       Bedeutung
 DISABLED                grau        im Portal deaktiviert
 BLOCKED                 rot         Wartung oder gesperrt
 UNKNOWN                 grau        Agent meldet keinen aktuellen Status
-OWN_IDLE                bl./orange  deine Sitzung, Fenster zu
+OWN_IDLE                blau        deine Sitzung, Fenster zu (Symbol orange)
 OCCUPIED_SELF           blau        deine Sitzung, Fenster offen
 OCCUPIED_OTHER          violett     jemand anderes ist angemeldet
 OCCUPIED_OTHER_IDLE     vi./orange  fremde Sitzung, Fenster zu
 
-Der orange Strich bedeutet ueberall dasselbe: belegt, aber niemand verbunden.
-Die Grundfarbe sagt, wer -- blau du selbst, violett jemand anderes.
+Orange bedeutet ueberall dasselbe: belegt, aber niemand verbunden -- bei dir
+das PC-Symbol, bei jemand anderem der zweite Strich im Rand. Die Grundfarbe
+sagt, wer -- blau du selbst, violett jemand anderes.
 RESERVED                violett     fremde Reservierung, niemand angemeldet
 AVAILABLE               gruen       frei -- auch bei eigener Reservierung
 ======================  ==========  ======================================
@@ -43,7 +44,7 @@ from portal_app.models.workstation import Workstation
 from portal_app.ui.design import Colors
 from shared.enums import AgentStatus, ManualFlagType
 from shared.identity import IdentityMatch
-from shared.session_identity import is_console_session, session_username
+from shared.session_identity import is_console_session
 
 #: Why a session the agent reports as local needs a detour before it can be ended.
 CONSOLE_LOGOFF_HINT = (
@@ -81,7 +82,7 @@ STATE_COLORS: dict[MachineState, QColor] = {
     MachineState.BLOCKED: Colors.error,
     MachineState.UNKNOWN: Colors.text_muted,
     # Deine Sitzung ist blau, ob mit oder ohne Fenster. Ob ein Fenster offen
-    # ist, sagt der gestrichelte Rand -- siehe IDLE_DASH_COLOR.
+    # ist, sagt das PC-Symbol -- siehe state_glyph_color.
     MachineState.OWN_IDLE: Colors.info,
     MachineState.OCCUPIED_SELF: Colors.info,
     MachineState.OCCUPIED_OTHER: Colors.taken,
@@ -174,8 +175,8 @@ STATE_TOOLTIPS: dict[MachineState, str] = {
     ),
     MachineState.OWN_IDLE: (
         "Deine Sitzung läuft auf dieser Maschine, ohne dass ein Portal-Fenster "
-        "offen ist — du belegst sie also möglicherweise unbemerkt. Der orange "
-        "Strich bedeutet überall dasselbe: belegt, niemand verbunden."
+        "offen ist — du belegst sie also möglicherweise unbemerkt. Orange "
+        "bedeutet überall dasselbe: belegt, niemand verbunden."
     ),
     MachineState.OCCUPIED_SELF: (
         "Deine Sitzung läuft und ein vom Portal gestartetes RDP-Fenster ist offen."
@@ -202,7 +203,7 @@ LEGEND: tuple[tuple[MachineState, str], ...] = (
     (MachineState.AVAILABLE, "Frei"),
     (
         MachineState.OCCUPIED_SELF,
-        "Von dir belegt · gestrichelt: Fenster zu",
+        "Von dir belegt · oranges Symbol: Fenster zu",
     ),
     (
         MachineState.OCCUPIED_OTHER,
@@ -213,23 +214,39 @@ LEGEND: tuple[tuple[MachineState, str], ...] = (
 )
 
 
-#: Die zweite Strichfarbe. Sie bedeutet an jeder Karte dasselbe: jemand haelt
-#: die Maschine, ohne verbunden zu sein. Die Grundfarbe sagt weiterhin, wer --
-#: blau du selbst, violett jemand anderes.
+#: Die Farbe fuer "Fenster zu". Sie bedeutet an jeder Karte dasselbe: jemand
+#: haelt die Maschine, ohne verbunden zu sein. Bei dir traegt sie das
+#: PC-Symbol, bei jemand anderem der zweite Strich im Rand. Die Grundfarbe sagt
+#: weiterhin, wer -- blau du selbst, violett jemand anderes.
 IDLE_DASH_COLOR = Colors.attention
 
-#: Zustaende mit zweifarbig gestricheltem Rand: belegt, aber Fenster zu.
-DASHED_STATES = frozenset({MachineState.OWN_IDLE, MachineState.OCCUPIED_OTHER_IDLE})
+#: Zustaende mit zweifarbig gestricheltem Rand: fremd belegt, aber Fenster zu.
+DASHED_STATES = frozenset({MachineState.OCCUPIED_OTHER_IDLE})
+
+#: Zustaende, deren PC-Symbol orange statt in der Grundfarbe steht. Die eigene
+#: Sitzung ohne Fenster war frueher blau/orange gestrichelt; ein Rand ist aber
+#: ueber die ganze Karte verteilt, das Symbol steht dort, wo man ohnehin
+#: hinsieht -- neben dem Namen.
+IDLE_GLYPH_STATES = frozenset({MachineState.OWN_IDLE})
 
 
 def state_is_dashed(state: MachineState) -> bool:
     """Whether the card border is drawn as a two-colour dashed line.
 
-    The second colour is the one ``OWN_IDLE`` uses, so "holds the machine
-    without being connected" reads the same whether it is your account or
-    somebody else's.
+    The second colour is the one ``OWN_IDLE`` shows on its glyph, so "holds
+    the machine without being connected" reads as orange whether it is your
+    account or somebody else's.
     """
     return state in DASHED_STATES
+
+
+def state_glyph_color(state: MachineState) -> QColor:
+    """The colour of the monitor glyph, carrying the state's emphasis as alpha."""
+    if state not in IDLE_GLYPH_STATES:
+        return state_color(state)
+    color = QColor(IDLE_DASH_COLOR)
+    color.setAlphaF(STATE_EMPHASIS[state].alpha)
+    return color
 
 
 def state_secondary_color(state: MachineState) -> QColor:
@@ -332,7 +349,7 @@ def occupant_names(workstation: Workstation, user: User) -> list[str]:
     """
     names: dict[str, str] = {}
     for item in workstation.foreign_sessions(user.windows_accounts(), user.upn):
-        name = workstation.session_owner_display(item) or session_username(item).strip()
+        name = workstation.session_holder_label(item)
         if name:
             names.setdefault(name.casefold(), name)
     return sorted(names.values(), key=str.casefold)

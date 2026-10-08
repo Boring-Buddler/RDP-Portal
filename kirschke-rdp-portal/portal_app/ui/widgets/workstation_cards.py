@@ -18,6 +18,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QBoxLayout,
     QCheckBox,
     QFrame,
     QGridLayout,
@@ -40,9 +41,12 @@ from portal_app.ui.machine_actions import (
     machine_state,
     state_border_width,
     state_color,
+    state_glyph_color,
     state_is_dashed,
     state_secondary_color,
 )
+from portal_app.ui.text_fit import ElidedLabel
+from portal_app.ui.widgets.flow_layout import FlowLayout
 from portal_app.ui.widgets.login_account_selector import LoginAccountSelector
 from portal_app.ui.widgets.ping_tool import PingToolWidget
 from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox as QComboBox
@@ -240,7 +244,9 @@ class CardDragHandle(QLabel):
         # Die greifende Hand: das Zeichen, das ueberall "hier anfassen" heisst.
         self.setCursor(Qt.OpenHandCursor)
         self.setToolTip("Karte hier greifen und an ihren neuen Platz ziehen.")
-        self.setFixedHeight(scaled(16))
+        # Höhe aus der Schrift statt fester 16 Pixel, sonst fehlten den
+        # Punkten bei größerer Schrift die unteren Pixel.
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self._press_origin: QPoint | None = None
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
@@ -326,7 +332,7 @@ class WorkstationCard(QFrame):
 
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
-        self.name_label = QLabel(self.workstation.display_name)
+        self.name_label = ElidedLabel(self.workstation.display_name)
         self.name_label.setObjectName("cardTitle")
         self.name_label.setFont(Typography.heading_3())
         title_box.addWidget(self.name_label)
@@ -334,7 +340,7 @@ class WorkstationCard(QFrame):
         # Maschine mit dem Anzeigenamen identisch, sodass hier zweimal dasselbe
         # stand. Wo die Maschine steht, beantwortet die Karte sonst nirgends
         # auf den ersten Blick.
-        self.site_label = QLabel(self._site_text(self.workstation))
+        self.site_label = ElidedLabel(self._site_text(self.workstation))
         self.site_label.setObjectName("cardMeta")
         title_box.addWidget(self.site_label)
         heading.addLayout(title_box, 1)
@@ -363,18 +369,18 @@ class WorkstationCard(QFrame):
         self.status_dot = QLabel("●")
         self.status_dot.setStyleSheet(f"color: {css_color(self._accent_color())}; font-size: 12px;")
         status_row.addWidget(self.status_dot)
-        self.status_label = QLabel(self._status_text())
+        self.status_label = ElidedLabel(self._status_text())
         self.status_label.setToolTip(self.workstation.agent_diagnostic)
         self.status_label.setObjectName("cardStatus")
-        status_row.addWidget(self.status_label)
+        status_row.addWidget(self.status_label, 1)
         status_row.addStretch()
         layout.addLayout(status_row)
 
-        self.source_label = QLabel(self.workstation.get_agent_source_display())
+        self.source_label = ElidedLabel(self.workstation.get_agent_source_display())
         self.source_label.setObjectName("cardMeta")
         self.source_label.setContentsMargins(20, 1, 0, 0)
         layout.addWidget(self.source_label)
-        self.session_label = QLabel(self._session_text())
+        self.session_label = ElidedLabel(self._session_text())
         self.session_label.setToolTip(self._session_tooltip())
         self.session_label.setObjectName("cardMeta")
         self.session_label.setContentsMargins(20, 2, 0, 0)
@@ -426,6 +432,24 @@ class WorkstationCard(QFrame):
         layout.addWidget(self.drag_handle)
         self.refresh_status()
 
+    def content_height(self) -> int:
+        """Wie hoch die Karte sein muss, damit ihr Inhalt nicht gequetscht wird.
+
+        Die Nennhöhe ist am 9-Punkt-Entwurf gemessen, der Inhalt aber nicht:
+        Padding im Stylesheet, ein dickerer Rand für die eigene Maschine, eine
+        umbrechende Reservierungszeile. Reichte die Höhe nicht, quetschte Qt
+        das Nachgiebigste zusammen -- die Auswahlfelder oben, deren Text dann
+        unten abgeschnitten war.
+        """
+        self.ensurePolished()
+        layout = self.layout()
+        inner = self.contentsRect()
+        if layout.hasHeightForWidth():
+            needed = layout.heightForWidth(inner.width())
+        else:
+            needed = layout.sizeHint().height()
+        return needed + (self.height() - inner.height())
+
     def set_workstation(self, workstation: Workstation, user: User) -> None:
         self.workstation = workstation
         self.user = user
@@ -453,7 +477,7 @@ class WorkstationCard(QFrame):
         state = machine_state(self.workstation, self.user, window_open=window_open)
         accent = state_color(state)
         self._apply_card_accent(state)
-        self.glyph.set_color(accent)
+        self.glyph.set_color(state_glyph_color(state))
         # css_color rather than QColor.name(), which would drop the emphasis alpha.
         dot_style = f"color: {css_color(accent)}; font-size: 12px;"
         if self.status_dot.styleSheet() != dot_style:
@@ -808,19 +832,19 @@ class WorkstationListRow(QFrame):
         layout.addWidget(self.favorite_button)
         name_box = QVBoxLayout()
         name_box.setSpacing(2)
-        self.name_label = QLabel()
+        self.name_label = ElidedLabel()
         self.name_label.setObjectName("cardTitle")
         self.name_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         name_box.addWidget(self.name_label)
-        self.site_label = QLabel()
+        self.site_label = ElidedLabel()
         self.site_label.setObjectName("cardMeta")
         name_box.addWidget(self.site_label)
         layout.addLayout(name_box, 2)
-        self.status_label = QLabel()
+        self.status_label = ElidedLabel()
         self.status_label.setObjectName("cardStatus")
         self.status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         layout.addWidget(self.status_label, 2)
-        self.session_label = QLabel()
+        self.session_label = ElidedLabel()
         self.session_label.setObjectName("cardMeta")
         self.session_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         layout.addWidget(self.session_label, 2)
@@ -963,48 +987,49 @@ class WorkstationCardsWidget(QWidget):
         root.addWidget(self.agent_channel_status)
         filters = QHBoxLayout()
         filters.setSpacing(10)
-        self.site_filter = QComboBox()
-        self.site_filter.setObjectName("dashboardFilter")
-        self.site_filter.setFixedWidth(scaled(120))
+        # Die Filter brechen um, statt abgeschnitten zu werden: Jedes Feld ist
+        # so breit wie sein längster Eintrag, und was nicht mehr in die Zeile
+        # passt, steht in der nächsten. Vorher waren die Felder fest bemessen,
+        # und bei größerer Schrift fehlte das Ende ihrer Texte.
+        filter_flow = FlowLayout(spacing=10)
+        self.site_filter = self._filter_combo()
         self.site_filter.addItem("Alle Standorte", "")
         for site in sorted({ws.site for ws in self.workstations if ws.site}):
             self.site_filter.addItem(site, site)
         self.site_filter.currentIndexChanged.connect(self._rebuild_grid)
-        filters.addWidget(self.site_filter)
         self.favorites_filter = QPushButton("☆ Favoriten")
         self.favorites_filter.setObjectName("toolbarButton")
-        self.favorites_filter.setFixedWidth(scaled(115))
+        self.favorites_filter.setMinimumWidth(scaled(115))
         self.favorites_filter.setCheckable(True)
-        self.favorites_filter.setAccessibleName("Nur favorisierte Maschinen anzeigen")
+        self.favorites_filter.setChecked(True)
+        self.favorites_filter.setAccessibleName("Favoritenfilter ein- oder ausschalten")
+        self.favorites_filter.setToolTip(
+            "Favoriten werden zuerst angezeigt. Ausschalten zeigt alle Maschinen."
+        )
         self.favorites_filter.toggled.connect(self._rebuild_grid)
-        filters.insertWidget(0, self.favorites_filter)
-        self.agent_filter = QComboBox()
-        self.agent_filter.setObjectName("dashboardFilter")
-        self.agent_filter.setFixedWidth(scaled(130))
+        filter_flow.addWidget(self.favorites_filter)
+        filter_flow.addWidget(self.site_filter)
+        self.agent_filter = self._filter_combo()
         self.agent_filter.addItem("Alle Agentstatus", "")
         self.agent_filter.addItem("Online", "online")
         self.agent_filter.addItem("Veraltet", "stale")
         self.agent_filter.addItem("Offline", "offline")
         self.agent_filter.addItem("Fehler", "error")
         self.agent_filter.currentIndexChanged.connect(self._rebuild_grid)
-        filters.addWidget(self.agent_filter)
-        self.flag_filter = QComboBox()
-        self.flag_filter.setObjectName("dashboardFilter")
-        self.flag_filter.setFixedWidth(scaled(150))
+        filter_flow.addWidget(self.agent_filter)
+        self.flag_filter = self._filter_combo()
         self.flag_filter.addItem("Alle Kennzeichnungen", "")
         self.flag_filter.addItem("Ohne Flag", "none")
         self.flag_filter.addItem("Wartung", "maintenance")
         self.flag_filter.addItem("Gesperrt", "blocked")
         self.flag_filter.currentIndexChanged.connect(self._rebuild_grid)
-        filters.addWidget(self.flag_filter)
-        self.user_filter = QComboBox()
-        self.user_filter.setObjectName("dashboardFilter")
-        self.user_filter.setFixedWidth(scaled(120))
+        filter_flow.addWidget(self.flag_filter)
+        self.user_filter = self._filter_combo()
         self.user_filter.addItem("Alle Benutzer", "")
         self._populate_user_filter()
         self.user_filter.currentIndexChanged.connect(self._rebuild_grid)
-        filters.addWidget(self.user_filter)
-        filters.addStretch(1)
+        filter_flow.addWidget(self.user_filter)
+        filters.addLayout(filter_flow, 1)
         self.search = QLineEdit()
         self.search.setObjectName("dashboardSearch")
         self.search.setPlaceholderText("Maschine suchen …")
@@ -1047,18 +1072,36 @@ class WorkstationCardsWidget(QWidget):
         self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.scroll.setWidget(self.grid_host)
         root.addWidget(self.scroll, 1)
-        footer = QHBoxLayout()
-        footer.setSpacing(16)
+        self.footer = QBoxLayout(QBoxLayout.LeftToRight)
+        self.footer.setSpacing(16)
         self.legend = StatusLegend()
-        footer.addWidget(self.legend, 1)
+        self.footer.addWidget(self.legend, 1)
         self.ping_tool = PingToolWidget()
-        footer.addWidget(self.ping_tool, 0, Qt.AlignBottom)
-        root.addLayout(footer)
+        self.footer.addWidget(self.ping_tool, 0, Qt.AlignBottom)
+        root.addLayout(self.footer)
+
+    @staticmethod
+    def _filter_combo() -> QComboBox:
+        """Ein Filterfeld, das so breit ist wie sein längster Eintrag."""
+        combo = QComboBox()
+        combo.setObjectName("dashboardFilter")
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        return combo
+
+    #: Breiteste Anzeige eines Kontonamens im Benutzerfilter, im 9-Punkt-Entwurf.
+    USER_FILTER_TEXT_WIDTH = 160
 
     def _populate_user_filter(self) -> None:
         users = sorted({ws.current_session_user for ws in self.workstations if ws.current_session_user})
+        metrics = self.user_filter.fontMetrics()
         for user in users:
-            self.user_filter.addItem(user, user)
+            # Kontonamen können lang sein, und das Feld wächst mit seinem
+            # längsten Eintrag. Gekürzt wird in der Mitte, damit Domäne und
+            # Name beide lesbar bleiben; gefiltert wird über den vollen Namen.
+            label = metrics.elidedText(user, Qt.ElideMiddle, scaled(self.USER_FILTER_TEXT_WIDTH))
+            self.user_filter.addItem(label, user)
+            self.user_filter.setItemData(self.user_filter.count() - 1, user, Qt.ToolTipRole)
 
     def _filtered_workstations(self) -> list[Workstation]:
         query = self.search.text().strip().lower()
@@ -1208,17 +1251,14 @@ class WorkstationCardsWidget(QWidget):
             if not filtered and self.grid.count():
                 empty = self.grid.itemAt(0).widget()
                 if isinstance(empty, QLabel):
-                    empty.setText(
-                        "Noch keine Favoriten markiert."
-                        if self.favorites_filter.isChecked()
-                        else "Keine Maschinen gefunden."
-                    )
+                    empty.setText(self._empty_message())
             for card, workstation in zip(existing_cards, filtered, strict=True):
                 card.set_workstation(workstation, self.user)
                 card.set_favorite(workstation.workstation_id.casefold() in self.favorite_ids)
                 card.account_selector.set_preferred_account(
                     self.preferred_accounts.get(workstation.workstation_id)
                 )
+            self._fit_card_heights()
             return
         scroll_position = self.scroll.verticalScrollBar().value()
         removed_widgets: list[QWidget] = []
@@ -1271,11 +1311,7 @@ class WorkstationCardsWidget(QWidget):
             card.show()
             self._cards.append(card)
         if not items:
-            empty = QLabel(
-                "Noch keine Favoriten markiert."
-                if self.favorites_filter.isChecked()
-                else "Keine Maschinen gefunden."
-            )
+            empty = QLabel(self._empty_message())
             empty.setObjectName("cardMeta")
             self.grid.addWidget(empty, 0, 0)
         # Die Karten haben eine feste Breite, also darf keine Spalte dehnen --
@@ -1286,7 +1322,30 @@ class WorkstationCardsWidget(QWidget):
         self.grid.setColumnStretch(
             0 if self.machine_view == "list" else max(columns, self.grid.columnCount()), 1
         )
+        self._fit_card_heights()
         self.scroll.verticalScrollBar().setValue(scroll_position)
+
+    def _fit_card_heights(self) -> None:
+        """Alle Karten so hoch wie die höchste, mindestens die Nennhöhe.
+
+        Gleich hoch, damit das Raster ruhig bleibt; so hoch wie nötig, damit
+        keine Karte ihren Inhalt quetscht. Die Breite bleibt fest -- an ihr
+        hängt die Spaltenzahl.
+        """
+        cards = [item for item in self._cards if isinstance(item, WorkstationCard)]
+        if not cards:
+            return
+        height = max([card_height(), *(card.content_height() for card in cards)])
+        for card in cards:
+            if card.height() != height:
+                card.setFixedHeight(height)
+
+    def _empty_message(self) -> str:
+        if not self.workstations:
+            return "Noch keine Maschinen eingerichtet."
+        if self.favorites_filter.isChecked() and not self.favorite_ids:
+            return "Keine Favoriten. Favoritenfilter ausschalten für alle Maschinen."
+        return "Keine Maschinen gefunden."
 
     def _column_count(self) -> int:
         if self.machine_view == "list":
@@ -1296,8 +1355,27 @@ class WorkstationCardsWidget(QWidget):
         # jeder Reihe eine Karte Platz ungenutzt oder eine zu viel gedraengt.
         return max(1, min(4, (width + card_gap()) // (card_width() + card_gap())))
 
+    #: Schmaler als das, im 9-Punkt-Entwurf, steht die Legende über dem Ping.
+    LEGEND_MIN_WIDTH = 320
+
+    def _arrange_footer(self) -> None:
+        """Legende neben dem Ping, oder darüber, wenn daneben kein Platz ist.
+
+        Bei großer Schrift in einem kleinen Fenster blieb der Legende neben dem
+        breiter gewordenen Ping-Feld so wenig Breite, dass ihr Text unten
+        abgeschnitten war.
+        """
+        beside = (
+            self.width() - self.ping_tool.sizeHint().width() - self.footer.spacing()
+            >= scaled(self.LEGEND_MIN_WIDTH)
+        )
+        direction = QBoxLayout.LeftToRight if beside else QBoxLayout.TopToBottom
+        if self.footer.direction() != direction:
+            self.footer.setDirection(direction)
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        self._arrange_footer()
         columns = self._column_count()
         if self._columns and columns != self._columns:
             self._rebuild_grid()

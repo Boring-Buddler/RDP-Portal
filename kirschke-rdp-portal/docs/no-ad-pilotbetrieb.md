@@ -6,8 +6,9 @@ eigentlichen Windows-RDP-Berechtigungen werden einmalig direkt auf den
 Zielrechnern eingerichtet.
 
 Die [aktuelle Abnahmeliste](code-review-testbetrieb.md) ergänzt diese Anleitung.
-Für gleichzeitige Änderungen einen gemeinsamen SMB-Speicher verwenden. Bei
-OneDrive zunächst nur eine Portalinstanz zum Schreiben verwenden.
+Gemeinsame Daten laufen nur über das Netzwerk: Für ein gemeinsames Inventar eine
+SMB-Freigabe unter **Admin → Gemeinsames Inventar** eintragen. OneDrive- und
+SharePoint-Ordner lehnt das Portal ab.
 
 ## 1. Eine Testmaschine vorbereiten
 
@@ -46,10 +47,10 @@ kann keine eingehenden RDP-Sitzungen bereitstellen.
    Änderungen dieses Passworts werden über ein neues Portalpaket verteilt.
 3. Über **+ Maschine** die Testmaschine registrieren und IP/Hostname prüfen.
 4. In **Einstellungen** den RDP-Benutzernamen des Testkontos eintragen.
-5. Im Admin-Fenster **Speichern** drücken. Die Maschineneinstellungen liegen in
-   `state/portal-state.json` neben der EXE. Alle Benutzer starten das Portal aus
-   demselben SharePoint-Programmordner. Nach der Synchronisierung laden die anderen
-   Portale den gemeinsamen Stand automatisch.
+5. Im Admin-Fenster **Speichern** drücken. Ohne gemeinsames Inventar liegen die
+   Maschineneinstellungen in `state/portal-state.json` neben der EXE. Mit
+   gemeinsamem Inventar liegen sie auf der Freigabe, und die anderen Portale
+   laden Änderungen innerhalb von fünf Sekunden automatisch.
 
 ## 3. Funktionstest
 

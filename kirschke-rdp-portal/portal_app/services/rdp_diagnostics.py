@@ -129,6 +129,126 @@ def _has_saved_rdp_credentials(target: str) -> bool | None:
     return credential_target.casefold() in result.stdout.casefold()
 
 
+#: Wie cmdkey die Zeile mit dem Kontonamen beschriftet, je nach Systemsprache.
+_CMDKEY_USER_LABELS = ("benutzer", "user")
+
+
+def _decode_console_output(raw: bytes) -> str:
+    """cmdkey schreibt je nach Umgebung UTF-8 oder in der OEM-Codepage."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        codec = "oem" if os.name == "nt" else "cp850"
+        return raw.decode(codec, errors="replace")
+
+
+def saved_rdp_credential_user(target: str) -> str | None:
+    """Das Konto, für das Windows Anmeldedaten zu diesem RDP-Ziel gespeichert hat.
+
+    Liegt ein solcher Eintrag vor, meldet mstsc mit ihm an und nicht mit dem
+    Konto aus der .rdp-Datei. Wer im Portal ein anderes Konto wählt, landet
+    sonst ohne Hinweis unter dem gespeicherten. Gelesen wird nur der
+    Kontoname; das Kennwort gibt cmdkey nicht heraus.
+
+    ``None``, wenn kein Eintrag vorliegt oder er sich nicht lesen lässt.
+    """
+    credential_target = f"TERMSRV/{target}"
+    try:
+        result = subprocess.run(
+            [system32_tool("cmdkey.exe"), f"/list:{credential_target}"],
+            capture_output=True,
+            timeout=4,
+            check=False,
+            # Läuft bei jedem Verbinden; ohne das blitzte ein Konsolenfenster auf.
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return credential_user_from_cmdkey(_decode_console_output(result.stdout), target)
+
+
+def credential_user_from_cmdkey(output: str, target: str) -> str | None:
+    """Den Kontonamen zum Eintrag ``TERMSRV/<target>`` aus der cmdkey-Liste lesen."""
+    if f"TERMSRV/{target}".casefold() not in output.casefold():
+        return None
+    for line in output.splitlines():
+        label, separator, value = line.strip().partition(":")
+        if separator and label.strip().casefold() in _CMDKEY_USER_LABELS:
+            return value.strip() or None
+    return None
+
+
+def saved_server_credential_user(target: str) -> str | None:
+    r"""Das Konto eines Windows-Eintrags für den ganzen Server ``target``.
+
+    Gemeint ist ``Domain:target=<target>`` -- nicht ``TERMSRV/<target>``. Auch
+    so einen Eintrag nimmt mstsc und übergeht damit die .rdp-Datei. Er entsteht,
+    wenn jemand beim Verbinden einer Dateifreigabe "Anmeldedaten speichern"
+    ankreuzt; das Portal selbst hat ihn bis 0.9.3 für jede Statusfreigabe
+    angelegt, und zwar für ``PortalLeser``.
+    """
+    try:
+        result = subprocess.run(
+            [system32_tool("cmdkey.exe"), f"/list:{target}"],
+            capture_output=True,
+            timeout=4,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return server_credential_user_from_cmdkey(_decode_console_output(result.stdout), target)
+
+
+def server_credential_user_from_cmdkey(output: str, target: str) -> str | None:
+    """Den Kontonamen zu ``Domain:target=<target>`` aus der cmdkey-Liste lesen.
+
+    Blockweise und mit genauem Vergleich: ``TERMSRV/<target>`` oder ein
+    anderer Server mit ähnlichem Namen gehören nicht dazu. ``Domain:target``
+    schreibt cmdkey in jeder Systemsprache gleich.
+    """
+    wanted = target.strip().casefold()
+    current = False
+    for line in output.splitlines():
+        text = line.strip()
+        marker = text.casefold().find("domain:target=")
+        if marker >= 0:
+            current = text[marker + len("domain:target="):].strip().casefold() == wanted
+            continue
+        if "target=" in text.casefold():
+            current = False
+            continue
+        label, separator, value = text.partition(":")
+        if current and separator and label.strip().casefold() in _CMDKEY_USER_LABELS:
+            return value.strip() or None
+    return None
+
+
+def clear_saved_server_credentials(target: str) -> tuple[bool, str]:
+    """Den Windows-Eintrag für den ganzen Server ``target`` nach Bestätigung entfernen."""
+    try:
+        result = subprocess.run(
+            [system32_tool("cmdkey.exe"), f"/delete:{target}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"Die Windows-Anmeldeinformationsverwaltung konnte nicht gestartet werden: {exc}"
+    if result.returncode == 0:
+        return True, f"Gespeicherte Anmeldedaten für {target} wurden entfernt."
+    detail = (result.stderr or result.stdout).strip()
+    return False, detail or f"Windows konnte den Eintrag {target} nicht entfernen."
+
+
 def clear_saved_rdp_credentials(target: str) -> tuple[bool, str]:
     """Remove exactly one RDP credential entry after the UI has confirmed it."""
     credential_target = f"TERMSRV/{target}"
@@ -141,6 +261,7 @@ def clear_saved_rdp_credentials(target: str) -> tuple[bool, str]:
             errors="replace",
             timeout=5,
             check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"Die Windows-Anmeldeinformationsverwaltung konnte nicht gestartet werden: {exc}"
@@ -180,4 +301,13 @@ def _recent_rdp_client_events() -> str:
     return "\n\n".join(outputs)
 
 
-__all__ = ["RDPDiagnosticResult", "clear_saved_rdp_credentials", "run_rdp_diagnostics"]
+__all__ = [
+    "RDPDiagnosticResult",
+    "clear_saved_rdp_credentials",
+    "clear_saved_server_credentials",
+    "credential_user_from_cmdkey",
+    "run_rdp_diagnostics",
+    "saved_rdp_credential_user",
+    "saved_server_credential_user",
+    "server_credential_user_from_cmdkey",
+]

@@ -14,7 +14,7 @@ if __package__ in {None, ""}:
     if project_directory not in sys.path:
         sys.path.insert(0, project_directory)
 
-from PySide6.QtCore import QEvent, QTimer
+from PySide6.QtCore import QEvent, QLibraryInfo, QLocale, QTimer, QTranslator
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
@@ -22,6 +22,7 @@ from portal_app.ui.design import Colors, Typography
 from portal_app.ui.icons import kirschke_window_icon, set_windows_app_id
 from portal_app.ui.main_window import MainWindow
 from portal_app.ui.stall_watchdog import UiStallWatchdog
+from portal_app.ui.text_fit import fit_message_box
 from portal_app.version import PORTAL_VERSION
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ class RDPPortalApp(QApplication):
         self.portal_icon = kirschke_window_icon()
         self.setWindowIcon(self.portal_icon)
         self.installEventFilter(self)
+        self.qt_translator = install_german_qt_texts(self)
 
         # Apply design system
         self._apply_design_system()
@@ -87,6 +89,10 @@ class RDPPortalApp(QApplication):
         if event.type() in (QEvent.Show, QEvent.Polish) and isinstance(watched, QWidget):
             if watched.isWindow() and not self.portal_icon.isNull():
                 watched.setWindowIcon(self.portal_icon)
+        if event.type() == QEvent.Show and isinstance(watched, QMessageBox):
+            # Erst nach dem eigenen showEvent: Dort legt QMessageBox seine
+            # Größe fest, und lange Knopftexte passten nicht hinein.
+            QTimer.singleShot(0, watched, lambda box=watched: fit_message_box(box))
         return super().eventFilter(watched, event)
 
     def _apply_design_system(self) -> None:
@@ -105,6 +111,22 @@ class RDPPortalApp(QApplication):
         palette.setColor(QPalette.ToolTipBase, Colors.surface)
         palette.setColor(QPalette.ToolTipText, Colors.text)
         self.setPalette(palette)
+
+
+def install_german_qt_texts(app: QApplication) -> QTranslator | None:
+    """Qts eigene Texte auf Deutsch: „Abbrechen“ statt „Cancel“.
+
+    Die Standardknöpfe der Rückfragen kommen aus Qt selbst und standen bisher
+    auf Englisch zwischen deutschen Texten. Fehlt die Übersetzungsdatei, bleibt
+    es beim Englischen -- das ist kein Grund, nicht zu starten.
+    """
+    translator = QTranslator(app)
+    directory = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+    if not translator.load(QLocale(QLocale.German), "qtbase", "_", directory):
+        logger.warning("Qt-Übersetzung qtbase_de nicht gefunden in %s", directory)
+        return None
+    app.installTranslator(translator)
+    return translator
 
 
 def show_startup_error(detail: str) -> None:

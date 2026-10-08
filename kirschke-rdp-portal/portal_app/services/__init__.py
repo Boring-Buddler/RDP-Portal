@@ -1,6 +1,6 @@
 """Services for Kirschke RDP Workstation Portal."""
 
-# Services will be added in Phase 2 for SharePoint synchronization
+# Gemeinsame Daten laufen ausschliesslich ueber Netzwerkfreigaben und die Agenten.
 
 from portal_app.services.active_directory_sync import (
     ActiveDirectoryReadiness,

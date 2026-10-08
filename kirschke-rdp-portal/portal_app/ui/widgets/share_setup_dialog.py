@@ -121,12 +121,13 @@ class ShareSetupDialog(QDialog):
         self._workstation_name = "" if require_write else workstation_name
         self._update_server_note(initial_path)
         self.path.textChanged.connect(self._update_server_note)
-        self.remember = QCheckBox("Zugangsdaten in Windows für diesen Server speichern / ersetzen")
+        self.remember = QCheckBox("Zugangsdaten für die Freigaben dieses Servers merken / ersetzen")
         self.remember.setChecked(True)
         layout.addWidget(self.remember)
-        note = QLabel("Windows speichert das Kennwort für dein Benutzerprofil auf diesem PC. "
-                      "Es gilt auch für andere Dateifreigaben desselben Servers. "
-                      "Die RDP-Anmeldung bleibt separat. Das Portal schreibt kein Kennwort in seine Dateien.")
+        note = QLabel("Das Kennwort liegt in der Windows-Anmeldeinformationsverwaltung deines "
+                      "Benutzerprofils, unter einem eigenen Eintrag des Portals. Das Portal "
+                      "verbindet die Freigaben damit bei jedem Start selbst. Remotedesktop "
+                      "nutzt diesen Eintrag nicht. Das Portal schreibt kein Kennwort in seine Dateien.")
         note.setWordWrap(True)
         layout.addWidget(note)
         self.status = QLabel()

@@ -92,9 +92,59 @@ def is_console_session(session: Mapping[str, Any]) -> bool:
     return bool(session.get("is_console_session"))
 
 
+def host_aliases(value: Any) -> set[str]:
+    """Vergleichbare Formen eines Rechnernamens oder einer Adresse.
+
+    Kleingeschrieben, ohne führende Backslashes, ohne Zonenangabe einer
+    IPv6-Adresse und zusätzlich ohne Domänenteil -- ``NB12KI.firma.local``
+    und ``NB12KI`` bezeichnen denselben Rechner.
+    """
+    from ipaddress import ip_address
+
+    text = str(value or "").strip().lstrip("\\").strip("[]").split("%", 1)[0].rstrip(".")
+    text = text.casefold()
+    if not text:
+        return set()
+    try:
+        return {str(ip_address(text))}
+    except ValueError:
+        return {text, text.split(".", 1)[0]}
+
+
+def claim_matches_session_client(claim: Mapping[str, Any], session: Mapping[str, Any]) -> bool:
+    """Ob eine Sitzung von dem Rechner aus aufgebaut wurde, der die Meldung schickte.
+
+    Eine Aufschaltmeldung entsteht beim Start von mstsc, die Sitzung erst
+    danach. Ohne diese Prüfung hängte sich eine Meldung an *irgendeine*
+    Sitzung des Kontos -- auch an die eines Kollegen an einem anderen
+    Standort, wenn die eigene Verbindung nie zustande kam. Die Karte nannte
+    dann den Falschen. Windows meldet für jede RDP-Sitzung den verbindenden
+    Rechner, und das Portal schreibt seinen Namen in die Meldung.
+    """
+    claimed = host_aliases(claim.get("client_name"))
+    reported = host_aliases(session.get("client_name")) | host_aliases(session.get("client_address"))
+    return bool(claimed & reported)
+
+
+def claim_client_conflicts(claim: Mapping[str, Any], session: Mapping[str, Any]) -> bool:
+    """Ob Windows für die Sitzung einen anderen verbindenden Rechner meldet.
+
+    Für eine schon gebundene Meldung: Wechselt der Rechner, hat jemand anderes
+    die Sitzung übernommen, und die alte Meldung nennt nicht mehr, wer davor
+    sitzt. Fehlt eine Angabe auf einer Seite -- etwa bei einer getrennten
+    Sitzung ohne Client --, ist das kein Widerspruch.
+    """
+    claimed = host_aliases(claim.get("client_name"))
+    reported = host_aliases(session.get("client_name")) | host_aliases(session.get("client_address"))
+    return bool(claimed and reported and not claimed & reported)
+
+
 __all__ = [
     "ACTIVE_SESSION_STATES",
     "ACTIVE_SESSION_STATE_VALUES",
+    "claim_client_conflicts",
+    "claim_matches_session_client",
+    "host_aliases",
     "is_active_session",
     "is_console_session",
     "session_username",

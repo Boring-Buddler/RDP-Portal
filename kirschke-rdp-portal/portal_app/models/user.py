@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 
 from shared.enums import UserRole
-from shared.identity import WindowsIdentity
+from shared.identity import SharedWindowsIdentity, WindowsIdentity
 
 
 @dataclass
@@ -30,6 +30,15 @@ class User:
     # account on a lab machine. Learned when the portal connects as one of them and
     # editable in the user settings. See windows_accounts() for why this is safe.
     own_accounts: list[str] = field(default_factory=list)
+    # Those of own_accounts that several people sign in with, such as the one
+    # account everybody uses on the calculation machines. Their sessions count
+    # as this person's only when opened from this PC -- see windows_accounts().
+    shared_accounts: list[str] = field(default_factory=list)
+
+    def is_shared_account(self, account: str | None) -> bool:
+        """Ob ``account`` als gemeinsam genutzt markiert ist."""
+        name = (account or "").strip().casefold()
+        return bool(name) and any(item.casefold() == name for item in self.shared_accounts)
 
     def windows_accounts(self) -> list[WindowsIdentity]:
         """Every Windows account that counts as this person in the interface.
@@ -39,11 +48,28 @@ class User:
         session".  Nothing is granted by them: Windows still asks for that
         account's password on connect, and the agent authorizes a logoff on its
         own, so a wrong entry costs a refused attempt and nothing else.
+
+        Ein gemeinsam genutztes Konto kommt als ``SharedWindowsIdentity``: Bei
+        ihm zählt eine Sitzung nur, wenn sie von diesem PC aus aufgebaut wurde.
+        Sonst hielte jedes Portal die Sitzung eines Kollegen unter demselben
+        Konto für die eigene.
         """
         accounts = [self.windows_account()]
-        accounts.extend(
-            WindowsIdentity.from_names(down_level=name) for name in self.own_accounts
-        )
+        clients: frozenset[str] | None = None
+        for name in self.own_accounts:
+            identity = WindowsIdentity.from_names(down_level=name)
+            if self.is_shared_account(name):
+                if clients is None:
+                    from portal_app.services.local_identity import local_client_names
+
+                    clients = local_client_names()
+                identity = SharedWindowsIdentity(
+                    sid=identity.sid,
+                    down_level=identity.down_level,
+                    upn=identity.upn,
+                    clients=clients,
+                )
+            accounts.append(identity)
         return [account for account in accounts if account.for_display()]
 
     def claim_account(self, account: str | None) -> bool:

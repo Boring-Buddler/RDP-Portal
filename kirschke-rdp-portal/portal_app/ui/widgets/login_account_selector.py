@@ -4,18 +4,53 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPointF, Qt, Signal
 from PySide6.QtGui import QPainter, QPalette, QPen
-from PySide6.QtWidgets import QLabel, QSizePolicy, QStyledItemDelegate, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QLabel,
+    QSizePolicy,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionComboBox,
+    QStylePainter,
+    QVBoxLayout,
+    QWidget,
+)
 
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
 from portal_app.ui.widgets.scroll_safe_combo import ScrollSafeComboBox
+from shared.identity import is_entra_profile_name, same_account_name
 
 
 class AccountComboBox(ScrollSafeComboBox):
-    """Keep the dropdown affordance visible under the application stylesheet."""
+    """Keep the dropdown affordance visible under the application stylesheet.
+
+    Zu lange Kontonamen enden mit „…“. Das Feld hat keine Mindestbreite, damit
+    es in der schmalen Listenzeile Platz lässt -- und Qt schnitt den Text dann
+    ohne Hinweis ab. Der volle Name steht in der aufgeklappten Liste.
+    """
+
+    def _label_option(self) -> tuple[QStyleOptionComboBox, int]:
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        field = self.style().subControlRect(
+            QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxEditField, self
+        )
+        return option, field.width()
+
+    def is_elided(self) -> bool:
+        """Ob der gewählte Eintrag gerade gekürzt dargestellt wird."""
+        option, width = self._label_option()
+        return self.fontMetrics().horizontalAdvance(option.currentText) > width
 
     def paintEvent(self, event) -> None:
-        super().paintEvent(event)
+        option, width = self._label_option()
+        option.currentText = self.fontMetrics().elidedText(
+            option.currentText, Qt.ElideRight, width
+        )
+        styled = QStylePainter(self)
+        styled.drawComplexControl(QStyle.CC_ComboBox, option)
+        styled.drawControl(QStyle.CE_ComboBoxLabel, option)
+        styled.end()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(QPen(self.palette().color(QPalette.Text), 1.5))
@@ -116,6 +151,8 @@ class LoginAccountSelector(QWidget):
             tuple(workstation.session_accounts()) if workstation else (),
             workstation.selected_login_account if workstation else None,
             user.get_rdp_username(),
+            tuple(user.own_accounts),
+            tuple(user.shared_accounts),
         )
         if content_key == self._content_key:
             return
@@ -127,6 +164,18 @@ class LoginAccountSelector(QWidget):
             self.combo.addItem(f"Standard · {default}", "")
             for account in workstation.login_accounts:
                 self.combo.addItem(account, account)
+            # Die eigenen Konten aus den Einstellungen, damit sie nicht bei jeder
+            # Maschine einzeln hinterlegt werden muessen. Ein Entra-Profilname
+            # bleibt draussen: Mit ihm lehnt Windows jede Anmeldung ab.
+            for account in user.own_accounts:
+                if (
+                    is_entra_profile_name(account)
+                    or same_account_name(account, default)
+                    or self._listed(account)
+                ):
+                    continue
+                prefix = "Gemeinsam" if user.is_shared_account(account) else "Eigenes"
+                self.combo.addItem(f"{prefix} · {account}", account)
             for account in workstation.session_accounts():
                 if self.combo.findData(account) < 0:
                     self.combo.addItem(f"Angemeldet · {account}", account)
@@ -144,6 +193,14 @@ class LoginAccountSelector(QWidget):
             self.combo.setCurrentIndex(max(0, self.combo.findData(chosen)))
         self.combo.setEnabled(workstation is not None)
         self.combo.blockSignals(False)
+
+    def _listed(self, account: str) -> bool:
+        """Ob die Auswahl dieses Konto schon führt, in welcher Schreibweise auch immer."""
+        return any(
+            same_account_name(self.combo.itemData(row), account)
+            for row in range(self.combo.count())
+            if isinstance(self.combo.itemData(row), str) and self.combo.itemData(row)
+        )
 
     def _activated(self, index: int) -> None:
         if self.workstation is None:

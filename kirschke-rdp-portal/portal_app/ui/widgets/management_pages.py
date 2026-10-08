@@ -24,7 +24,9 @@ from PySide6.QtWidgets import (
 
 from portal_app.models.user import User
 from portal_app.models.workstation import Workstation
+from portal_app.ui.design import scaled
 from portal_app.ui.widgets.agent_connection_panel import AgentConnectionPanel
+from portal_app.ui.widgets.flow_layout import FlowLayout
 
 
 class AdministrationWidget(QWidget):
@@ -40,6 +42,8 @@ class AdministrationWidget(QWidget):
     #: Der gemeinsame Protokollordner soll eingerichtet oder entfernt werden.
     event_log_directory_requested = Signal()
     event_log_directory_cleared = Signal()
+    inventory_directory_requested = Signal()
+    inventory_directory_cleared = Signal()
 
     def __init__(self, workstations: list[Workstation], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -50,29 +54,32 @@ class AdministrationWidget(QWidget):
         actions = QHBoxLayout()
         self.summary = QLabel()
         self.summary.setObjectName("calendarRange")
-        actions.addWidget(self.summary)
+        actions.addWidget(self.summary, 0, Qt.AlignTop)
         self.access_status = QLabel("Admin-Sitzung gesperrt")
         self.access_status.setObjectName("adminAccessStatus")
-        actions.addWidget(self.access_status)
-        actions.addStretch()
+        actions.addWidget(self.access_status, 0, Qt.AlignTop)
+        # Die Knöpfe brechen um, statt bei größerer Schrift gequetscht zu
+        # werden -- vorher fehlten ihnen Anfang und Ende ihrer Beschriftung.
+        buttons = FlowLayout(spacing=10, align_right=True)
+        actions.addLayout(buttons, 1)
         add = QPushButton("+ Maschine")
         add.setObjectName("cardPrimaryButton")
         add.clicked.connect(self.add_requested)
-        actions.addWidget(add)
+        buttons.addWidget(add)
         edit = QPushButton("Auswahl bearbeiten")
         edit.setObjectName("toolbarButton")
         edit.clicked.connect(self._edit_selected)
-        actions.addWidget(edit)
+        buttons.addWidget(edit)
         self.rdp_access = QPushButton("RDP-Zugriff")
         self.rdp_access.setObjectName("toolbarButton")
         self.rdp_access.setEnabled(False)
         self.rdp_access.clicked.connect(self._manage_rdp_access_selected)
-        actions.addWidget(self.rdp_access)
+        buttons.addWidget(self.rdp_access)
         self.force_disconnect = QPushButton("Trennen")
         self.force_disconnect.setObjectName("dangerButton")
         self.force_disconnect.setEnabled(False)
         self.force_disconnect.clicked.connect(self._force_disconnect_selected)
-        actions.addWidget(self.force_disconnect)
+        buttons.addWidget(self.force_disconnect)
         self.force_logoff = QPushButton("Notfall-Abmeldung …")
         self.force_logoff.setObjectName("dangerButton")
         self.force_logoff.setEnabled(False)
@@ -80,30 +87,46 @@ class AdministrationWidget(QWidget):
             "Fremde Windows-Sitzung nach erneuter Identitätsprüfung abmelden; benötigt echte Windows-Adminrechte."
         )
         self.force_logoff.clicked.connect(self._force_logoff_selected)
-        actions.addWidget(self.force_logoff)
+        buttons.addWidget(self.force_logoff)
         self.delete_workstation = QPushButton("Maschine löschen")
         self.delete_workstation.setObjectName("dangerButton")
         self.delete_workstation.setEnabled(False)
         self.delete_workstation.clicked.connect(self._delete_selected)
-        actions.addWidget(self.delete_workstation)
+        buttons.addWidget(self.delete_workstation)
         lock = QPushButton("Admin sperren")
         lock.setObjectName("toolbarButton")
         lock.clicked.connect(self.lock_requested)
-        actions.addWidget(lock)
+        buttons.addWidget(lock)
         root.addLayout(actions)
+        # Karten und Tabelle scrollen. Fest darüber stehen nur die Aktionen,
+        # fest darunter das Speichern. Vorher musste alles in die Fensterhöhe
+        # passen, und in einem kleinen Fenster schob Qt die Karten so
+        # zusammen, dass ihre Texte übereinander lagen.
+        scroll = QScrollArea()
+        scroll.setObjectName("adminScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll_content = QWidget()
+        scroll_content.setObjectName("adminContent")
+        content = QVBoxLayout(scroll_content)
+        content.setContentsMargins(0, 0, 8, 0)
+        content.setSpacing(14)
         storage_card = QFrame()
         storage_card.setObjectName("detailCard")
         storage_layout = QVBoxLayout(storage_card)
         storage_layout.setContentsMargins(16, 12, 16, 12)
         storage_layout.setSpacing(10)
         storage_copy = QVBoxLayout()
-        storage_title = QLabel("Speicherort für gemeinsame Maschineneinstellungen")
+        storage_title = QLabel("Gemeinsames Inventar")
         storage_title.setObjectName("detailCardTitle")
         storage_copy.addWidget(storage_title)
         storage_note = QLabel(
-            "Die Maschineneinstellungen liegen im Ordner state neben der Portal-EXE. "
-            "Alle Portale aus demselben SharePoint-Programmordner verwenden diesen Stand. "
-            "Änderungen erscheinen auf anderen PCs nach der SharePoint-Synchronisierung."
+            "Ohne Eintrag führt jedes Portal seine Maschinen für sich. Eine "
+            "Netzwerkfreigabe hier lässt alle Portale dieselben Maschinen und "
+            "Reservierungen lesen und schreiben – direkt über das Netzwerk, ohne "
+            "OneDrive oder SharePoint. Gleichzeitige Änderungen an derselben Maschine "
+            "werden erkannt und abgelehnt statt überschrieben. Die Freigabe braucht "
+            "Schreibrecht."
         )
         storage_note.setObjectName("detailMuted")
         storage_note.setWordWrap(True)
@@ -116,7 +139,18 @@ class AdministrationWidget(QWidget):
         self.storage_directory = QLineEdit()
         self.storage_directory.setReadOnly(True)
         storage_layout.addWidget(self.storage_directory)
-        root.addWidget(storage_card)
+        storage_buttons = QHBoxLayout()
+        storage_buttons.addStretch()
+        self.set_inventory = QPushButton("Gemeinsames Inventar einrichten")
+        self.set_inventory.setObjectName("toolbarButton")
+        self.set_inventory.clicked.connect(self.inventory_directory_requested)
+        storage_buttons.addWidget(self.set_inventory)
+        self.clear_inventory = QPushButton("Wieder lokal führen")
+        self.clear_inventory.setObjectName("toolbarButton")
+        self.clear_inventory.clicked.connect(self.inventory_directory_cleared)
+        storage_buttons.addWidget(self.clear_inventory)
+        storage_layout.addLayout(storage_buttons)
+        content.addWidget(storage_card)
 
         # Das Ereignisprotokoll bekommt eine eigene Karte, weil es den einzigen
         # Teil des Stands darstellt, der auch dann gemeinsam sein kann, wenn
@@ -158,7 +192,7 @@ class AdministrationWidget(QWidget):
         self.clear_event_log.clicked.connect(self.event_log_directory_cleared)
         log_buttons.addWidget(self.clear_event_log)
         log_layout.addLayout(log_buttons)
-        root.addWidget(log_card)
+        content.addWidget(log_card)
         self.directory_card = QFrame()
         self.directory_card.setObjectName("detailCard")
         directory_layout = QHBoxLayout(self.directory_card)
@@ -177,7 +211,7 @@ class AdministrationWidget(QWidget):
         self.refresh_directory_status.setObjectName("toolbarButton")
         self.refresh_directory_status.clicked.connect(self.active_directory_status_requested)
         directory_layout.addWidget(self.refresh_directory_status)
-        root.addWidget(self.directory_card)
+        content.addWidget(self.directory_card)
         self.table = QTableWidget()
         self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(
@@ -190,11 +224,14 @@ class AdministrationWidget(QWidget):
         self.table.doubleClicked.connect(lambda _: self._edit_selected())
         self.table.itemSelectionChanged.connect(self._update_action_state)
         self.table.horizontalHeader().setStretchLastSection(True)
-        root.addWidget(self.table, 1)
+        self.table.setMinimumHeight(scaled(220))
+        content.addWidget(self.table, 1)
+        scroll.setWidget(scroll_content)
+        root.addWidget(scroll, 1)
         save_row = QHBoxLayout()
         save_note = QLabel(
-            "Speichern übernimmt alle angezeigten Maschineneinstellungen in state. "
-            "Synchronisierte Änderungen werden automatisch geladen."
+            "Speichern übernimmt alle angezeigten Maschineneinstellungen. Änderungen "
+            "anderer Portale am gemeinsamen Inventar werden automatisch geladen."
         )
         save_note.setObjectName("detailMuted")
         save_note.setWordWrap(True)
@@ -218,8 +255,9 @@ class AdministrationWidget(QWidget):
         self.workstations = workstations
         self.refresh()
 
-    def set_storage_directory(self, directory: str) -> None:
+    def set_storage_directory(self, directory: str, shared: bool = False) -> None:
         self.storage_directory.setText(directory)
+        self.clear_inventory.setVisible(shared)
 
     def set_storage_status(self, status: str) -> None:
         self.storage_status.setText(status)

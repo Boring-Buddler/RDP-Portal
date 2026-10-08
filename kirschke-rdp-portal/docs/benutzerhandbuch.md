@@ -180,7 +180,7 @@ Das Portalfenster ist in folgende Bereiche unterteilt:
 | 🟢 Grün | Maschine online und verfügbar |
 | 🟡 Gelb | Maschine online, aber Warnung (z.B. Berechnung läuft) |
 | 🔴 Rot | Maschine offline |
-| 🔵 Blau | Eigene Sitzung (durchgezogen oder gestrichelt) |
+| 🔵 Blau | Eigene Sitzung (PC-Symbol orange: ohne Fenster) |
 | 🟣 Violett | Fremde Reservierung oder Sitzung |
 | 🟤 Braun | Maschine von jemand anderem belegt |
 | ⚪ Grau | Unbekannter Status |
@@ -189,7 +189,8 @@ Das Portalfenster ist in folgende Bereiche unterteilt:
 - **Durchgezogen (4px):** Eigene Maschine, auf die Sie zugreifen können
 - **Gestrichelt (2px):** Maschine, auf die Sie nicht zugreifen können
 - **Blau durchgezogen:** Ihre eigene aktive Sitzung
-- **Blau gestrichelt:** Ihre eigene Sitzung ohne Fenster
+- **Blau durchgezogen mit orangem PC-Symbol:** Ihre eigene Sitzung ohne Fenster
+- **Violett/orange gestrichelt:** Fremde Sitzung ohne Fenster
 
 ---
 
@@ -622,7 +623,7 @@ Das Portal implementiert folgende Sicherheitsmaßnahmen:
 
 - **Keine Protokollierung von Passwörtern** in Logs
 - **Keine Speicherung von Benutzerdaten** ohne Zustimmung
-- **Lokale Speicherung:** Alle Daten bleiben lokal (außer bei expliziter SharePoint-Integration)
+- **Lokale Speicherung:** Alle Daten bleiben im lokalen Netzwerk; gemeinsame Daten nur über eingetragene Netzwerkfreigaben, nie über OneDrive oder SharePoint
 
 ---
 
@@ -731,7 +732,7 @@ Bei Problemen, die Sie nicht selbst lösen können:
 ### Q: Kann ich das Portal auf mehreren Rechnern gleichzeitig nutzen?
 **A:** Ja, aber:
 - Bei lokaler JSON-Speicherung hat jeder Rechner sein eigenes Inventar
-- Mit SMB-Freigabe oder SharePoint-Integration synchronisieren sich die Daten
+- Mit gemeinsamem Inventar auf einer SMB-Freigabe (Admin → Gemeinsames Inventar) sehen alle Portale dieselben Daten
 - Agenten-Status wird von jedem Portal unabhängig abgefragt
 
 ### Q: Was passiert, wenn ich eine Verbindung schließe, ohne mich abzumelden?
@@ -794,6 +795,7 @@ Bei Problemen, die Sie nicht selbst lösen können:
 | Version | Datum | Wichtige Änderungen |
 |---------|-------|---------------------|
 | 0.6.1 | 16.09.2026 | Versionsnummer in Setup-Fenstern, BOM für PowerShell-Skripte |
+| 0.9.0 | 1.7.0 | Gemeinsames Inventar auf SMB-Freigabe; SharePoint/OneDrive entfernt und gesperrt |
 | 0.6.0 | - | SharePoint ist nicht mehr Standard-Speicherort |
 | 0.5.5 | - | Synchronisierte Bibliotheken werden erkannt |
 | 0.5.3 | - | Eigene Ruhesitzung blau/orange gestrichelt, 2K/4K bis Bildschirmgröße |

@@ -9,6 +9,7 @@ import os
 import queue
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -487,7 +488,7 @@ def ensure_log_share(
     _assert_local_share_path(log_directory)
     computer = os.environ.get("COMPUTERNAME", "")
     account = f"{computer}\\{reader_name}"
-    unc = f"\\\\{computer}\\{share_name}"
+    unc = f"\\\\{_network_host_name()}\\{share_name}"
     existing_share = _share_info(share_name)
     if existing_share is not None:
         existing_path = str(existing_share.get("path", ""))
@@ -718,6 +719,22 @@ def _copy_setup_executable(destination: Path) -> None:
         shutil.copy2(source, target)
 
 
+def _network_host_name() -> str:
+    """Der Rechnername, wie ihn der Agent meldet und das Netzwerk ihn auflöst.
+
+    Nicht ``%COMPUTERNAME%``: Das ist der NetBIOS-Name, auf 15 Zeichen gekürzt
+    und großgeschrieben. Auf ``Remote-Ettlingen`` stand dort ``REMOTE-ETTLINGE``,
+    und die Statusprüfung lehnte den laufenden Agenten deshalb jedes Mal ab.
+    """
+    return socket.gethostname() or os.environ.get("COMPUTERNAME", "")
+
+
+def _local_host_names() -> set[str]:
+    """Jede Schreibweise, unter der dieser Rechner sich selbst kennt."""
+    names = {socket.gethostname(), os.environ.get("COMPUTERNAME", "")}
+    return {name.casefold() for name in names if name}
+
+
 def _confirm_snapshot(
     status_directory: Path,
     workstation_id: str,
@@ -734,6 +751,7 @@ def _confirm_snapshot(
     """
     snapshot_path = status_directory / f"{workstation_id}.json"
     deadline = time.monotonic() + SNAPSHOT_TIMEOUT_SECONDS
+    reason = f"Die Statusdatei {snapshot_path} ist nicht entstanden."
     while time.monotonic() < deadline:
         if progress is not None:
             remaining = max(1, int(deadline - time.monotonic()) + 1)
@@ -746,18 +764,31 @@ def _confirm_snapshot(
             observed = datetime.fromisoformat(
                 str(snapshot["observed_at_utc"]).replace("Z", "+00:00")
             )
-            if (
-                snapshot.get("workstation_id") == workstation_id
-                and str(snapshot.get("hostname", "")).casefold()
-                == os.environ.get("COMPUTERNAME", "").casefold()
-                and snapshot.get("agent_status") == "online"
-                and observed.astimezone(UTC) >= started_at
-            ):
-                return
-        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-            pass
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            reason = f"Die Statusdatei {snapshot_path} ist nicht lesbar ({exc})."
+            continue
+        hostname = str(snapshot.get("hostname", ""))
+        if snapshot.get("workstation_id") != workstation_id:
+            reason = (
+                f"Die Statusdatei meldet die Maschinen-ID "
+                f"{snapshot.get('workstation_id')!r} statt {workstation_id!r}."
+            )
+        elif hostname.casefold() not in _local_host_names():
+            reason = (
+                f"Die Statusdatei stammt vom Rechner {hostname!r}, "
+                f"nicht von {_network_host_name()!r}."
+            )
+        elif snapshot.get("agent_status") != "online":
+            reason = f"Der Agent meldet {snapshot.get('agent_status')!r} statt 'online'."
+        elif observed.astimezone(UTC) < started_at:
+            reason = "Die Statusdatei ist älter als der Start des Agenten."
+        else:
+            return
     raise RuntimeError(
-        "Der System-Agent wurde eingerichtet, hat aber keinen aktuellen Online-Status geschrieben. "
+        "Der System-Agent wurde eingerichtet, hat aber keinen aktuellen Online-Status geschrieben.\n"
+        f"{reason}\n"
         "Prüfe die Aufgabenplanung, die Ordnerrechte und "
         f"{setup_paths().data / 'agent.log'}."
     )
@@ -1237,9 +1268,10 @@ class InstallerWindow:
         messagebox.showerror("Installation nicht möglich", detail, parent=self.root)
 
     def _succeeded(self, workstation_id: str, config_path: str) -> None:
-        hostname = os.environ.get("COMPUTERNAME", "ZIELRECHNER")
+        computer = os.environ.get("COMPUTERNAME", "ZIELRECHNER")
         share_result = (
-            f"\nFallback: \\\\{hostname}\\{SHARE_NAME}\nFreigabebenutzer: {hostname}\\{READER_NAME}"
+            f"\nFallback: \\\\{_network_host_name() or computer}\\{SHARE_NAME}"
+            f"\nFreigabebenutzer: {computer}\\{READER_NAME}"
             if self.configure_share.get()
             else "\nSMB-Fallback wurde nicht eingerichtet."
         )

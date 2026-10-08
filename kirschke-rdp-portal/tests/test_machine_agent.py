@@ -96,6 +96,7 @@ def test_ping_latency_stays_in_card_corner_after_agent_refresh(qtbot, monkeypatc
     )
     view = WorkstationCardsWidget([ws], MockUser.create_user())
     qtbot.addWidget(view)
+    view.favorites_filter.setChecked(False)
     card = next(c for c in view._cards if isinstance(c, WorkstationCard))
     monkeypatch.setattr(card, "_ping_latency", lambda: "<1")
     card._on_ping_finished(0, QProcess.NormalExit)
@@ -127,6 +128,7 @@ def test_dashboard_sorts_by_name_and_draws_the_unusable_ones_quieter(qtbot):
     )
     view = WorkstationCardsWidget([grey, blue, green], MockUser.create_user())
     qtbot.addWidget(view)
+    view.favorites_filter.setChecked(False)
     cards = [item for item in view._cards if isinstance(item, WorkstationCard)]
     # Nach Anzeigenamen: Blue, Green, Grey. Der Zustand sortiert nicht mit --
     # eine Karte soll nicht wandern, nur weil jemand sich verbindet.

@@ -54,6 +54,9 @@ def dashboard(qtbot):
         ]
         widget = WorkstationCardsWidget(machines, MockUser.create_user())
         qtbot.addWidget(widget)
+        # Diese Tests pruefen die Reihenfolge aller Maschinen, unabhaengig vom
+        # neuen Favoritenfilter der Startansicht.
+        widget.favorites_filter.setChecked(False)
         # Ohne einen echten Layoutdurchlauf haben alle Karten dieselbe
         # Vorgabegeometrie, und die Treffpruefung beim Ablegen faende immer die
         # erste. Breit genug fuer eine Reihe, damit auch links/rechts zaehlt.

@@ -478,6 +478,46 @@ def test_the_counter_never_runs_past_its_total():
     assert progress.line() == "Schritt 2/2: weiter"
 
 
+def _write_snapshot(directory, **overrides):
+    snapshot = {
+        "workstation_id": "WS-002",
+        "hostname": "Remote-Ettlingen",
+        "agent_status": "online",
+        "observed_at_utc": datetime.now(UTC).isoformat(),
+    }
+    snapshot.update(overrides)
+    (directory / "WS-002.json").write_text(json.dumps(snapshot), encoding="utf-8")
+
+
+@pytest.fixture
+def long_host_name(monkeypatch):
+    """Ein Rechnername über 15 Zeichen: NetBIOS kürzt ihn, DNS nicht."""
+    monkeypatch.setenv("COMPUTERNAME", "REMOTE-ETTLINGE")
+    monkeypatch.setattr(agent_installer.socket, "gethostname", lambda: "Remote-Ettlingen")
+    monkeypatch.setattr(agent_installer, "SNAPSHOT_TIMEOUT_SECONDS", 0.6)
+    monkeypatch.setattr(agent_installer.time, "sleep", lambda seconds: None)
+
+
+def test_a_long_host_name_is_not_mistaken_for_another_machine(tmp_path, long_host_name):
+    """Der Agent meldet den DNS-Namen, %COMPUTERNAME% ist auf 15 Zeichen gekürzt."""
+    started_at = datetime.now(UTC)
+    _write_snapshot(tmp_path)
+
+    agent_installer._confirm_snapshot(tmp_path, "WS-002", started_at)
+
+
+def test_the_failure_names_what_did_not_match(tmp_path, long_host_name):
+    started_at = datetime.now(UTC)
+    _write_snapshot(tmp_path, hostname="NB12KI")
+
+    with pytest.raises(RuntimeError, match="vom Rechner 'NB12KI'"):
+        agent_installer._confirm_snapshot(tmp_path, "WS-002", started_at)
+
+
+def test_shared_paths_use_the_name_the_network_resolves(long_host_name):
+    assert agent_installer._network_host_name() == "Remote-Ettlingen"
+
+
 def test_the_waiting_step_counts_down(tmp_path, monkeypatch):
     """Der Schritt, an dem das Fenster wie eingefroren aussah."""
     seen = []

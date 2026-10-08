@@ -48,8 +48,6 @@ class EntraAuthConfig:
     scopes: list[str] = field(default_factory=lambda: [
         "User.Read",
         "Group.ReadAll",
-        "Sites.Read.All",
-        "Sites.ReadWrite.All",
     ])
     cache_path: str = os.getenv("ENTRA_CACHE_PATH", "")
 
@@ -64,8 +62,6 @@ class EntraAuthConfig:
         scopes = [s.strip() for s in scopes_str.split(",")] if scopes_str else [
             "User.Read",
             "Group.ReadAll",
-            "Sites.Read.All",
-            "Sites.ReadWrite.All",
         ]
 
         # Build authority if not set
