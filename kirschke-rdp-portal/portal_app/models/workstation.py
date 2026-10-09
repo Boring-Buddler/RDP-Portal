@@ -313,6 +313,22 @@ class Workstation:
             allowed_entra_group_ids=self.allowed_entra_group_ids,
         )
 
+    def get_launch_profile(
+        self, default_username: str | None = None, *, entra_user: bool = False
+    ) -> RDPProfileSchema:
+        """Das RDP-Profil für einen Verbindungsstart, mit festgelegtem Ziel.
+
+        Die Karte fragt bei "Automatisch", welches Ziel sich auflösen lässt, und
+        zeigt an einem anderen Standort die IP-Adresse. Generator, Kontoschreib-
+        weise und Webkonto entscheiden aber am Profil ohne Nachfrage -- und
+        nahmen dort den Namen, mit dem mstsc den Computer nicht fand. Deshalb
+        wird das Ziel hier einmal bestimmt und als ausdrückliche Wahl ins
+        Profil geschrieben; alles danach sieht dasselbe Ziel wie die Karte.
+        """
+        profile = self.get_rdp_profile(default_username, entra_user=entra_user)
+        _, mode = self.get_connection_target()
+        return profile.model_copy(update={"connection_target_mode": mode})
+
     def get_connection_target(self) -> tuple[str, ConnectionTargetMode]:
         """Return the concrete target and the address source used by RDP.
 

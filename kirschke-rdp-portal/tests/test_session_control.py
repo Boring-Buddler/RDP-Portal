@@ -772,6 +772,35 @@ def test_a_free_machine_starts_without_any_portal_dialog(monkeypatch):
     window._commit_workstation.assert_not_called()
 
 
+def test_the_start_uses_the_ip_when_the_name_does_not_resolve(monkeypatch):
+    """Der echte Startweg nimmt bei "Automatisch" das Ziel, das die Karte zeigt."""
+    import portal_app.rdp as rdp
+    import portal_app.ui.main_window as module
+    from portal_app.services import rdp_diagnostics
+    from shared import name_resolution
+
+    ws = machine()
+    ws.ip_address = "192.168.20.210"
+    window = SimpleNamespace(current_user=MockUser.create_user(), _record_event=Mock(),
+                             _poll_rdp_sessions=Mock(), _refresh_login_views=Mock(),
+                             _confirm_connection=Mock(return_value=(True, "")),
+                             _report_session_claim=Mock(), _reported_claims=set(),
+                             _fresh_reservation_block_reason=Mock(return_value=""),
+                             _select_login_account=select_login_account,
+                             _persist=Mock(), _refresh_workstation_views=Mock(), _saved_user=None)
+    launcher = Mock(return_value=(True, "started"))
+    monkeypatch.setattr(name_resolution, "resolvable", lambda value: value == "192.168.20.210")
+    monkeypatch.setattr(rdp, "has_active_rdp_session", Mock(return_value=False))
+    monkeypatch.setattr(rdp, "launch_rdp_session", launcher)
+    monkeypatch.setattr(rdp_diagnostics, "saved_server_credential_user", Mock(return_value=None))
+    monkeypatch.setattr(rdp_diagnostics, "saved_rdp_credential_user", Mock(return_value=None))
+    monkeypatch.setattr(module, "QMessageBox", Mock())
+
+    module.MainWindow.on_connect_requested(window, ws)
+
+    assert launcher.call_args.args[0].resolve_connection_target()[0] == "192.168.20.210"
+
+
 def test_a_generated_portal_id_no_longer_blocks_the_logoff(native):
     """Der Livestatus akzeptierte den Hostnamen, die Abmeldung nicht -- jetzt beide."""
     native.snapshot.workstation_id = native.ended.workstation_id = "NB05"

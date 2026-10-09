@@ -223,7 +223,11 @@ from __future__ import annotations
 # bleibt eine Einstellung unter "Bearbeiten". Warnungen bei belegter oder
 # gebuchter Maschine und bei gespeicherten Anmeldedaten eines anderen Kontos
 # bleiben.
-PORTAL_VERSION = "0.9.6"
+# 0.9.7: bei Verbindungsziel "Automatisch" startet die Verbindung mit dem
+# Ziel, das die Karte anzeigt. Die Karte prüfte die Namensauflösung und
+# zeigte am anderen Standort die IP, der Start schrieb aber trotzdem den
+# Namen in die .rdp-Datei, und mstsc fand den Computer nicht.
+PORTAL_VERSION = "0.9.7"
 # 1.4.0: every reported session carries its account SID, so the portal no longer
 # has to resolve Entra names against a cache that may not know them.
 # 1.6.1 (agent setup): das Setup kann auf Wunsch zusätzlich die beschreibbare

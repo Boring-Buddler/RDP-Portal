@@ -95,6 +95,16 @@ def rdp_profile(workstation: Workstation, user: MockUser) -> RDPProfileSchema:
     )
 
 
+def rdp_launch_profile(workstation: Workstation, user: MockUser) -> RDPProfileSchema:
+    """Wie ``rdp_profile``, aber mit dem Ziel, das die Karte anzeigt.
+
+    Siehe ``Workstation.get_launch_profile``.
+    """
+    return workstation.get_launch_profile(
+        user.get_rdp_username(), entra_user=user.windows_account().is_entra
+    )
+
+
 def _saved_credentials_allow_launch(
     parent: QWidget, profile: RDPProfileSchema, target: str
 ) -> bool:
@@ -2479,7 +2489,7 @@ class MainWindow(QMainWindow):
         if not proceed:
             return
         try:
-            profile = rdp_profile(workstation, self.current_user)
+            profile = rdp_launch_profile(workstation, self.current_user)
             target, _ = profile.resolve_connection_target()
             # Auf einer freien Maschine startet ein Klick die Verbindung ohne
             # eigene Rückfrage. Die Serveridentität prüft Windows selbst und

@@ -9,6 +9,7 @@ Computer PC07 nicht finden", während die daneben stehende IP funktioniert hätt
 import pytest
 
 from portal_app.models.workstation import Workstation
+from portal_app.rdp.generator import RDPFileGenerator
 from shared import name_resolution
 from shared.enums import ConnectionTargetMode
 
@@ -92,6 +93,37 @@ def test_the_fqdn_stays_ahead_of_the_short_name():
     )
 
     assert (target, mode) == ("pc07.kirschke.local", ConnectionTargetMode.FQDN)
+
+
+def test_the_launch_profile_carries_the_target_the_card_shows(monkeypatch):
+    r"""Am anderen Standort zeigt die Karte die IP -- und genau die steht in der Datei.
+
+    Vorher entschied der Start ohne Nachfrage, nahm den Namen und mstsc fand den
+    Computer nicht. Mit der IP entfällt das Webkonto, und das Entra-Konto
+    braucht die Schreibweise AzureAD\name.
+    """
+    monkeypatch.setattr(name_resolution, "resolvable", only("192.168.20.210"))
+    ws = machine(ip_address="192.168.20.210", entra_sso_enabled=True,
+                 username_hint="becker@prof-kirschke.de")
+    assert ws.get_connection_target()[0] == "192.168.20.210"
+
+    content = RDPFileGenerator()._generate_content(ws.get_launch_profile())
+
+    assert "full address:s:192.168.20.210" in content
+    assert "enablerdsaadauth:i:0" in content
+    assert r"username:s:AzureAD\becker@prof-kirschke.de" in content
+
+
+def test_the_launch_profile_keeps_a_resolvable_name(monkeypatch):
+    monkeypatch.setattr(name_resolution, "resolvable", only("PC07", "192.168.20.210"))
+    ws = machine(ip_address="192.168.20.210", entra_sso_enabled=True,
+                 username_hint="becker@prof-kirschke.de")
+
+    content = RDPFileGenerator()._generate_content(ws.get_launch_profile())
+
+    assert "full address:s:PC07" in content
+    assert "enablerdsaadauth:i:1" in content
+    assert "username:s:becker@prof-kirschke.de" in content
 
 
 def test_nothing_resolvable_falls_back_to_the_old_order():

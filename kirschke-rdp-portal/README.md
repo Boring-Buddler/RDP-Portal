@@ -1,6 +1,6 @@
 # Kirschke RDP Workstation Portal
 
-**Version:** Portal 0.9.6 · Agent 1.7.3
+**Version:** Portal 0.9.7 · Agent 1.7.3
 
 **Diagramme:** [Programmaufbau und Signalkette](docs/programmaufbau-und-signalkette.md) ·
 [Anmeldung, Abmeldung und Statusmeldungen](docs/anmeldung-abmeldung-und-statusmeldungen.md)
@@ -27,6 +27,15 @@ Filtern.
 Läuft deine eigene Sitzung auf einer Maschine, ohne dass ein Portal-Fenster
 offen ist, bleibt der Kartenrand durchgehend blau und das **PC-Symbol wird
 orange**. Die fremde Sitzung ohne Fenster bleibt violett/orange gestrichelt.
+
+**„Automatisch“ verbindet mit dem angezeigten Ziel (0.9.7).** Lässt sich der
+Name einer Maschine nicht auflösen, etwa an einem anderen Standort ohne
+gemeinsames DNS, zeigt die Karte die IP-Adresse – und mit genau dieser wird
+jetzt auch verbunden. Bisher stand trotzdem der Name in der `.rdp`-Datei, und
+Remotedesktop fand den Computer nicht. Über die IP entfällt das Webkonto; das
+Entra-Konto wird dann als `AzureAD\name@firma.de` übergeben, und Windows fragt
+das Kennwort ab. Ein Zertifikat, das nur auf den Namen ausgestellt ist, passt
+dabei nicht; Windows zeigt deshalb seine Zertifikatswarnung.
 
 **Verbinden ohne Rückfragen des Portals (0.9.6).** Auf einer freien Maschine
 startet ein Klick auf **Verbinden** direkt Remotedesktop; Windows fragt dann
