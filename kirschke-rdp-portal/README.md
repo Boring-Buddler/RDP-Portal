@@ -1,6 +1,6 @@
 # Kirschke RDP Workstation Portal
 
-**Version:** Portal 0.9.7 · Agent 1.7.3
+**Version:** Portal 0.9.8 · Agent 1.7.3
 
 **Diagramme:** [Programmaufbau und Signalkette](docs/programmaufbau-und-signalkette.md) ·
 [Anmeldung, Abmeldung und Statusmeldungen](docs/anmeldung-abmeldung-und-statusmeldungen.md)
@@ -27,6 +27,18 @@ Filtern.
 Läuft deine eigene Sitzung auf einer Maschine, ohne dass ein Portal-Fenster
 offen ist, bleibt der Kartenrand durchgehend blau und das **PC-Symbol wird
 orange**. Die fremde Sitzung ohne Fenster bleibt violett/orange gestrichelt.
+
+**Startinventar für neue Installationen (0.9.8).** Ein Portal, das zum ersten
+Mal startet und noch keinen eigenen Stand hat, übernimmt die mitgelieferten
+Maschinen NB13KI, Remote-Ettlingen, PC07, NB12KI und PC12 – niemand muss sie
+mehr einzeln anlegen. Danach gehört der Stand dem Portal; spätere Pakete
+ändern ihn nicht. Wer schon Maschinen hat oder ein gemeinsames Inventar nutzt,
+merkt davon nichts. Das Startinventar enthält nur, was eine Maschine
+beschreibt (Name, Hostname, IP, Standort, Verbindungseinstellungen), keine
+Anmeldenamen, Reservierungen oder Ausnahmen. Neu erzeugen lässt es sich aus
+einem eigenen Stand mit
+`python deployment/build_start_inventory.py <pfad>\portal-state.json`; das
+Skript übernimmt nur Felder einer Positivliste und zeigt an, was es weglässt.
 
 **„Automatisch“ verbindet mit dem angezeigten Ziel (0.9.7).** Lässt sich der
 Name einer Maschine nicht auflösen, etwa an einem anderen Standort ohne

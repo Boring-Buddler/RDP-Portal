@@ -517,15 +517,20 @@ def test_dark_theme_has_high_contrast_palette():
     assert "QComboBox QAbstractItemView" in style
 
 
-def test_main_window_starts_without_demo_targets_and_persists_theme(tmp_path, monkeypatch, qtbot):
+def test_main_window_starts_with_the_start_inventory_and_persists_theme(tmp_path, monkeypatch, qtbot):
+    """Ein neues Portal zeigt die mitgelieferten echten Maschinen, nie Demo-Ziele."""
+    from portal_app.services.start_inventory import load_start_inventory
+
     store = LocalStore(tmp_path / "state.json")
     monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
     window = MainWindow(automatic_live_status=False)
     qtbot.addWidget(window)
 
-    assert window.workstations == []
+    expected = [ws.workstation_id for ws in load_start_inventory()]
+    assert [ws.workstation_id for ws in window.workstations] == expected
     assert not hasattr(window, "rdp_warning_banner")
-    assert json.loads(store.path.read_text(encoding="utf-8"))["workstations"] == []
+    saved = json.loads(store.path.read_text(encoding="utf-8"))["workstations"]
+    assert [item["workstation_id"] for item in saved] == expected
     window._set_dark_mode(True)
 
     assert window.dark_mode

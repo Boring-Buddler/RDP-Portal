@@ -10,6 +10,8 @@ $workRoot = Join-Path $projectRoot "build"
 $specRoot = Join-Path $projectRoot "build-spec"
 $entryPoint = Join-Path $projectRoot "portal_app\app.py"
 $assets = Join-Path $projectRoot "portal_app\ui\assets"
+# Startinventar fuer den ersten Start, siehe portal_app/services/start_inventory.py.
+$data = Join-Path $projectRoot "portal_app\data"
 # Ohne --icon traegt die EXE das PyInstaller-Standardsymbol. Das ist das
 # Symbol, das die Taskleiste, der Explorer und jede Verknuepfung zeigen --
 # setWindowIcon zur Laufzeit erreicht keines davon.
@@ -31,6 +33,7 @@ $arguments = @(
     "--icon", $icon,
     "--paths", $projectRoot,
     "--add-data", "$assets;portal_app\ui\assets",
+    "--add-data", "$data;portal_app\data",
     "--distpath", $outputRoot,
     "--workpath", $workRoot,
     "--specpath", $specRoot

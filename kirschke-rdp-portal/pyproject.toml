@@ -103,6 +103,7 @@ ignore = [
 # Console entry points: stdout is their interface, not a stray debug print.
 "portal_app/preflight.py" = ["T201"]
 "deployment/package_pilot.py" = ["T201"]
+"deployment/build_start_inventory.py" = ["T201"]
 # Test fixtures legitimately contain sample passwords.
 "tests/**" = ["S105", "S106"]
 

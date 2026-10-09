@@ -54,6 +54,7 @@ from portal_app.services.local_store import (
 )
 from portal_app.services.reservation_access import apply_reservations
 from portal_app.services.session_claims import BackgroundSessionClaimReporter
+from portal_app.services.start_inventory import load_start_inventory
 from portal_app.services.store_watch import StoreChangeProbe
 from portal_app.services.windows_admin_auth import (
     check_windows_admin_authorization,
@@ -420,7 +421,10 @@ class MainWindow(QMainWindow):
                 logger.info("Freigabe %s: %s", folder, message)
 
     def _load_data(self) -> None:
-        fallback: list[Workstation] = []  # A new pilot must not offer fictitious targets as real PCs.
+        # Ohne eigenen Stand beginnt ein Portal mit dem mitgelieferten
+        # Startinventar: echte Maschinen statt eines leeren Fensters, und nie
+        # erfundene Ziele. Ein vorhandener Stand geht immer vor.
+        fallback: list[Workstation] = load_start_inventory()
         if self._automatic_live_status_enabled:
             self._prepare_shared_folders()
         try:

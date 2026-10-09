@@ -227,7 +227,12 @@ from __future__ import annotations
 # Ziel, das die Karte anzeigt. Die Karte prüfte die Namensauflösung und
 # zeigte am anderen Standort die IP, der Start schrieb aber trotzdem den
 # Namen in die .rdp-Datei, und mstsc fand den Computer nicht.
-PORTAL_VERSION = "0.9.7"
+# 0.9.8: ein neu installiertes Portal ohne eigenen Stand beginnt mit dem
+# mitgelieferten Startinventar (portal_app/data/start-inventar.json):
+# NB13KI, Remote-Ettlingen, PC07, NB12KI und PC12. Übernommen werden nur
+# Felder, die eine Maschine beschreiben, nie Anmeldenamen. Ein vorhandener
+# Stand und ein gemeinsames Inventar bleiben unberührt.
+PORTAL_VERSION = "0.9.8"
 # 1.4.0: every reported session carries its account SID, so the portal no longer
 # has to resolve Entra names against a cache that may not know them.
 # 1.6.1 (agent setup): das Setup kann auf Wunsch zusätzlich die beschreibbare

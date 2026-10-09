@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "workstations": [
+    {
+      "workstation_id": "WS-001",
+      "display_name": "NB13KI",
+      "hostname": "NB13KI",
+      "ip_address": "192.168.2.57",
+      "connection_target_mode": "auto",
+      "site": "Ettlingen",
+      "enabled": true
+    },
+    {
+      "workstation_id": "WS-002",
+      "display_name": "Remote-Ettlingen",
+      "hostname": "Remote-Ettlingen",
+      "ip_address": "192.168.2.66",
+      "connection_target_mode": "auto",
+      "site": "Ettlingen",
+      "enabled": true
+    },
+    {
+      "workstation_id": "WS-003",
+      "display_name": "PC07",
+      "hostname": "PC07",
+      "ip_address": "192.168.20.210",
+      "connection_target_mode": "auto",
+      "site": "München",
+      "enabled": true
+    },
+    {
+      "workstation_id": "WS-004",
+      "display_name": "NB12KI",
+      "hostname": "NB12KI",
+      "ip_address": "192.168.2.77",
+      "connection_target_mode": "auto",
+      "site": "Ettlingen",
+      "enabled": true
+    },
+    {
+      "workstation_id": "WS-005",
+      "display_name": "PC12 CB",
+      "hostname": "PC12",
+      "ip_address": "192.168.2.76",
+      "connection_target_mode": "auto",
+      "site": "Ettlingen",
+      "enabled": true
+    }
+  ]
+}
