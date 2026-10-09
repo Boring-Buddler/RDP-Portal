@@ -9,12 +9,15 @@ fremde .rdp-Datei aus einem Mailanhang.
 
 Festlegungen, siehe ``docs/rdp-signatur-plan.md``:
 
-* Der SHA-256-Fingerabdruck steht in ``HKLM\\SOFTWARE\\Kirschke\\RDPPortal``
+* Der Fingerabdruck steht in ``HKLM\\SOFTWARE\\Kirschke\\RDPPortal``
   (``SigningThumbprint``), geschrieben von
   ``deployment/certificates/Install-RdpSigning.ps1``. Ohne Eintrag wird nicht
   signiert, und der Start verhält sich wie vorher.
-* ``rdpsign`` findet das Zertifikat nur im Computerspeicher
-  (``LocalMachine\\My``); im Benutzerspeicher meldet es 0x80092004.
+* ``rdpsign /sha256`` erwartet trotz des Namens den **SHA-1**-Fingerabdruck
+  (``Thumbprint``, 40 Zeichen); ``/sha256`` meint das Signaturverfahren. Mit
+  dem SHA-256-Wert meldet es 0x80092004, "nicht gefunden" -- so geschehen
+  mit 0.9.9. Ein solcher alter Eintrag wird abgelehnt und gemeldet.
+* Das Zertifikat liegt im Computerspeicher (``LocalMachine\\My``).
 * Die Signatur ist Komfort, kein Schutz, auf den das Portal angewiesen ist.
   Scheitert sie, wird die unveränderte Datei gestartet und das protokolliert.
 * Nach dem Signieren wird die Datei nicht mehr verändert, sonst bricht die
@@ -39,11 +42,12 @@ REGISTRY_VALUE = "SigningThumbprint"
 #: und die Verbindung soll trotzdem starten.
 SIGN_TIMEOUT_SECONDS = 5.0
 
+_SHA1 = re.compile(r"[0-9A-F]{40}")
 _SHA256 = re.compile(r"[0-9A-F]{64}")
 
 
 def configured_thumbprint() -> str | None:
-    """Der SHA-256-Fingerabdruck aus der Registry, oder None ohne gültigen Eintrag."""
+    """Der SHA-1-Fingerabdruck aus der Registry, oder None ohne gültigen Eintrag."""
     try:
         import winreg
     except ImportError:  # kein Windows
@@ -57,14 +61,19 @@ def configured_thumbprint() -> str | None:
 
 
 def normalise_thumbprint(value: object) -> str | None:
-    """Großbuchstaben ohne Leerzeichen; None, wenn es kein SHA-256-Wert ist."""
+    """Großbuchstaben ohne Leerzeichen; None, wenn es kein SHA-1-Fingerabdruck ist."""
     if not isinstance(value, str):
         return None
     text = re.sub(r"\s", "", value).upper()
-    if _SHA256.fullmatch(text):
+    if _SHA1.fullmatch(text):
         return text
-    if text:
-        logger.warning("Signatur-Fingerabdruck in der Registry ist kein SHA-256-Wert")
+    if _SHA256.fullmatch(text):
+        logger.warning(
+            "Signatur-Fingerabdruck ist ein SHA-256-Wert (Portal 0.9.9); rdpsign "
+            "braucht den SHA-1-Fingerabdruck. Install-RdpSigning.ps1 erneut ausführen."
+        )
+    elif text:
+        logger.warning("Signatur-Fingerabdruck in der Registry ist kein SHA-1-Wert")
     return None
 
 

@@ -2,15 +2,20 @@
 
 Stand: 16.09.2026 · Portal 0.6.1 · betrifft den Verbindungsstart, nicht den Agenten
 
-> **Umgesetzt in Portal 0.9.9 (09.10.2026)**, Einrichtung siehe
-> [rdp-signatur-einrichtung.md](rdp-signatur-einrichtung.md). Abweichungen von
-> diesem Plan:
+> **Umgesetzt in Portal 0.9.9, korrigiert in 0.9.10 (09.10.2026)**, Einrichtung
+> siehe [rdp-signatur-einrichtung.md](rdp-signatur-einrichtung.md). Abweichungen
+> von diesem Plan:
 > - **Variante B statt A:** Das Signaturzertifikat stellt die inzwischen
 >   vorhandene Kirschke RDP Root CA aus (`deployment/certificates/New-RdpSigningCert.ps1`).
-> - **Offener Punkt 1 geklärt:** `rdpsign` findet das Zertifikat nicht im
->   Benutzerspeicher (0x80092004), es gehört nach `LocalMachine\My`. Weil das
+> - **Offener Punkt 3 – der Plan lag falsch:** `rdpsign /sha256` erwartet den
+>   **SHA-1**-Fingerabdruck (`Thumbprint`); `/sha256` bezeichnet das
+>   Signaturverfahren. Mit dem SHA-256-Wert meldet es 0x80092004 („nicht
+>   gefunden“). Portal und Richtlinie verwenden also denselben SHA-1-Wert. Die
+>   Abschnitte AP1/AP2 unten sind in diesem Punkt überholt.
+> - **Offener Punkt 1:** Das Zertifikat liegt in `LocalMachine\My`. Weil das
 >   Portal ohne Adminrechte signiert, bekommt die Gruppe *Benutzer* Leserecht auf
->   den Schlüssel.
+>   den Schlüssel. Ob `rdpsign` auch den Benutzerspeicher nimmt, ist offen – der
+>   frühere Labortest dazu lief mit dem falschen Fingerabdruck.
 > - **Offener Punkt 2 umgangen:** Vor dem Signieren schreibt das Portal die Datei
 >   in UTF-16LE, der üblichen Kodierung von `.rdp`-Dateien.
 > - **Kein Import nach `TrustedPublisher`:** Für `.rdp`-Dateien genügt die

@@ -63,12 +63,10 @@ try {
     Remove-Item -LiteralPath ('Cert:\LocalMachine\My\' + $signing.Thumbprint) -DeleteKey
 }
 
-$sha256 = [BitConverter]::ToString($signing.GetCertHash('SHA256')).Replace('-', '')
 ''
 "Signaturzertifikat:  $($signing.Subject)"
 "Gueltig bis:         $($signing.NotAfter.ToString('dd.MM.yyyy'))"
-"SHA-1  (Richtlinie): $($signing.Thumbprint)"
-"SHA-256 (rdpsign):   $sha256"
+"Fingerabdruck:       $($signing.Thumbprint)  (SHA-1, fuer rdpsign und Richtlinie)"
 ''
 "Mit Schluessel:  $pfx"
 "Oeffentlich:     $cer"

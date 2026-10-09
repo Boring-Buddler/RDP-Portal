@@ -49,10 +49,10 @@ powershell -ExecutionPolicy Bypass -File .\Install-RdpSigning.ps1 -CerPath E:\Ki
 Das Skript
 
 1. legt das Zertifikat in den Computerspeicher (`LocalMachine\My`), den
-   Schlüssel nicht exportierbar – `rdpsign` sucht nur dort,
+   Schlüssel nicht exportierbar,
 2. gibt der Gruppe *Benutzer* Leserecht auf den Schlüssel, weil das Portal
    ohne Administratorrechte signiert,
-3. trägt den SHA-256-Fingerabdruck unter
+3. trägt den SHA-1-Fingerabdruck (`Thumbprint`) unter
    `HKLM\SOFTWARE\Kirschke\RDPPortal\SigningThumbprint` ein,
 4. signiert eine Testdatei und meldet **„Probe: Testdatei erfolgreich
    signiert.“**,
@@ -62,6 +62,11 @@ Das Skript
 
 Ein PC, der nur die Vertrauensrichtlinie braucht, bekommt das Skript ohne
 `-PfxPath`.
+
+**Wer das Skript aus Portal 0.9.9 benutzt hat:** Es trug den SHA-256-Wert ein,
+und die Probe scheiterte mit `0x80092004`. `rdpsign /sha256` erwartet trotz des
+Namens den SHA-1-Fingerabdruck. Das Skript aus 0.9.10 einfach mit denselben
+Dateien erneut ausführen; es überschreibt den Eintrag.
 
 ## 3. Prüfen
 

@@ -13,7 +13,7 @@ from portal_app.rdp import signing
 from portal_app.rdp.generator import RDPFileGenerator
 from portal_app.rdp.launcher import RDPSessionLauncher
 
-THUMBPRINT = "AB" * 32
+THUMBPRINT = "165F69F04012E250EF3E1864D43FE9E19DDB6D67"  # SHA-1, wie rdpsign ihn will
 CONTENT = "full address:s:Remote-Ettlingen\nscreen mode id:i:1\n"
 
 
@@ -92,13 +92,19 @@ def test_a_missing_rdpsign_skips_the_signature(rdp_file, monkeypatch):
     run.assert_not_called()
 
 
-@pytest.mark.parametrize("value", [None, "", "zu-kurz", "AB" * 20, 42, "G" * 64])
-def test_only_a_sha256_thumbprint_counts(value):
+@pytest.mark.parametrize("value", [None, "", "zu-kurz", "AB" * 19, 42, "G" * 40])
+def test_only_a_sha1_thumbprint_counts(value):
     assert signing.normalise_thumbprint(value) is None
 
 
+def test_a_sha256_value_from_0_9_9_is_rejected_with_a_hint(caplog):
+    """rdpsign /sha256 sucht mit dem SHA-1-Wert; mit SHA-256 kam 0x80092004."""
+    assert signing.normalise_thumbprint("F7D04811C1A4D171AF0F57DB059012E1D1A5AED3572996D08E3E0648DF0C42F5") is None
+    assert "Install-RdpSigning.ps1 erneut" in caplog.text
+
+
 def test_spaces_and_case_are_normalised():
-    spaced = " ".join(THUMBPRINT[i:i + 2].lower() for i in range(0, 64, 2))
+    spaced = " ".join(THUMBPRINT[i:i + 2].lower() for i in range(0, 40, 2))
     assert signing.normalise_thumbprint(spaced) == THUMBPRINT
 
 

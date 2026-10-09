@@ -1,6 +1,6 @@
 # Kirschke RDP Workstation Portal
 
-**Version:** Portal 0.9.9 · Agent 1.7.3
+**Version:** Portal 0.9.10 · Agent 1.7.3
 
 **Diagramme:** [Programmaufbau und Signalkette](docs/programmaufbau-und-signalkette.md) ·
 [Anmeldung, Abmeldung und Statusmeldungen](docs/anmeldung-abmeldung-und-statusmeldungen.md)
@@ -27,6 +27,11 @@ Filtern.
 Läuft deine eigene Sitzung auf einer Maschine, ohne dass ein Portal-Fenster
 offen ist, bleibt der Kartenrand durchgehend blau und das **PC-Symbol wird
 orange**. Die fremde Sitzung ohne Fenster bleibt violett/orange gestrichelt.
+
+**Signatur korrigiert (0.9.10).** `rdpsign /sha256` erwartet trotz des Namens den
+SHA-1-Fingerabdruck. 0.9.9 trug den SHA-256-Wert ein, und das Signieren scheiterte
+mit `0x80092004`. Wer `Install-RdpSigning.ps1` aus 0.9.9 ausgeführt hat, führt das
+Skript aus 0.9.10 mit denselben Dateien erneut aus.
 
 **Signierte .rdp-Dateien (0.9.9).** Ist auf dem PC das Signaturzertifikat
 eingerichtet, signiert das Portal jede Verbindungsdatei mit `rdpsign.exe`. Statt

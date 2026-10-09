@@ -236,7 +236,10 @@ from __future__ import annotations
 # HKLM\SOFTWARE\Kirschke\RDPPortal ein Signaturzertifikat eingetragen ist
 # (deployment/certificates). Scheitert das Signieren, startet die
 # Verbindung unsigniert wie bisher.
-PORTAL_VERSION = "0.9.9"
+# 0.9.10: rdpsign /sha256 erwartet trotz des Namens den SHA-1-Fingerabdruck.
+# 0.9.9 trug den SHA-256-Wert ein, und rdpsign meldete 0x80092004. Ein alter
+# SHA-256-Eintrag wird jetzt abgelehnt und im Protokoll gemeldet.
+PORTAL_VERSION = "0.9.10"
 # 1.4.0: every reported session carries its account SID, so the portal no longer
 # has to resolve Entra names against a cache that may not know them.
 # 1.6.1 (agent setup): das Setup kann auf Wunsch zusätzlich die beschreibbare

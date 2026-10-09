@@ -10,8 +10,9 @@
          rdpsign sucht nur im Computerspeicher.
       2. Leserecht auf den Schluessel fuer "Benutzer" (S-1-5-32-545), weil das
          Portal ohne Administratorrechte signiert.
-      3. SHA-256-Fingerabdruck nach HKLM\SOFTWARE\Kirschke\RDPPortal
+      3. SHA-1-Fingerabdruck nach HKLM\SOFTWARE\Kirschke\RDPPortal
          (SigningThumbprint). Daran erkennt das Portal, dass es signieren soll.
+         rdpsign /sha256 erwartet trotz des Namens den SHA-1-Fingerabdruck.
       4. Probe: eine Testdatei signieren.
 
     Immer:
@@ -50,7 +51,6 @@ if (-not $chain.Build($public)) {
     throw 'Die Kirschke RDP Root CA ist auf diesem PC nicht vertrauenswuerdig. Zuerst die Root importieren.'
 }
 $sha1 = $public.Thumbprint.ToUpperInvariant()
-$sha256 = [BitConverter]::ToString($public.GetCertHash('SHA256')).Replace('-', '')
 "Signaturzertifikat: $($public.Subject), gueltig bis $($public.NotAfter.ToString('dd.MM.yyyy'))"
 
 if ($PfxPath) {
@@ -72,8 +72,8 @@ if ($PfxPath) {
 
     $portalKey = 'HKLM:\SOFTWARE\Kirschke\RDPPortal'
     New-Item -Path $portalKey -Force | Out-Null
-    New-ItemProperty -Path $portalKey -Name 'SigningThumbprint' -Value $sha256 -PropertyType String -Force | Out-Null
-    "Portal signiert ab dem naechsten Start mit SHA-256 $sha256"
+    New-ItemProperty -Path $portalKey -Name 'SigningThumbprint' -Value $sha1 -PropertyType String -Force | Out-Null
+    "Portal signiert ab dem naechsten Start mit $sha1"
 
     $probe = Join-Path $env:TEMP ("kirschke-signaturprobe-{0}.rdp" -f [guid]::NewGuid().ToString('N'))
     try {
@@ -81,7 +81,7 @@ if ($PfxPath) {
         $rdpsign = Join-Path $env:SystemRoot 'System32\rdpsign.exe'
         # Fehlerausgabe eines nativen Programms ist unter 'Stop' sonst ein Abbruch.
         $ErrorActionPreference = 'Continue'
-        $output = & $rdpsign '/sha256' $sha256 '/q' $probe 2>&1
+        $output = & $rdpsign '/sha256' $sha1 '/q' $probe 2>&1
         $exitCode = $LASTEXITCODE
         $ErrorActionPreference = 'Stop'
         $signed = [IO.File]::ReadAllText($probe) -match 'signature:s:'
