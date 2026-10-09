@@ -1,6 +1,6 @@
 # Kirschke RDP Workstation Portal
 
-**Version:** Portal 0.9.5 · Agent 1.7.3
+**Version:** Portal 0.9.6 · Agent 1.7.3
 
 **Diagramme:** [Programmaufbau und Signalkette](docs/programmaufbau-und-signalkette.md) ·
 [Anmeldung, Abmeldung und Statusmeldungen](docs/anmeldung-abmeldung-und-statusmeldungen.md)
@@ -27,6 +27,19 @@ Filtern.
 Läuft deine eigene Sitzung auf einer Maschine, ohne dass ein Portal-Fenster
 offen ist, bleibt der Kartenrand durchgehend blau und das **PC-Symbol wird
 orange**. Die fremde Sitzung ohne Fenster bleibt violett/orange gestrichelt.
+
+**Verbinden ohne Rückfragen des Portals (0.9.6).** Auf einer freien Maschine
+startet ein Klick auf **Verbinden** direkt Remotedesktop; Windows fragt dann
+höchstens nach dem Kennwort. Entfallen sind die Rückfragen „Serveridentität
+bestätigen“ und „IP-Verbindung ohne Webkonto“ sowie die Meldung „Verbindung
+gestartet“. Die Serveridentität prüft Windows selbst: Hat der Zielrechner ein
+Zertifikat der eigenen RDP-Zertifizierungsstelle und wird über den Namen im
+Zertifikat verbunden, kommt keine Warnung; sonst zeigt Windows seine eigene.
+Die Ausnahme „Serveridentität“ gibt es weiterhin, aber nur noch bewusst unter
+**Bearbeiten**. Dass bei einer IP-Adresse das Webkonto entfällt, zeigt die
+Detailansicht. Gewarnt wird weiterhin, wenn die Maschine belegt oder für
+jemand anderen gebucht ist und wenn Windows für das Ziel Anmeldedaten eines
+anderen Kontos gespeichert hat.
 
 **Anmelden als gilt.** Verbunden wird mit genau dem Konto, das im Dropdown
 steht. Bisher ersetzte das Portal es bei einer fremden Sitzung still durch das

@@ -2481,47 +2481,17 @@ class MainWindow(QMainWindow):
         try:
             profile = rdp_profile(workstation, self.current_user)
             target, _ = profile.resolve_connection_target()
+            # Auf einer freien Maschine startet ein Klick die Verbindung ohne
+            # eigene Rückfrage. Die Serveridentität prüft Windows selbst und
+            # warnt nur, wenn das Zertifikat nicht passt; die Ausnahme dafür
+            # bleibt eine bewusste Einstellung unter "Bearbeiten". Dass das
+            # Webkonto bei einer IP-Adresse entfällt, steht in der Detailansicht.
             if profile.entra_sso_enabled and not profile.effective_entra_sso_enabled():
-                answer = QMessageBox.question(
-                    self,
-                    "IP-Verbindung ohne Webkonto",
-                    f"{workstation.display_name} wird direkt über {target} verbunden.\n\n"
-                    "Windows unterstützt die Webkonto-/Entra-Anmeldung nicht mit einer IP-Adresse. "
-                    "Die App deaktiviert sie deshalb für diesen Start; Windows fragt stattdessen "
-                    "klassische Anmeldedaten ab.\n\nVerbindung trotzdem starten?",
-                    QMessageBox.Yes | QMessageBox.Cancel,
-                    QMessageBox.Yes,
+                logger.info(
+                    "Webkonto für %s entfällt, Ziel ist die IP-Adresse %s",
+                    workstation.display_name,
+                    target,
                 )
-                if answer != QMessageBox.Yes:
-                    return
-            if not profile.trust_unverified_server:
-                confirmation = QMessageBox(self)
-                confirmation.setIcon(QMessageBox.Warning)
-                confirmation.setWindowTitle("Serveridentität bestätigen")
-                confirmation.setText(
-                    f"Für {workstation.display_name} ({target}) wurde die Serveridentität vom Portal noch nicht geprüft."
-                )
-                confirmation.setInformativeText(
-                    "Windows prüft beim Verbindungsaufbau das Serverzertifikat. "
-                    "Eine gespeicherte Ausnahme schaltet diese Prüfung für diese Maschine ab."
-                )
-                show_warning = confirmation.addButton(
-                    "Windows-Warnung anzeigen", QMessageBox.ActionRole
-                )
-                trust_server = confirmation.addButton(
-                    "Vertrauen und künftig überspringen", QMessageBox.AcceptRole
-                )
-                confirmation.addButton(QMessageBox.Cancel)
-                confirmation.setDefaultButton(show_warning)
-                confirmation.exec()
-                if confirmation.clickedButton() == trust_server:
-                    workstation.trust_unverified_server = True
-                    self._commit_workstation(workstation)
-                    self._persist()
-                    self._refresh_workstation_views()
-                    profile = rdp_profile(workstation, self.current_user)
-                elif confirmation.clickedButton() != show_warning:
-                    return
             # Zwischen der Rückfrage und diesem Punkt können Dialoge lange offen
             # gestanden haben. Noch einmal gefragt wird nur, wenn in dieser Zeit
             # eine Buchung dazugekommen ist -- sonst wäre es zweimal dieselbe Frage.
@@ -2560,12 +2530,8 @@ class MainWindow(QMainWindow):
                     self._saved_user = deepcopy(self.current_user)
                     self._persist()
                     self._refresh_workstation_views()
+                # Keine Bestätigung: Das Remotedesktopfenster ist die Rückmeldung.
                 self._poll_rdp_sessions()
-                QMessageBox.information(
-                    self,
-                    "Verbindung gestartet",
-                    f"Die RDP-Verbindung zu {workstation.display_name} wird über {target} gestartet.",
-                )
             else:
                 self._record_event(workstation, EventType.LAUNCH_REQUESTED, EventResult.FAILED, message)
                 QMessageBox.critical(self, "Verbindung fehlgeschlagen", message)

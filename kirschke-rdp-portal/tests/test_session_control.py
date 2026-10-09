@@ -729,6 +729,49 @@ def test_several_foreign_sessions_do_not_replace_the_chosen_account(monkeypatch)
     assert launcher.call_args.args[0].username_hint == "OTHER\\tester"
 
 
+def test_a_free_machine_starts_without_any_portal_dialog(monkeypatch):
+    """Ein Klick auf Verbinden startet direkt -- ohne Rueckfrage und ohne Bestaetigung.
+
+    Frueher fragte das Portal bei jeder Maschine ohne Ausnahme nach der
+    Serveridentitaet, bei einer IP-Adresse zusaetzlich nach dem Webkonto, und
+    meldete danach "Verbindung gestartet". Die Serveridentitaet prueft Windows
+    selbst; die Ausnahme dafuer setzt der Rueckfrageweg nicht mehr nebenbei.
+    """
+    import portal_app.rdp as rdp
+    import portal_app.ui.main_window as module
+    from portal_app.services import rdp_diagnostics
+
+    ws = machine()
+    ws.hostname = "192.168.2.66"
+    ws.entra_sso_enabled = True
+    assert ws.trust_unverified_server is False
+    window = SimpleNamespace(current_user=MockUser.create_user(), _record_event=Mock(),
+                             _poll_rdp_sessions=Mock(), _refresh_login_views=Mock(),
+                             _confirm_connection=Mock(return_value=(True, "")),
+                             _report_session_claim=Mock(), _reported_claims=set(),
+                             _fresh_reservation_block_reason=Mock(return_value=""),
+                             _select_login_account=select_login_account,
+                             _commit_workstation=Mock(),
+                             _persist=Mock(), _refresh_workstation_views=Mock(), _saved_user=None)
+    launcher = Mock(return_value=(True, "started"))
+    dialogs = Mock()
+    monkeypatch.setattr(rdp, "has_active_rdp_session", Mock(return_value=False))
+    monkeypatch.setattr(rdp, "launch_rdp_session", launcher)
+    monkeypatch.setattr(rdp_diagnostics, "saved_server_credential_user", Mock(return_value=None))
+    monkeypatch.setattr(rdp_diagnostics, "saved_rdp_credential_user", Mock(return_value=None))
+    monkeypatch.setattr(module, "QMessageBox", dialogs)
+
+    module.MainWindow.on_connect_requested(window, ws)
+
+    assert dialogs.mock_calls == []
+    assert launcher.call_count == 1
+    profile = launcher.call_args.args[0]
+    assert not profile.trust_unverified_server
+    assert not profile.effective_entra_sso_enabled()
+    assert ws.trust_unverified_server is False
+    window._commit_workstation.assert_not_called()
+
+
 def test_a_generated_portal_id_no_longer_blocks_the_logoff(native):
     """Der Livestatus akzeptierte den Hostnamen, die Abmeldung nicht -- jetzt beide."""
     native.snapshot.workstation_id = native.ended.workstation_id = "NB05"

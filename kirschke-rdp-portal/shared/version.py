@@ -216,7 +216,14 @@ from __future__ import annotations
 # wird jetzt ausdrücklich importiert, und ein Fehler beim Aufräumen alter
 # Anmeldedaten verhindert den Start nie mehr. Betraf auch CredRead: Ein selbst
 # gespeichertes Lesekonto wurde in der EXE bisher still nicht gelesen.
-PORTAL_VERSION = "0.9.5"
+# 0.9.6: ein Klick auf Verbinden startet auf einer freien Maschine direkt.
+# Die Rückfragen "Serveridentität bestätigen" und "IP-Verbindung ohne
+# Webkonto" sowie die Meldung "Verbindung gestartet" entfallen. Die
+# Serveridentität prüft Windows selbst anhand des Zertifikats; die Ausnahme
+# bleibt eine Einstellung unter "Bearbeiten". Warnungen bei belegter oder
+# gebuchter Maschine und bei gespeicherten Anmeldedaten eines anderen Kontos
+# bleiben.
+PORTAL_VERSION = "0.9.6"
 # 1.4.0: every reported session carries its account SID, so the portal no longer
 # has to resolve Entra names against a cache that may not know them.
 # 1.6.1 (agent setup): das Setup kann auf Wunsch zusätzlich die beschreibbare

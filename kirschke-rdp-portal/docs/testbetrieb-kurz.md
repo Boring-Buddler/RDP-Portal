@@ -444,6 +444,10 @@ Remoteverbindung konnte nicht überprüft werden". Das ist im Testbetrieb **norm
 und kein Fehler**: Die Warnung gilt der vom Portal erzeugten `.rdp`-Datei, die
 noch nicht signiert ist, nicht dem Zielrechner. Hier **Verbinden** wählen. Das
 Signieren ist für nach dem Testbetrieb geplant, siehe `rdp-signatur-plan.md`.
+Eine eigene Rückfrage des Portals zur Serveridentität gibt es ab 0.9.6 nicht
+mehr. Die Windows-Warnung „Die Identität des Remotecomputers kann nicht
+überprüft werden“ erscheint nur noch, wenn das Zertifikat des Zielrechners
+nicht zum Verbindungsziel passt – etwa bei einer Verbindung über die IP-Adresse.
 
 ## Update 0.2.12 / Agent 1.3.0: Abmeldung auf dem Ziel-Agenten
 
