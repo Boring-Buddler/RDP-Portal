@@ -62,7 +62,8 @@ class RDPFileGenerator:
             # Generate content
             content = self._generate_content(profile)
 
-            # Write file
+            # Write file. Danach signiert der Launcher sie gegebenenfalls
+            # (portal_app/rdp/signing.py); ab dann darf sie sich nicht mehr ändern.
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(content)
 

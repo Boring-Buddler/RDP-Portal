@@ -1,6 +1,6 @@
 # Kirschke RDP Workstation Portal
 
-**Version:** Portal 0.9.8 · Agent 1.7.3
+**Version:** Portal 0.9.9 · Agent 1.7.3
 
 **Diagramme:** [Programmaufbau und Signalkette](docs/programmaufbau-und-signalkette.md) ·
 [Anmeldung, Abmeldung und Statusmeldungen](docs/anmeldung-abmeldung-und-statusmeldungen.md)
@@ -27,6 +27,20 @@ Filtern.
 Läuft deine eigene Sitzung auf einer Maschine, ohne dass ein Portal-Fenster
 offen ist, bleibt der Kartenrand durchgehend blau und das **PC-Symbol wird
 orange**. Die fremde Sitzung ohne Fenster bleibt violett/orange gestrichelt.
+
+**Signierte .rdp-Dateien (0.9.9).** Ist auf dem PC das Signaturzertifikat
+eingerichtet, signiert das Portal jede Verbindungsdatei mit `rdpsign.exe`. Statt
+„Unbekannter Herausgeber“ steht dann *Kirschke RDP Portal Signatur* im
+Windows-Dialog, und mit dem Fingerabdruck in der Vertrauensrichtlinie entfällt
+der Dialog ganz – nur für Dateien des Portals, nicht für fremde `.rdp`-Dateien.
+Ohne Zertifikat oder wenn das Signieren scheitert, startet die Verbindung wie
+bisher unsigniert; der Grund steht im Portal-Protokoll, die RDP-Diagnose zeigt
+„RDP-Signatur: eingerichtet“ oder „nicht eingerichtet“. Eingerichtet wird mit
+den Skripten im Paketordner `Zertifikate\`, Schritt für Schritt in
+[rdp-signatur-einrichtung.md](docs/rdp-signatur-einrichtung.md).
+**Sicherheit:** Der Schlüssel liegt auf jedem Portal-PC, und jeder Benutzer dort
+kann damit signieren. Die Laufzeit ist deshalb auf zwei Jahre begrenzt, und
+vertraut wird genau einem Fingerabdruck.
 
 **Startinventar für neue Installationen (0.9.8).** Ein Portal, das zum ersten
 Mal startet und noch keinen eigenen Stand hat, übernimmt die mitgelieferten
@@ -565,6 +579,13 @@ The application uses the Kirschke Corporate Design system as specified in the pr
   executable name, so `CreateProcess` cannot pick up a planted binary from the
   working directory. A test enforces this repository-wide
   (`tests/test_windows_tools.py`).
+- Signed `.rdp` files (0.9.9): the signing key sits non-exportable in
+  `LocalMachine\My` on every portal PC, readable by the local *Users* group so the
+  unprivileged portal can call `rdpsign.exe`. Anyone signed in there can sign
+  files that all portal PCs trust. Mitigations: trust is granted to exactly one
+  SHA-1 thumbprint via `TrustedCertThumbprints` (no `TrustedPublisher` import, so
+  no script-signing trust), two-year lifetime, and a failed signature never blocks
+  a connection. The thumbprint is read from `HKLM`, not from the source tree.
 - mstsc.exe is launched with explicit argument lists (no shell=True).
 - Generated `.rdp` files carry the target and user name. They are deleted when the
   portal closes and leftovers from a crashed run are removed at the next start.

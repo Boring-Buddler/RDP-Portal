@@ -232,7 +232,11 @@ from __future__ import annotations
 # NB13KI, Remote-Ettlingen, PC07, NB12KI und PC12. Übernommen werden nur
 # Felder, die eine Maschine beschreiben, nie Anmeldenamen. Ein vorhandener
 # Stand und ein gemeinsames Inventar bleiben unberührt.
-PORTAL_VERSION = "0.9.8"
+# 0.9.9: das Portal signiert jede .rdp-Datei mit rdpsign.exe, sobald unter
+# HKLM\SOFTWARE\Kirschke\RDPPortal ein Signaturzertifikat eingetragen ist
+# (deployment/certificates). Scheitert das Signieren, startet die
+# Verbindung unsigniert wie bisher.
+PORTAL_VERSION = "0.9.9"
 # 1.4.0: every reported session carries its account SID, so the portal no longer
 # has to resolve Entra names against a cache that may not know them.
 # 1.6.1 (agent setup): das Setup kann auf Wunsch zusätzlich die beschreibbare

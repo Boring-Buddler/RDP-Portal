@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from portal_app.rdp.generator import RDPFileGenerator, RDPGenerationError
+from portal_app.rdp.signing import sign_rdp_file
 from shared.schemas import RDPProfileSchema
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,10 @@ class RDPSessionLauncher:
         try:
             # Generate RDP file
             rdp_file = self.generator.generate(profile)
+
+            # Signieren, falls ein Signaturzertifikat eingerichtet ist. Scheitert
+            # es, bleibt die Datei unverändert, und Windows warnt wie bisher.
+            sign_rdp_file(rdp_file)
 
             # Launch mstsc.exe
             return self._launch_mstsc(rdp_file, profile, workstation_id, display_name)

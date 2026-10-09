@@ -24,3 +24,9 @@ def no_saved_rdp_credentials(monkeypatch):
     monkeypatch.setattr(
         "portal_app.services.share_connection.stored_share_credentials", lambda server: None
     )
+
+
+@pytest.fixture(autouse=True)
+def no_rdp_signing_certificate(monkeypatch):
+    """Ein eingerichtetes Signaturzertifikat des Test-PCs darf keinen Test signieren lassen."""
+    monkeypatch.setattr("portal_app.rdp.signing.configured_thumbprint", lambda: None)

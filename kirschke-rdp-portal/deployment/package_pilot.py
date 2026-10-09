@@ -112,6 +112,9 @@ def version_report(project: Path, entries: list[tuple[Path, str]]) -> str:
         "startet Install-Agent.cmd die Einrichtung ohne Setup-EXE, und",
         "Statusfreigabe-einrichten.ps1 legt die Statusfreigabe von Hand an.",
         "",
+        "Zertifikate\\ enthaelt die Skripte fuer signierte .rdp-Dateien,",
+        "siehe Dokumentation\\rdp-signatur-einrichtung.md.",
+        "",
         "Dokumentation\\ enthaelt die ausfuehrlichen Anleitungen.",
         "",
     ]
@@ -190,6 +193,12 @@ def main() -> None:
         # fuer Rechner, auf denen eine Richtlinie die Setup-EXE blockiert --
         # genau wie Install-Agent.cmd daneben.
         archive.writestr("Agent/Statusfreigabe-einrichten.ps1", share_setup)
+        # Mit BOM, damit Windows PowerShell 5.1 die Skripte sicher als UTF-8 liest.
+        for script in sorted((project / "deployment/certificates").glob("*.ps1")):
+            archive.writestr(
+                f"Zertifikate/{script.name}",
+                script.read_text(encoding="utf-8").encode("utf-8-sig"),
+            )
         archive.write(project / "docs/code-review-testbetrieb.md", "Pruefbericht.md")
     (project / "dist/Statusfreigabe-einrichten.ps1").write_bytes(share_setup)
 

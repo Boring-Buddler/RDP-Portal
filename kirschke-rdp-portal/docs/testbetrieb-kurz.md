@@ -440,10 +440,12 @@ keine Störung.
 
 **Zur Sicherheitswarnung beim Verbinden.** Beim Start einer Verbindung zeigt
 Windows „Vorsicht: Unbekannte Remoteverbindung — Der Herausgeber dieser
-Remoteverbindung konnte nicht überprüft werden". Das ist im Testbetrieb **normal
-und kein Fehler**: Die Warnung gilt der vom Portal erzeugten `.rdp`-Datei, die
-noch nicht signiert ist, nicht dem Zielrechner. Hier **Verbinden** wählen. Das
-Signieren ist für nach dem Testbetrieb geplant, siehe `rdp-signatur-plan.md`.
+Remoteverbindung konnte nicht überprüft werden". Die Warnung gilt der vom Portal
+erzeugten `.rdp`-Datei, nicht dem Zielrechner. Ist auf dem PC noch kein
+Signaturzertifikat eingerichtet, ist das **normal und kein Fehler**: **Verbinden**
+wählen und bei Bedarf die Häkchen für Zwischenablage und Laufwerke setzen. Ab 0.9.9
+signiert das Portal die Datei, sobald das Zertifikat eingerichtet ist; dann
+entfällt der Dialog, siehe `rdp-signatur-einrichtung.md`.
 Eine eigene Rückfrage des Portals zur Serveridentität gibt es ab 0.9.6 nicht
 mehr. Die Windows-Warnung „Die Identität des Remotecomputers kann nicht
 überprüft werden“ erscheint nur noch, wenn das Zertifikat des Zielrechners

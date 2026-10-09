@@ -2,6 +2,23 @@
 
 Stand: 16.09.2026 · Portal 0.6.1 · betrifft den Verbindungsstart, nicht den Agenten
 
+> **Umgesetzt in Portal 0.9.9 (09.10.2026)**, Einrichtung siehe
+> [rdp-signatur-einrichtung.md](rdp-signatur-einrichtung.md). Abweichungen von
+> diesem Plan:
+> - **Variante B statt A:** Das Signaturzertifikat stellt die inzwischen
+>   vorhandene Kirschke RDP Root CA aus (`deployment/certificates/New-RdpSigningCert.ps1`).
+> - **Offener Punkt 1 geklärt:** `rdpsign` findet das Zertifikat nicht im
+>   Benutzerspeicher (0x80092004), es gehört nach `LocalMachine\My`. Weil das
+>   Portal ohne Adminrechte signiert, bekommt die Gruppe *Benutzer* Leserecht auf
+>   den Schlüssel.
+> - **Offener Punkt 2 umgangen:** Vor dem Signieren schreibt das Portal die Datei
+>   in UTF-16LE, der üblichen Kodierung von `.rdp`-Dateien.
+> - **Kein Import nach `TrustedPublisher`:** Für `.rdp`-Dateien genügt die
+>   Richtlinie `TrustedCertThumbprints`. Ein Zertifikat mit Codesignatur in
+>   `TrustedPublisher` würde zusätzlich signierte Skripte ohne Rückfrage zulassen.
+> - Das Zertifikat trägt Serverauthentifizierung **und** Codesignatur, weil nicht
+>   eindeutig dokumentiert ist, welchen Zweck `rdpsign`/mstsc verlangen.
+
 ## Warum und wann
 
 Beim Start einer Verbindung zeigt Windows „Vorsicht: Unbekannte Remoteverbindung –

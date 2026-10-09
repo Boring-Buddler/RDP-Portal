@@ -31,6 +31,8 @@ def run_rdp_diagnostics(profile: RDPProfileSchema, timeout_seconds: float = 3.0)
     reachable RDP service is useful evidence, but does not prove that the user
     account is allowed to sign in.
     """
+    from portal_app.rdp.signing import configured_thumbprint
+
     target, mode = profile.resolve_connection_target()
     timestamp = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     lines = [
@@ -40,6 +42,7 @@ def run_rdp_diagnostics(profile: RDPProfileSchema, timeout_seconds: float = 3.0)
         f"RDP-Benutzer: {profile.effective_rdp_username() or 'Beim Start abfragen'}",
         f"Webkonto / Entra: {'aktiv' if profile.effective_entra_sso_enabled() else 'aus'}",
         f"Serveridentitäts-Ausnahme: {'aktiv' if profile.trust_unverified_server else 'aus'}",
+        f"RDP-Signatur: {'eingerichtet' if configured_thumbprint() else 'nicht eingerichtet'}",
         "Passwort: wird nicht protokolliert",
         "",
     ]
