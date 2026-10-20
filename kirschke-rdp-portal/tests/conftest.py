@@ -30,3 +30,14 @@ def no_saved_rdp_credentials(monkeypatch):
 def no_rdp_signing_certificate(monkeypatch):
     """Ein eingerichtetes Signaturzertifikat des Test-PCs darf keinen Test signieren lassen."""
     monkeypatch.setattr("portal_app.rdp.signing.configured_thumbprint", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def no_start_inventory(request, monkeypatch):
+    """Ein Fenster aus einem Test startet ohne die mitgelieferten echten Maschinen.
+
+    Sonst kämen sie zu jedem vorbereiteten Stand einmal dazu, wie bei einem
+    Update. Tests des Startinventars markieren sich mit ``start_inventory``.
+    """
+    if request.node.get_closest_marker("start_inventory") is None:
+        monkeypatch.setattr("portal_app.ui.main_window.load_start_inventory", lambda: [])

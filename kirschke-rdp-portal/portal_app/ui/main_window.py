@@ -54,8 +54,8 @@ from portal_app.services.local_store import (
 )
 from portal_app.services.reservation_access import apply_reservations
 from portal_app.services.session_claims import BackgroundSessionClaimReporter
+from portal_app.services.share_connection import setup_status_fallbacks
 from portal_app.services.start_inventory import load_start_inventory
-from portal_app.services.initial_setup import perform_initial_setup
 from portal_app.services.store_watch import StoreChangeProbe
 from portal_app.services.windows_admin_auth import (
     check_windows_admin_authorization,
@@ -70,6 +70,7 @@ from portal_app.ui.widgets.machine_registration_wizard import (
 from portal_app.ui.widgets.management_pages import AdministrationWidget, SettingsWidget
 from portal_app.ui.widgets.rdp_access_dialog import RDPAccessDialog
 from portal_app.ui.widgets.reservation_calendar import ReservationCalendarWidget
+from portal_app.ui.widgets.restore_defaults_dialog import RestoreDefaultsDialog
 from portal_app.ui.widgets.session_log import SessionLogWidget
 from portal_app.ui.widgets.user_settings_dialog import UserSettingsDialog
 from portal_app.ui.widgets.workstation_cards import WorkstationCardsWidget
@@ -291,6 +292,11 @@ class MainWindow(QMainWindow):
         self._live_apply_timer.setInterval(150)
         self._live_apply_timer.timeout.connect(self._apply_live_results)
         self.share_reconnector = ShareReconnector(parent=self)
+        self.fallback_setup = ShareReconnector(parent=self, job=setup_status_fallbacks)
+        self.fallback_setup.completed.connect(self._on_standard_fallbacks_ready)
+        self._fallback_setup_paths: dict[str, str] = {}
+        self._fallback_setup_report = False
+        self._restore_backup_note = ""
         # Prueft das gemeinsame Inventar auf Aenderungen, ohne dass ein
         # haengender SMB-Server den UI-Thread anhaelt.
         self.store_probe = StoreChangeProbe(parent=self)
@@ -357,6 +363,13 @@ class MainWindow(QMainWindow):
             # the live channel, whose pipe target is derived from the same
             # server -- stayed dead until somebody re-ran the setup dialog.
             QTimer.singleShot(0, self._reconnect_status_shares)
+            if self._startup_fallback_setup:
+                QTimer.singleShot(
+                    0,
+                    lambda: self._setup_standard_fallbacks(
+                        self._startup_fallback_setup, report=False
+                    ),
+                )
             if not self.workstations:
                 # An empty inventory is the first start. Adding machines is
                 # otherwise an admin action, but here it is the only way past an
@@ -435,13 +448,32 @@ class MainWindow(QMainWindow):
                 raise
             loaded = self._load_without_shared_inventory(exc, fallback)
         self.workstations, self.current_user, self.reservations = loaded
-        # Perform initial setup (fallback scans) for fresh installations
-        QTimer.singleShot(0, lambda: self._perform_initial_setup_async(self.workstations))
         if self.store.configuration_notice:
             self._storage_fallback_notice = "\n\n".join(
                 part for part in (self._storage_fallback_notice, self.store.configuration_notice)
                 if part
             )
+        added_start_machines: list[Workstation] = []
+        self._startup_fallback_setup: list[Workstation] = []
+        if self.store.inventory_directory is None:
+            # Ein Update kann dem Startinventar Maschinen hinzufügen; die kommen
+            # je Maschine einmal dazu. Neue Maschinen -- beim ersten Start alle --
+            # bekommen nach dem Start im Hintergrund ihre Standard-Statusfreigabe,
+            # eingerichtet wie im Fallback-Dialog.
+            first_start = not self.store.path.exists()
+            try:
+                added_start_machines = self.store.new_start_machines(self.workstations, fallback)
+            except (OSError, ValueError) as exc:
+                logger.warning("Startinventar nicht abgeglichen: %s", exc)
+            self.workstations.extend(added_start_machines)
+            self._startup_fallback_setup = list(
+                self.workstations if first_start else added_start_machines
+            )
+            if added_start_machines:
+                logger.info(
+                    "Neu aus dem Startinventar: %s",
+                    ", ".join(ws.display_name for ws in added_start_machines),
+                )
         self._apply_local_agent_fallbacks()
         self.session_events = self.store.load_events()
         self.directory_accounts = self.store.load_directory_accounts()
@@ -451,6 +483,13 @@ class MainWindow(QMainWindow):
         self._saved_user = deepcopy(self.current_user)
         if not self.store.path.exists():
             self._save_initial_state()
+        elif added_start_machines:
+            try:
+                self.store.save(
+                    self._saved_workstations, self._saved_user, self.reservations, self.store.theme_mode
+                )
+            except (OSError, StoreConflictError) as exc:
+                logger.warning("Neue Maschinen aus dem Startinventar nicht gespeichert: %s", exc)
         try:
             self.store.initialize_event_log()
         except OSError as exc:
@@ -480,22 +519,6 @@ class MainWindow(QMainWindow):
             "Freigabe nicht übernommen. Die Freigabe selbst bleibt unverändert."
         )
         return self.store.load(fallback, self.current_user)
-
-    def _perform_initial_setup_async(self, workstations: list) -> None:
-        """Run initial setup (fallback scans) asynchronously for fresh installations."""
-        try:
-            from portal_app.services.initial_setup import perform_initial_setup
-            results = perform_initial_setup(workstations)
-            if results:
-                logger.info(f"Initial setup completed: {len(results)} machines scanned")
-                for ws, success, msg in results:
-                    if success:
-                        logger.info(f"  {ws.workstation_id}: {msg}")
-                    else:
-                        logger.warning(f"  {ws.workstation_id}: {msg}")
-        except Exception as exc:
-            logger.error(f"Initial setup failed: {exc}")
-
 
     def _save_initial_state(self) -> None:
         """Write the first state file, and survive a storage location that is gone.
@@ -713,6 +736,7 @@ class MainWindow(QMainWindow):
         self.settings_view.agent_refresh_requested.connect(
             lambda: self._run_status_update_cycle(force=True)
         )
+        self.settings_view.restore_defaults_requested.connect(self._restore_defaults)
         self.settings_view.theme_changed.connect(self._set_theme_mode)
         self.settings_view.status_refresh_interval_changed.connect(
             self._set_status_refresh_interval
@@ -1222,12 +1246,11 @@ class MainWindow(QMainWindow):
         is derivable rather than something a person has to type per machine --
         which is what made this step get skipped and the fallback stay unset.
         """
-        from portal_app.services.share_connection import connect_status_share
+        from portal_app.services.share_connection import agent_status_share, connect_status_share
 
-        server = unc_server_name(probe.hostname or probe.target or workstation.hostname)
-        if not server:
+        path = agent_status_share(probe.hostname or probe.target or workstation.hostname)
+        if not path:
             return f"{workstation.display_name}: kein Servername für die Statusfreigabe."
-        path = rf"\\{server}\RDP-Status"
         connected, message = connect_status_share(path)
         if not connected:
             return f"{workstation.display_name}: {message}"
@@ -1267,6 +1290,187 @@ class MainWindow(QMainWindow):
             return
         self._show_reader_account()
         self._reconnect_status_shares()
+
+    def _setup_standard_fallbacks(
+        self, workstations: list[Workstation], *, report: bool
+    ) -> bool:
+        r"""Jede Maschine mit ``\\<Rechner>\RDP-Status`` verbinden und als Fallback eintragen.
+
+        Wie der Fallback-Dialog, nur für alle auf einmal: mit dem Lesekonto
+        verbinden, probelesen, das Konto merken. Erst danach meldete sich ein
+        Agent in der Praxis zuverlässig. Läuft im Hintergrund, weil ein
+        ausgeschalteter Rechner einen SMB-Timeout kostet. Gibt ``False`` zurück,
+        wenn nichts gestartet wurde.
+        """
+        from portal_app.services.share_connection import agent_status_share
+
+        paths: dict[str, str] = {}
+        for workstation in workstations:
+            path = agent_status_share(
+                workstation.hostname or workstation.fqdn or workstation.ip_address
+            )
+            if path:
+                paths[workstation.workstation_id] = path
+        if self.fallback_setup.busy or not paths:
+            return False
+        self._fallback_setup_paths = paths
+        self._fallback_setup_report = report
+        if not self.fallback_setup.request(paths):
+            return False
+        self.settings_view.agent_connection.set_status(
+            f"{len(paths)} Statusfreigabe(n) werden mit dem Lesekonto eingerichtet …"
+        )
+        return True
+
+    @Slot(object)
+    def _on_standard_fallbacks_ready(self, results: object) -> None:
+        """Erreichbare Freigaben eintragen; einen eigenen Fallback nie verwerfen."""
+        if not isinstance(results, dict):
+            return
+        paths = self._fallback_setup_paths
+        configured = self.store.workstation_agent_status_directories
+        connected = 0
+        problems: list[str] = []
+        for workstation_id, (success, message) in results.items():
+            path = paths.get(workstation_id)
+            if path is None:
+                continue
+            if success:
+                connected += 1
+            else:
+                problems.append(message)
+            # Nicht erreichbar heisst oft nur ausgeschaltet: Dann bekommt die
+            # Maschine die Standardfreigabe trotzdem, aber nur, wenn sie noch
+            # keinen eigenen Fallback hat.
+            if success or workstation_id.casefold() not in configured:
+                try:
+                    self.store.set_workstation_agent_status_directory(workstation_id, path)
+                except (OSError, ValueError) as exc:
+                    problems.append(f"{workstation_id}: Fallback nicht gespeichert ({exc}).")
+        self._apply_local_agent_fallbacks()
+        self._refresh_agent_panel()
+        summary = f"{connected} von {len(results)} Statusfreigabe(n) mit dem Lesekonto eingerichtet."
+        self.settings_view.agent_connection.set_status(
+            summary + (" " + " ".join(sorted(set(problems))[:3]) if problems else "")
+        )
+        logger.info("Standard-Fallbacks: %s %s", summary, " ".join(problems))
+        self._poll_agent_status(blocking=False)
+        if not self._fallback_setup_report:
+            return
+        self._fallback_setup_report = False
+        text = "\n".join(
+            part
+            for part in (
+                summary,
+                "\nNicht erreichbar:\n" + "\n".join(sorted(set(problems))) if problems else "",
+                self._restore_backup_note,
+            )
+            if part
+        )
+        self._restore_backup_note = ""
+        show = QMessageBox.warning if problems else QMessageBox.information
+        show(self, "Standard wiederhergestellt", text)
+
+    def _verify_admin_password(self, password: str) -> str:
+        """Für den Wiederherstellen-Dialog: Fehlermeldung, leer bei Erfolg."""
+        try:
+            correct = self.admin_password_verifier.verify_password(password)
+        except AdminLockoutError as exc:
+            return str(exc)
+        if not correct:
+            return "Das eingegebene Admin-Passwort ist nicht korrekt."
+        self._unlock_admin("Globales Portal-Admin-Passwort bestätigt")
+        return ""
+
+    @Slot()
+    def _restore_defaults(self) -> None:
+        """Dieses Portal auf den Stand einer Neuinstallation setzen.
+
+        Mit Admin-Zugang wird die Maschinenliste durch das Startinventar
+        ersetzt. Ohne -- und in jedem Fall danach -- werden die Statusfreigaben
+        mit dem Lesekonto eingerichtet. Gelöscht wird dabei nichts: kein
+        hinterlegtes Lesekonto, kein eigener Fallback einer nicht erreichbaren
+        Maschine. Ein gemeinsames Inventar gehört allen und bleibt unverändert.
+        """
+        if self.fallback_setup.busy:
+            QMessageBox.information(
+                self,
+                "Standard wiederherstellen",
+                "Die Statusfreigaben werden gerade noch eingerichtet. Bitte kurz warten.",
+            )
+            return
+        shared = self.store.inventory_directory is not None
+        start = [] if shared else load_start_inventory()
+        admin_needed = bool(start)
+        password_allowed = True
+        if admin_needed and not self._admin_unlocked and self.directory_mode == "active_directory":
+            authorization = check_windows_admin_authorization()
+            if authorization.authorized:
+                self._unlock_admin(f"Admin per Windows-Gruppe: {authorization.group_name}")
+            else:
+                password_allowed = test_password_fallback_allowed()
+        admin_part = (
+            f"Die Maschinenliste wird durch das mitgelieferte Startinventar ersetzt "
+            f"({len(start)} Maschinen). Eigene Maschinen, Änderungen daran und lokal "
+            "gespeicherte Reservierungen werden überschrieben; der bisherige Stand bleibt "
+            "als portal-state.vorher.json daneben. Reservierungen, die bei den Agenten "
+            "liegen, erscheinen beim nächsten Statuslauf wieder."
+        )
+        basic_part = (
+            "Jede Maschine wird mit ihrer Statusfreigabe \\\\<Rechner>\\RDP-Status "
+            "verbunden – mit dem Lesekonto, wie im Fallback-Dialog – und bekommt sie als "
+            "Datei-Fallback. Gelöscht wird nichts: Das hinterlegte Lesekonto bleibt, und "
+            "eine nicht erreichbare Maschine behält ihren eigenen Fallback."
+        )
+        if shared:
+            basic_part = (
+                "Ein gemeinsames Inventar ist eingetragen; dessen Maschinen bleiben "
+                "unverändert. " + basic_part
+            )
+        dialog = RestoreDefaultsDialog(
+            admin_part,
+            basic_part,
+            admin_needed=admin_needed,
+            admin_open=self._admin_unlocked,
+            password_allowed=password_allowed,
+            verify=self._verify_admin_password,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self._restore_backup_note = ""
+        if dialog.with_admin and admin_needed:
+            # Der Statuslauf soll nicht in eine halb ersetzte Maschinenliste melden.
+            self.agent_poll_timer.stop()
+            try:
+                backup = self.store.reset_to_start_inventory(start)
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(
+                    self,
+                    "Standard nicht wiederhergestellt",
+                    f"Die lokalen Dateien konnten nicht überschrieben werden: {exc}",
+                )
+                return
+            finally:
+                self.agent_poll_timer.start()
+            self._pending_save = False
+            self.on_refresh()
+            self._update_storage_status("Standard wiederhergestellt")
+            logger.info(
+                "Startinventar wiederhergestellt: %d Maschinen, Sicherung %s",
+                len(self.workstations),
+                backup or "keine",
+            )
+            if backup:
+                self._restore_backup_note = f"\nSicherung des bisherigen Stands:\n{backup}"
+        if not self._setup_standard_fallbacks(self.workstations, report=True):
+            QMessageBox.information(
+                self,
+                "Standard wiederhergestellt",
+                "Keine Maschine hat einen Rechnernamen für eine Statusfreigabe."
+                + self._restore_backup_note,
+            )
+            self._restore_backup_note = ""
 
     @Slot(str, str)
     def _set_agent_assignment(self, workstation_id: str, agent_id: str) -> None:
@@ -2957,6 +3161,7 @@ class MainWindow(QMainWindow):
         # Its pool waits for a running reconnect on destruction, so a slow SMB
         # host would otherwise hold the closing portal open with no window left.
         self.share_reconnector.stop()
+        self.fallback_setup.stop()
         cleanup_rdp_files()
         event.accept()
 

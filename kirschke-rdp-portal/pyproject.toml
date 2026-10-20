@@ -176,6 +176,9 @@ python_files = "test_*.py"
 python_functions = "test_*"
 addopts = "-v --tb=short"
 qt_api = "pyside6"
+markers = [
+    "start_inventory: Das Fenster startet mit dem echten mitgelieferten Startinventar.",
+]
 
 [tool.coverage.run]
 source = ["portal_app", "workstation_agent", "shared"]

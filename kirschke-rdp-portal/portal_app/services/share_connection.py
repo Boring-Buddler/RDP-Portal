@@ -17,6 +17,21 @@ def parse_share_path(value: str) -> tuple[str, str, str]:
     return str(PureWindowsPath(value)).rstrip("\\"), server, "\\\\" + "\\".join(parts[:2])
 
 
+#: Name der Statusfreigabe, die das Agent-Setup auf jedem Zielrechner anlegt.
+AGENT_STATUS_SHARE = "RDP-Status"
+
+
+def agent_status_share(host: str | None) -> str:
+    r"""Die Standard-Statusfreigabe eines Rechners, etwa ``\\PC07\RDP-Status``.
+
+    Leer, wenn sich aus der Angabe kein Servername bilden lässt.
+    """
+    from shared.name_resolution import unc_server_name
+
+    server = unc_server_name(host)
+    return rf"\\{server}\{AGENT_STATUS_SHARE}" if server else ""
+
+
 #: Präfix der Einträge, unter denen das Portal sich ein Freigabekonto merkt.
 SHARE_CREDENTIAL_PREFIX = "KirschkeRDPPortal:Freigabe:"
 
@@ -399,6 +414,50 @@ def retire_legacy_server_credentials() -> list[str]:
             continue
         retired.append(target)
     return retired
+
+
+def setup_status_fallbacks(paths: dict[str, str]) -> dict[str, tuple[bool, str]]:
+    """Die Statusfreigaben einrichten wie der Fallback-Dialog, für viele Maschinen.
+
+    Verbunden wird mit dem Lesekonto, die JSON-Dateien werden probegelesen und
+    das Konto für den Server gemerkt -- genau der Schritt, nach dem sich ein
+    Agent in der Praxis meldete. Das bloße Wiederverbinden beim Start merkt
+    sich nichts. Gelöscht wird nichts, auch kein hinterlegtes Lesekonto.
+
+    Ist der Server schon unter einem anderen Konto verbunden oder lehnt er das
+    Lesekonto ab, gilt wie beim Start :func:`connect_status_share`.
+    """
+    credentials = load_reader_credentials()
+    results: dict[str, tuple[bool, str]] = {}
+    attempted: dict[str, tuple[bool, str]] = {}
+    for workstation_id, path in paths.items():
+        try:
+            _, server, _ = parse_share_path(str(path))
+        except ValueError as exc:
+            results[workstation_id] = (False, str(exc))
+            continue
+        key = server.casefold()
+        if key not in attempted:
+            attempted[key] = _setup_status_fallback(str(path), credentials)
+        results[workstation_id] = attempted[key]
+    return results
+
+
+def _setup_status_fallback(path: str, credentials: tuple[str, str] | None) -> tuple[bool, str]:
+    if credentials is None:
+        return connect_status_share(path)
+    try:
+        _, message = connect_share(path, *credentials, remember=True)
+    except ValueError as exc:
+        code = re.search(r"Fehler (\d+)", str(exc))
+        # Nur dann ein zweiter Versuch: Ein ausgeschalteter Rechner kostete
+        # sonst einen zweiten SMB-Timeout.
+        if "anderen Konto" in str(exc) or (code and int(code.group(1)) in LOGON_REFUSED_CODES):
+            connected = connect_status_share(path)
+            if connected[0]:
+                return connected
+        return False, f"{path}: {exc}"
+    return True, f"{path}: {message}"
 
 
 def reconnect_status_shares(paths: dict[str, str]) -> dict[str, tuple[bool, str]]:

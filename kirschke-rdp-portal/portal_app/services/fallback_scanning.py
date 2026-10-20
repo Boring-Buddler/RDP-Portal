@@ -8,6 +8,7 @@ result to Workstation objects stays on the UI thread.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
@@ -89,9 +90,10 @@ class _ReconnectSignals(QObject):
 
 
 class _ReconnectTask(QRunnable):
-    def __init__(self, paths: dict[str, str]) -> None:
+    def __init__(self, paths: dict[str, str], job: Callable[[dict[str, str]], dict] | None) -> None:
         super().__init__()
         self.paths = paths
+        self.job = job
         self.signals = _ReconnectSignals()
 
     @Slot()
@@ -99,7 +101,7 @@ class _ReconnectTask(QRunnable):
         from portal_app.services.share_connection import reconnect_status_shares
 
         try:
-            results = reconnect_status_shares(self.paths)
+            results = (self.job or reconnect_status_shares)(self.paths)
         except Exception as exc:  # noqa: BLE001 - reported as one failed attempt
             results = {key: (False, f"{type(exc).__name__}: {exc}") for key in self.paths}
         self.signals.finished.emit(results)
@@ -111,12 +113,20 @@ class ShareReconnector(QObject):
     An unreachable SMB host blocks for the SMB timeout, and this runs at startup
     -- on the UI thread it would be a portal that shows no window until every
     switched-off machine has timed out.
+
+    ``job`` ersetzt das bloße Wiederverbinden, etwa durch die Einrichtung der
+    Standard-Fallbacks; er bekommt dieselben Pfade und liefert dieselbe Form.
     """
 
     completed = Signal(object)
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        job: Callable[[dict[str, str]], dict] | None = None,
+    ) -> None:
         super().__init__(parent)
+        self.job = job
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self._busy = False
@@ -131,7 +141,7 @@ class ShareReconnector(QObject):
         if self._stopped or self._busy or not paths:
             return False
         self._busy = True
-        task = _ReconnectTask(dict(paths))
+        task = _ReconnectTask(dict(paths), self.job)
         task.signals.finished.connect(self._on_finished)
         self.pool.start(task)
         return True

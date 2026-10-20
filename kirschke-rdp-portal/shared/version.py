@@ -236,10 +236,20 @@ from __future__ import annotations
 # HKLM\SOFTWARE\Kirschke\RDPPortal ein Signaturzertifikat eingetragen ist
 # (deployment/certificates). Scheitert das Signieren, startet die
 # Verbindung unsigniert wie bisher.
+# 0.9.12: "Standard wiederherstellen" löscht nichts mehr (0.9.11 entfernte das
+# hinterlegte Lesekonto und alle eigenen Fallbacks) und fragt das Admin-Passwort
+# im eigenen Dialog ab, mit "Ohne Admin fortfahren" für den Teil ohne Admin.
+# 0.9.11: Einstellungen -> "Standard wiederherstellen" setzt ein Portal auf den
+# Stand einer Neuinstallation: mit Admin Startinventar statt eigener Maschinenliste
+# (mit Sicherung); auch ohne Admin ("Ohne Admin fortfahren") jede Statusfreigabe
+# eingerichtet wie im Fallback-Dialog -- Lesekonto, Probelesen, Konto gemerkt. Das
+# geschieht auch beim ersten Start. Gelöscht wird nichts. Neue
+# Maschinen eines Updates kommen je PC einmal dazu -- der erste Versuch dazu
+# fehlte als Modul und mischte bei jedem Neuladen gelöschte Maschinen zurück.
 # 0.9.10: rdpsign /sha256 erwartet trotz des Namens den SHA-1-Fingerabdruck.
 # 0.9.9 trug den SHA-256-Wert ein, und rdpsign meldete 0x80092004. Ein alter
 # SHA-256-Eintrag wird jetzt abgelehnt und im Protokoll gemeldet.
-PORTAL_VERSION = "0.9.10"
+PORTAL_VERSION = "0.9.12"
 # 1.4.0: every reported session carries its account SID, so the portal no longer
 # has to resolve Entra names against a cache that may not know them.
 # 1.6.1 (agent setup): das Setup kann auf Wunsch zusätzlich die beschreibbare

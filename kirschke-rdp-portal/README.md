@@ -1,6 +1,6 @@
 # Kirschke RDP Workstation Portal
 
-**Version:** Portal 0.9.10 · Agent 1.7.3
+**Version:** Portal 0.9.12 · Agent 1.7.3
 
 **Diagramme:** [Programmaufbau und Signalkette](docs/programmaufbau-und-signalkette.md) ·
 [Anmeldung, Abmeldung und Statusmeldungen](docs/anmeldung-abmeldung-und-statusmeldungen.md) ·
@@ -28,6 +28,19 @@ Filtern.
 Läuft deine eigene Sitzung auf einer Maschine, ohne dass ein Portal-Fenster
 offen ist, bleibt der Kartenrand durchgehend blau und das **PC-Symbol wird
 orange**. Die fremde Sitzung ohne Fenster bleibt violett/orange gestrichelt.
+
+**Standard wiederherstellen (0.9.12).** Unter **Einstellungen → Standard
+wiederherstellen** wird ein Portal auf den Stand einer Neuinstallation gesetzt.
+Mit Admin-Passwort wird die Maschinenliste durch das mitgelieferte Startinventar
+ersetzt (der alte Stand bleibt als `portal-state.vorher.json` daneben). Mit
+**Ohne Admin fortfahren** – und in jedem Fall danach – wird jede Maschine mit
+ihrer Statusfreigabe `\\<Rechner>\RDP-Status` verbunden, so wie im
+Fallback-Dialog: mit dem Lesekonto `PortalLeser`, Probelesen und gemerktem
+Konto. Gelöscht wird nichts; eine nicht erreichbare Maschine behält ihren
+eigenen Fallback. Persönliche Einstellungen und ein gemeinsames Inventar bleiben
+unverändert. Beim ersten Start richtet das Portal die Freigaben der
+Startmaschinen genauso ein. Neue Maschinen eines Updates im Startinventar kommen
+je PC einmal dazu; eine gelöschte kommt nicht wieder.
 
 **Signatur korrigiert (0.9.10).** `rdpsign /sha256` erwartet trotz des Namens den
 SHA-1-Fingerabdruck. 0.9.9 trug den SHA-256-Wert ein, und das Signieren scheiterte

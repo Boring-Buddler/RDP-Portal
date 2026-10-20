@@ -48,6 +48,8 @@ EVENTS_FILE = "portal-events.jsonl"
 #: Lokale Kopie des zuletzt gelesenen gemeinsamen Inventars. Damit startet das
 #: Portal, wenn die Freigabe nicht erreichbar ist -- ohne sie anzufassen.
 INVENTORY_CACHE_FILE = "inventar-zuletzt-gelesen.json"
+#: Schlüssel in storage-config.json: Startmaschinen, die dieser PC schon bekam.
+START_INVENTORY_OFFERED = "start_inventory_offered"
 
 #: Rotate the append-only event log once it passes this size.
 EVENT_LOG_MAX_BYTES = 4_000_000
@@ -386,6 +388,73 @@ class LocalStore:
         config["version"] = 1
         write_json_atomic(self.agent_config_path, config)
         return target
+
+    def reset_to_start_inventory(self, workstations: list[Workstation]) -> Path | None:
+        """Den eigenen Stand durch das Startinventar ersetzen, wie bei einer Neuinstallation.
+
+        Überschreibt die Datei, statt über :meth:`save` zu mergen: Ein Merge
+        hielte jede Maschine, die nur im alten Stand steht, für eine fremde
+        Änderung und behielte sie. Reservierungen beginnen leer; die bei den
+        Agenten gespeicherten kommen mit dem nächsten Statuslauf zurück.
+
+        Ein gemeinsames Inventar wird nie angefasst -- auch nicht im Notbetrieb,
+        dessen lokale Kopie beim nächsten Start ohnehin wieder der Freigabe
+        weicht. Gibt die Sicherung des bisherigen Stands zurück, falls es einen gab.
+        """
+        if self.inventory_directory is not None:
+            raise ValueError(
+                "Ein gemeinsames Inventar ist eingetragen; dessen Maschinen werden nicht zurückgesetzt."
+            )
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "version": 4,
+            "workstations": [ws.to_schema().model_dump(mode="json") for ws in workstations],
+            "reservations": [],
+        }
+        backup: Path | None = None
+        with file_lock(self.path.with_suffix(".lock")):
+            if self.path.is_file():
+                backup = self.path.with_name("portal-state.vorher.json")
+                shutil.copy2(self.path, backup)
+            self._write_json(self.path, data)
+        self._set_baseline(data)
+        self._remember_signatures()
+        self._mark_start_machines_offered(ws.workstation_id for ws in workstations)
+        return backup
+
+    def new_start_machines(
+        self, workstations: list[Workstation], start: list[Workstation]
+    ) -> list[Workstation]:
+        """Maschinen, die ein Update dem Startinventar hinzugefügt hat -- je Maschine einmal.
+
+        Gemerkt wird, welche Maschinen dieser PC schon angeboten bekommen hat.
+        Ohne das käme eine Startmaschine, die jemand gelöscht hat, bei jedem
+        Start wieder. Ein gemeinsames Inventar bekommt nie etwas dazu: Was dort
+        steht, entscheiden die Admins, nicht das Paket eines einzelnen Portals.
+        """
+        if self.inventory_directory is not None:
+            return []
+        present = {ws.workstation_id.casefold() for ws in workstations}
+        offered = self._offered_start_machines()
+        added = [
+            ws for ws in start
+            if ws.workstation_id.casefold() not in present | offered
+        ]
+        self._mark_start_machines_offered(ws.workstation_id for ws in start)
+        return added
+
+    def _offered_start_machines(self) -> set[str]:
+        offered = self._read_directory_config().get(START_INVENTORY_OFFERED, [])
+        return {item.casefold() for item in offered if isinstance(item, str)} if isinstance(offered, list) else set()
+
+    def _mark_start_machines_offered(self, workstation_ids) -> None:
+        offered = self._offered_start_machines()
+        combined = offered | {item.casefold() for item in workstation_ids}
+        if combined == offered:
+            return
+        config = self._read_directory_config()
+        config[START_INVENTORY_OFFERED] = sorted(combined)
+        write_json_atomic(self.agent_config_path, config)
 
     @staticmethod
     def _signature(path: Path) -> tuple[int, int] | None:
@@ -848,44 +917,9 @@ class LocalStore:
             else:
                 self._set_baseline(data)
                 self._remember_signatures()
-            # Merge with start inventory to add new machines from updates
-            workstations = self._merge_with_start_inventory(workstations, fallback_workstations)
-
             return workstations, user, reservations
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise StoreReadError(f"Portaldaten konnten nicht geladen werden: {exc}") from exc
-
-    def _merge_with_start_inventory(
-        self, existing: list[Workstation], fallback: list[Workstation]
-    ) -> list[Workstation]:
-        """Merge existing workstations with start inventory to add new machines.
-        
-        When an update adds new machines to the start inventory, this method
-        ensures they are added to existing installations without overwriting
-        user-specific settings.
-        
-        Args:
-            existing: Workstations loaded from the state file
-            fallback: Workstations from the start inventory
-            
-        Returns:
-            Merged list of workstations (existing + new from fallback)
-        """
-        existing_ids = {ws.workstation_id for ws in existing}
-        merged = list(existing)
-        
-        for fallback_ws in fallback:
-            if fallback_ws.workstation_id not in existing_ids:
-                # New machine from start inventory - add it
-                merged.append(fallback_ws)
-                existing_ids.add(fallback_ws.workstation_id)
-                logger.info(
-                    f"Added new machine from start inventory: {fallback_ws.workstation_id} "
-                    f"({fallback_ws.display_name})"
-                )
-        
-        return merged
-
 
     def read_reservations(self) -> list[Reservation]:
         """Read authoritative bookings without acknowledging other pending edits."""

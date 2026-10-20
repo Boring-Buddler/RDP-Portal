@@ -517,6 +517,7 @@ def test_dark_theme_has_high_contrast_palette():
     assert "QComboBox QAbstractItemView" in style
 
 
+@pytest.mark.start_inventory
 def test_main_window_starts_with_the_start_inventory_and_persists_theme(tmp_path, monkeypatch, qtbot):
     """Ein neues Portal zeigt die mitgelieferten echten Maschinen, nie Demo-Ziele."""
     from portal_app.services.start_inventory import load_start_inventory
@@ -546,6 +547,122 @@ def test_main_window_starts_with_the_start_inventory_and_persists_theme(tmp_path
     assert logo_pixels
     assert all(color.red() > 240 and color.green() > 240 and color.blue() > 240 for color in logo_pixels)
     assert json.loads(store.preferences_path.read_text(encoding="utf-8"))["theme_mode"] == "dark"
+
+
+def _restore_window(tmp_path, monkeypatch, qtbot, *, with_admin: bool):
+    """Ein Fenster mit eigener Maschine, Dialog und Freigaben nachgebildet."""
+    from PySide6.QtWidgets import QDialog, QMessageBox
+
+    store = LocalStore(tmp_path / "state.json")
+    monkeypatch.setattr("portal_app.ui.main_window.LocalStore", lambda: store)
+    window = MainWindow(automatic_live_status=False)
+    qtbot.addWidget(window)
+    own = create_test_workstation()
+    own.workstation_id = "WS-099"
+    own.hostname = "PC99"
+    window.workstations.append(own)
+    window._commit_workstation(own)
+    assert window._persist()
+    store.set_workstation_agent_status_directory("WS-099", tmp_path / "eigener-ordner")
+    store.set_workstation_agent_status_directory("WS-003", tmp_path / "pc07-eigen")
+
+    class Dialog:
+        def __init__(self, *args, **kwargs):
+            self.with_admin = with_admin
+
+        def exec(self):
+            return QDialog.Accepted
+
+    monkeypatch.setattr("portal_app.ui.main_window.RestoreDefaultsDialog", Dialog)
+    shown: list[str] = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: shown.append(text))
+    monkeypatch.setattr(QMessageBox, "information", lambda parent, title, text, *a: shown.append(text))
+    requested: list[dict[str, str]] = []
+
+    def run_now(paths):
+        # PC07 ist ausgeschaltet, alle anderen antworten.
+        requested.append(dict(paths))
+        window._on_standard_fallbacks_ready(
+            {key: (key != "WS-003", f"{path}: Fehler 53") for key, path in paths.items()}
+        )
+        return True
+
+    monkeypatch.setattr(window.fallback_setup, "request", run_now)
+    return window, store, requested, shown
+
+
+@pytest.mark.start_inventory
+def test_restore_with_admin_replaces_the_machines_and_sets_up_every_share(tmp_path, monkeypatch, qtbot):
+    from portal_app.services.start_inventory import load_start_inventory
+
+    window, store, requested, shown = _restore_window(tmp_path, monkeypatch, qtbot, with_admin=True)
+
+    window.settings_view.restore_defaults_requested.emit()
+
+    expected = [ws.workstation_id for ws in load_start_inventory()]
+    assert [ws.workstation_id for ws in window.workstations] == expected
+    saved = json.loads(store.path.read_text(encoding="utf-8"))["workstations"]
+    assert [item["workstation_id"] for item in saved] == expected
+    assert (store.path.parent / "portal-state.vorher.json").is_file()
+    assert sorted(requested[0]) == expected
+    remote = next(ws for ws in window.workstations if ws.workstation_id == "WS-002")
+    assert Path(remote.agent_fallback_directory) == Path(r"\\Remote-Ettlingen\RDP-Status")
+    assert remote.agent_fallback_is_explicit
+    # Nichts gelöscht: Der ausgeschaltete PC07 behält seinen eigenen Fallback,
+    # und der Eintrag der ersetzten Maschine bleibt in der Einstellung stehen.
+    directories = store.workstation_agent_status_directories
+    assert directories["ws-003"] == tmp_path / "pc07-eigen"
+    assert "ws-099" in directories
+    assert "4 von 5" in shown[-1] and "portal-state.vorher.json" in shown[-1]
+
+
+def test_restore_without_admin_keeps_the_machines_and_still_sets_up_the_shares(tmp_path, monkeypatch, qtbot):
+    window, store, requested, shown = _restore_window(tmp_path, monkeypatch, qtbot, with_admin=False)
+    before = [ws.workstation_id for ws in window.workstations]
+
+    window.settings_view.restore_defaults_requested.emit()
+
+    assert [ws.workstation_id for ws in window.workstations] == before
+    assert not (store.path.parent / "portal-state.vorher.json").exists()
+    assert Path(requested[0]["WS-099"]) == Path(r"\\PC99\RDP-Status")
+    own = next(ws for ws in window.workstations if ws.workstation_id == "WS-099")
+    assert Path(own.agent_fallback_directory) == Path(r"\\PC99\RDP-Status")
+    assert "1 von 1" in shown[-1]
+
+
+def test_restore_dialog_checks_the_password_and_offers_a_skip(qtbot):
+    from portal_app.ui.widgets.restore_defaults_dialog import RestoreDefaultsDialog
+
+    tried: list[str] = []
+
+    def verify(password: str) -> str:
+        tried.append(password)
+        return "" if password == "richtig" else "Das eingegebene Admin-Passwort ist nicht korrekt."
+
+    dialog = RestoreDefaultsDialog(
+        "Maschinen", "Freigaben", admin_needed=True, admin_open=False,
+        password_allowed=True, verify=verify,
+    )
+    qtbot.addWidget(dialog)
+    assert not dialog.skip_button.isHidden()
+
+    dialog.admin_button.click()
+    assert tried == [] and dialog.result() == 0
+    dialog.password.setText("falsch")
+    dialog.admin_button.click()
+    assert tried == ["falsch"] and "nicht korrekt" in dialog.message.text()
+    dialog.password.setText("richtig")
+    dialog.admin_button.click()
+    assert dialog.with_admin and dialog.result() == 1
+
+    skipped = RestoreDefaultsDialog(
+        "Maschinen", "Freigaben", admin_needed=True, admin_open=False,
+        password_allowed=True, verify=verify,
+    )
+    qtbot.addWidget(skipped)
+    skipped.skip_button.click()
+    assert not skipped.with_admin and skipped.result() == 1
+    assert tried == ["falsch", "richtig"]
 
 
 def test_machine_username_overrides_user_default(tmp_path):

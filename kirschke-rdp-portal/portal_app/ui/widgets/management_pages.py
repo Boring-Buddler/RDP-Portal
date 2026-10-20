@@ -349,6 +349,7 @@ class AdministrationWidget(QWidget):
 class SettingsWidget(QWidget):
     edit_user_requested = Signal()
     agent_refresh_requested = Signal()
+    restore_defaults_requested = Signal()
     theme_changed = Signal(str)
     status_refresh_interval_changed = Signal(int)
 
@@ -549,6 +550,31 @@ class SettingsWidget(QWidget):
         layout.insertWidget(0, self.agent_connection)
         layout.insertWidget(1, refresh_card)
         layout.insertWidget(2, agent_card)
+        # Zuletzt, weil es alles darüber überschreibt.
+        reset_card = QFrame()
+        reset_card.setObjectName("detailCard")
+        reset_layout = QVBoxLayout(reset_card)
+        reset_layout.setContentsMargins(22, 20, 22, 20)
+        reset_layout.setSpacing(10)
+        reset_title = QLabel("Standard wiederherstellen")
+        reset_title.setObjectName("detailCardTitle")
+        reset_layout.addWidget(reset_title)
+        reset_note = QLabel(
+            "Setzt dieses Portal auf den Stand einer Neuinstallation. Mit Admin-Passwort wird "
+            "die Maschinenliste durch das mitgelieferte Startinventar ersetzt; die lokale Datei "
+            "wird überschrieben, der bisherige Stand bleibt als Sicherung erhalten. Auch ohne "
+            "Admin wird jede Maschine mit ihrer Statusfreigabe \\\\<Rechner>\\RDP-Status und "
+            "dem Lesekonto verbunden, wie im Fallback-Dialog. Gelöscht wird dabei nichts; "
+            "persönliche Einstellungen und ein gemeinsames Inventar bleiben unverändert."
+        )
+        reset_note.setObjectName("detailMuted")
+        reset_note.setWordWrap(True)
+        reset_layout.addWidget(reset_note)
+        reset_button = QPushButton("Standard wiederherstellen …")
+        reset_button.setObjectName("dangerButton")
+        reset_button.clicked.connect(self.restore_defaults_requested)
+        reset_layout.addWidget(reset_button, alignment=Qt.AlignLeft)
+        layout.addWidget(reset_card)
         layout.addStretch()
         self.refresh()
         self.network_load_timer = QTimer(self)
