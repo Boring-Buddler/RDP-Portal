@@ -55,6 +55,7 @@ from portal_app.services.local_store import (
 from portal_app.services.reservation_access import apply_reservations
 from portal_app.services.session_claims import BackgroundSessionClaimReporter
 from portal_app.services.start_inventory import load_start_inventory
+from portal_app.services.initial_setup import perform_initial_setup
 from portal_app.services.store_watch import StoreChangeProbe
 from portal_app.services.windows_admin_auth import (
     check_windows_admin_authorization,
@@ -434,6 +435,8 @@ class MainWindow(QMainWindow):
                 raise
             loaded = self._load_without_shared_inventory(exc, fallback)
         self.workstations, self.current_user, self.reservations = loaded
+        # Perform initial setup (fallback scans) for fresh installations
+        QTimer.singleShot(0, lambda: self._perform_initial_setup_async(self.workstations))
         if self.store.configuration_notice:
             self._storage_fallback_notice = "\n\n".join(
                 part for part in (self._storage_fallback_notice, self.store.configuration_notice)
@@ -477,6 +480,22 @@ class MainWindow(QMainWindow):
             "Freigabe nicht übernommen. Die Freigabe selbst bleibt unverändert."
         )
         return self.store.load(fallback, self.current_user)
+
+    def _perform_initial_setup_async(self, workstations: list) -> None:
+        """Run initial setup (fallback scans) asynchronously for fresh installations."""
+        try:
+            from portal_app.services.initial_setup import perform_initial_setup
+            results = perform_initial_setup(workstations)
+            if results:
+                logger.info(f"Initial setup completed: {len(results)} machines scanned")
+                for ws, success, msg in results:
+                    if success:
+                        logger.info(f"  {ws.workstation_id}: {msg}")
+                    else:
+                        logger.warning(f"  {ws.workstation_id}: {msg}")
+        except Exception as exc:
+            logger.error(f"Initial setup failed: {exc}")
+
 
     def _save_initial_state(self) -> None:
         """Write the first state file, and survive a storage location that is gone.

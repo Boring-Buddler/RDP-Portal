@@ -3,7 +3,8 @@
 **Version:** Portal 0.9.10 · Agent 1.7.3
 
 **Diagramme:** [Programmaufbau und Signalkette](docs/programmaufbau-und-signalkette.md) ·
-[Anmeldung, Abmeldung und Statusmeldungen](docs/anmeldung-abmeldung-und-statusmeldungen.md)
+[Anmeldung, Abmeldung und Statusmeldungen](docs/anmeldung-abmeldung-und-statusmeldungen.md) ·
+[Programmfluss und Topologie](docs/flussdiagramm-und-topologie.md)
 
 **Ausbauplanung:** [Priorisierter Verbesserungs- und Ausbauplan](docs/verbesserungsplan.md)
 

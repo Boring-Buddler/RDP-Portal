@@ -1,0 +1,275 @@
+{
+  "version": 1,
+  "workstation_id": "WS-006",
+  "hostname": "PC12",
+  "agent_version": "1.6.5",
+  "observed_at_utc": "2026-10-06T09:52:02.967273+00:00",
+  "agent_status": "online",
+  "current_session_state": "connected",
+  "current_session_user": "AzureAD\\ChristianBecker",
+  "current_windows_session_id": 4,
+  "rdp_sessions": [
+    {
+      "session_id": 4,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "display_name": "Console",
+      "client_name": null,
+      "client_address": null,
+      "connect_state": "WTSActive",
+      "session_state": "connected",
+      "protocol_type": 0,
+      "login_time": "2026-10-06T07:00:45.853134+00:00",
+      "last_input_time": null,
+      "is_console_session": true,
+      "sid": "S-1-12-1-721101136-1100836332-2905566339-1157943989"
+    }
+  ],
+  "session_history": [
+    {
+      "session_id": 1,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-15T13:19:27.894972+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-15T13:24:52.882264+00:00",
+      "event": "Sitzung erkannt"
+    },
+    {
+      "session_id": 1,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-15T13:19:27.894972+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-15T13:25:52.914020+00:00",
+      "event": "Nicht mehr gemeldet"
+    },
+    {
+      "session_id": 2,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-15T13:27:25.582850+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-15T13:27:52.976043+00:00",
+      "event": "Sitzung erkannt"
+    },
+    {
+      "session_id": 2,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-15T13:27:25.582850+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-21T06:29:25.049181+00:00",
+      "event": "Nicht mehr gemeldet"
+    },
+    {
+      "session_id": 3,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-21T06:29:18.420078+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-21T06:29:25.049181+00:00",
+      "event": "Sitzung erkannt"
+    },
+    {
+      "session_id": 3,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-21T06:29:18.420078+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-22T06:06:10.125410+00:00",
+      "event": "Nicht mehr gemeldet"
+    },
+    {
+      "session_id": 4,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-22T06:05:56.532434+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-22T06:06:10.125410+00:00",
+      "event": "Sitzung erkannt"
+    },
+    {
+      "session_id": 4,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-22T06:05:56.532434+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-23T06:08:34.877315+00:00",
+      "event": "Nicht mehr gemeldet"
+    },
+    {
+      "session_id": 5,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-23T06:08:37.598917+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-23T06:09:04.925998+00:00",
+      "event": "Sitzung erkannt"
+    },
+    {
+      "session_id": 5,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-23T06:08:37.598917+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-23T09:43:29.248840+00:00",
+      "event": "Nicht mehr gemeldet"
+    },
+    {
+      "session_id": 1,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-23T10:57:06.301218+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-23T10:57:16.303301+00:00",
+      "event": "Sitzung erkannt"
+    },
+    {
+      "session_id": 1,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-23T10:57:06.301218+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-24T07:31:40.717043+00:00",
+      "event": "Nicht mehr gemeldet"
+    },
+    {
+      "session_id": 2,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-24T07:31:37.129519+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-24T07:31:40.717043+00:00",
+      "event": "Sitzung erkannt"
+    },
+    {
+      "session_id": 2,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-24T07:31:37.129519+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-25T06:28:50.882914+00:00",
+      "event": "Nicht mehr gemeldet"
+    },
+    {
+      "session_id": 3,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-25T06:28:48.307556+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-25T06:28:50.882914+00:00",
+      "event": "Sitzung erkannt"
+    },
+    {
+      "session_id": 3,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-25T06:28:48.307556+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-28T06:02:53.254299+00:00",
+      "event": "Nicht mehr gemeldet"
+    },
+    {
+      "session_id": 4,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-28T06:05:58.950180+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-28T06:06:23.408347+00:00",
+      "event": "Sitzung erkannt"
+    },
+    {
+      "session_id": 4,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-28T06:05:58.950180+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-29T06:06:07.292274+00:00",
+      "event": "Nicht mehr gemeldet"
+    },
+    {
+      "session_id": 5,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-29T06:05:56.389753+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-29T06:06:07.292274+00:00",
+      "event": "Sitzung erkannt"
+    },
+    {
+      "session_id": 5,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-29T06:05:56.389753+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-30T09:13:50.183692+00:00",
+      "event": "Nicht mehr gemeldet"
+    },
+    {
+      "session_id": 1,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-30T09:13:57.443581+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-30T09:14:20.204586+00:00",
+      "event": "Sitzung erkannt"
+    },
+    {
+      "session_id": 1,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-30T09:13:57.443581+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-10-01T06:59:16.305714+00:00",
+      "event": "Nicht mehr gemeldet"
+    },
+    {
+      "session_id": 2,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-10-01T06:59:32.902061+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-10-01T06:59:46.325559+00:00",
+      "event": "Sitzung erkannt"
+    },
+    {
+      "session_id": 2,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-10-01T06:59:32.902061+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-10-05T07:04:12.635953+00:00",
+      "event": "Nicht mehr gemeldet"
+    },
+    {
+      "session_id": 3,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-10-05T07:04:09.724531+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-10-05T07:04:12.635953+00:00",
+      "event": "Sitzung erkannt"
+    },
+    {
+      "session_id": 3,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-10-05T07:04:09.724531+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-10-06T07:00:48.649952+00:00",
+      "event": "Nicht mehr gemeldet"
+    },
+    {
+      "session_id": 4,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-10-06T07:00:45.853134+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-10-06T07:00:48.649952+00:00",
+      "event": "Sitzung erkannt"
+    }
+  ],
+  "reservations": [],
+  "session_claims": []
+}

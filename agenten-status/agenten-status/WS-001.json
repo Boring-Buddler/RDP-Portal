@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "workstation_id": "WS-001",
+  "hostname": "PC12",
+  "agent_version": "1.5.1",
+  "observed_at_utc": "2026-09-17T14:59:03.787513+00:00",
+  "agent_status": "online",
+  "current_session_state": "connected",
+  "current_session_user": "AzureAD\\ChristianBecker",
+  "current_windows_session_id": 2,
+  "rdp_sessions": [
+    {
+      "session_id": 2,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "display_name": "Console",
+      "client_name": null,
+      "client_address": null,
+      "connect_state": "WTSActive",
+      "session_state": "connected",
+      "protocol_type": 0,
+      "login_time": "2026-09-15T13:27:25.582850+00:00",
+      "last_input_time": null,
+      "is_console_session": true,
+      "sid": "S-1-12-1-721101136-1100836332-2905566339-1157943989"
+    }
+  ],
+  "session_history": [
+    {
+      "session_id": 1,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-15T13:19:27.894972+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-15T13:24:52.882264+00:00",
+      "event": "Sitzung erkannt"
+    },
+    {
+      "session_id": 1,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-15T13:19:27.894972+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-15T13:25:52.914020+00:00",
+      "event": "Nicht mehr gemeldet"
+    },
+    {
+      "session_id": 2,
+      "username": "ChristianBecker",
+      "domain": "AzureAD",
+      "login_time": "2026-09-15T13:27:25.582850+00:00",
+      "session_state": "connected",
+      "observed_at_utc": "2026-09-15T13:27:52.976043+00:00",
+      "event": "Sitzung erkannt"
+    }
+  ],
+  "reservations": []
+}

@@ -34,13 +34,22 @@ function Remove-Portal {
 }
 
 function Install-Portal {
+    param([bool]$ClearLocalData = $false)
     $source = (Resolve-Path -LiteralPath $SourceDirectory).Path
     if (-not (Test-Path -LiteralPath (Join-Path $source 'Kirschke-RDP-Portal.exe'))) { throw 'Portaldateien fehlen.' }
     if ($source.TrimEnd('\') -eq $installDirectory.TrimEnd('\')) { throw 'Setup aus dem separaten Installationspaket starten.' }
     Remove-Portal
     New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
-    Get-ChildItem -LiteralPath $source -Force | Where-Object { $_.Name -ne 'state' } | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination $installDirectory -Recurse -Force
+    if ($ClearLocalData) {
+        # Lokale Daten löschen - Startinventar wird bei erstem Start neu geladen
+        Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $installDirectory -Recurse -Force
+        }
+    } else {
+        # Lokale Daten erhalten (Standardverhalten)
+        Get-ChildItem -LiteralPath $source -Force | Where-Object { $_.Name -ne 'state' } | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $installDirectory -Recurse -Force
+        }
     }
     $shell = New-Object -ComObject WScript.Shell
     $link = $shell.CreateShortcut($shortcut)
@@ -65,22 +74,31 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Kirschke RDP Portal $portalVersion – Setup"
-$form.ClientSize = New-Object System.Drawing.Size(570, 220)
+$form.ClientSize = New-Object System.Drawing.Size(570, 250)
 $form.StartPosition = 'CenterScreen'
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
 $label = New-Object System.Windows.Forms.Label
-$label.Text = "Portal $portalVersion für diesen Benutzer installieren.`n`nAlte installierte Programmdateien werden vor der Neuinstallation entfernt. Maschinen, Reservierungen und Einstellungen bleiben erhalten.`n`nZiel: $installDirectory"
+$label.Text = "Portal $portalVersion für diesen Benutzer installieren.`n`nAlte installierte Programmdateien werden vor der Neuinstallation entfernt. Maschinen, Reservierungen und Einstellungen bleiben erhalten, es sei denn, die Option unten ist aktiviert.`n`nZiel: $installDirectory"
 $label.Location = New-Object System.Drawing.Point(20, 20)
 $label.Size = New-Object System.Drawing.Size(530, 140)
 $form.Controls.Add($label)
+
+# Checkbox für lokale Daten löschen
+$checkbox = New-Object System.Windows.Forms.CheckBox
+$checkbox.Text = "Lokale Daten löschen (Maschinen und Einstellungen zurücksetzen)"
+$checkbox.Location = New-Object System.Drawing.Point(20, 165)
+$checkbox.Size = New-Object System.Drawing.Size(530, 24)
+$checkbox.Checked = $false
+$form.Controls.Add($checkbox)
+
 $button = New-Object System.Windows.Forms.Button
 $button.Text = if ($Uninstall) { 'Deinstallieren' } else { 'Installieren' }
-$button.Location = New-Object System.Drawing.Point(360, 175)
+$button.Location = New-Object System.Drawing.Point(360, 195)
 $button.Size = New-Object System.Drawing.Size(190, 32)
 $button.Add_Click({
     try {
-        if ($Uninstall) { Remove-Portal } else { Install-Portal }
-        [System.Windows.Forms.MessageBox]::Show('Vorgang abgeschlossen. Maschinen und Einstellungen bleiben erhalten.', 'Portal-Setup') | Out-Null
+        if ($Uninstall) { Remove-Portal } else { Install-Portal -ClearLocalData:$checkbox.Checked }
+        [System.Windows.Forms.MessageBox]::Show('Vorgang abgeschlossen.', 'Portal-Setup') | Out-Null
         $form.Close()
     } catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Portal-Setup') | Out-Null }
 })

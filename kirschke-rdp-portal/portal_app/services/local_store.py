@@ -848,9 +848,44 @@ class LocalStore:
             else:
                 self._set_baseline(data)
                 self._remember_signatures()
+            # Merge with start inventory to add new machines from updates
+            workstations = self._merge_with_start_inventory(workstations, fallback_workstations)
+
             return workstations, user, reservations
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise StoreReadError(f"Portaldaten konnten nicht geladen werden: {exc}") from exc
+
+    def _merge_with_start_inventory(
+        self, existing: list[Workstation], fallback: list[Workstation]
+    ) -> list[Workstation]:
+        """Merge existing workstations with start inventory to add new machines.
+        
+        When an update adds new machines to the start inventory, this method
+        ensures they are added to existing installations without overwriting
+        user-specific settings.
+        
+        Args:
+            existing: Workstations loaded from the state file
+            fallback: Workstations from the start inventory
+            
+        Returns:
+            Merged list of workstations (existing + new from fallback)
+        """
+        existing_ids = {ws.workstation_id for ws in existing}
+        merged = list(existing)
+        
+        for fallback_ws in fallback:
+            if fallback_ws.workstation_id not in existing_ids:
+                # New machine from start inventory - add it
+                merged.append(fallback_ws)
+                existing_ids.add(fallback_ws.workstation_id)
+                logger.info(
+                    f"Added new machine from start inventory: {fallback_ws.workstation_id} "
+                    f"({fallback_ws.display_name})"
+                )
+        
+        return merged
+
 
     def read_reservations(self) -> list[Reservation]:
         """Read authoritative bookings without acknowledging other pending edits."""
